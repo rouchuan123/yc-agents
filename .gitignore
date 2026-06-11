@@ -1,0 +1,40 @@
+# 环境变量与虚拟环境
+.env
+.env.*
+.venv/
+venv/
+
+# Python 缓存文件
+__pycache__/
+*.py[cod]
+*$py.class
+
+# 测试与工具缓存
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# 运行输出与本地数据
+outputs/
+data/vector_store/
+data/memory/
+data/documents/
+data/simulated/
+
+# 本地临时文件
+%TEMP%/
+docs/%TEMP%/
+*.tmp
+*.log
+
+# 编辑器与系统文件
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# 文档
+docs/
+MIGRATION.md
