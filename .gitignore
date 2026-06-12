@@ -1,6 +1,5 @@
 # 环境变量与虚拟环境
 .env
-.env.*
 .venv/
 venv/
 
