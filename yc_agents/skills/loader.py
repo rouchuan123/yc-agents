@@ -54,6 +54,9 @@ class SkillLoader:
             allowed_tools=list(allowed_tools),
             body=body.strip(),
             path=str(skill_path).replace("\\", "/"),
+            scripts=self._discover_scripts(skill_path / "scripts"),
+            assets=self._discover_files(skill_path / "assets"),
+            references=self._discover_files(skill_path / "references"),
         )
 
     def _split_front_matter(self, text):
@@ -65,12 +68,32 @@ class SkillLoader:
         if len(parts) < 3:
             raise ValueError("SKILL.md front matter is not closed")
 
-        metadata_text = parts[1]
-        body = parts[2]
-
-        metadata = yaml.safe_load(metadata_text) or {}
+        metadata = yaml.safe_load(parts[1]) or {}
 
         if not isinstance(metadata, dict):
             raise ValueError("SKILL.md front matter must be a YAML mapping")
 
-        return metadata, body
+        return metadata, parts[2]
+
+    def _discover_files(self, directory):
+        if not directory.exists():
+            return []
+
+        return [
+            str(path).replace("\\", "/")
+            for path in sorted(directory.iterdir())
+            if path.is_file()
+        ]
+
+    def _discover_scripts(self, directory):
+        scripts = []
+
+        for path in self._discover_files(directory):
+            scripts.append(
+                {
+                    "path": path,
+                    "executable_candidate": path.endswith(".py"),
+                }
+            )
+
+        return scripts
