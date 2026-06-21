@@ -33,4 +33,12 @@ describe("App", () => {
 
     expect(screen.getByText("模型设置")).toBeTruthy();
   });
+
+  it("shows documents code projects and sessions in the sidebar", () => {
+    render(<App />);
+
+    expect(screen.getByText("documents/notes/idea.md")).toBeTruthy();
+    expect(screen.getByText("yc-agents")).toBeTruthy();
+    expect(screen.getByText("开题报告准备")).toBeTruthy();
+  });
 });

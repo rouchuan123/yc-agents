@@ -1,6 +1,7 @@
 import { Pause, Play, Send, Settings, Square, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
 import { ApprovalDialog } from "./components/ApprovalDialog";
+import { Sidebar } from "./components/Sidebar";
 import { SettingsPanel } from "./components/SettingsPanel";
 import type { ChatMessage, RunStatus, RuntimeEvent } from "./types";
 
@@ -17,6 +18,9 @@ export function App() {
   );
 
   const latestEvent = useMemo(() => events[events.length - 1], [events]);
+  const documents = ["documents/notes/idea.md"];
+  const codeProjects = ["yc-agents"];
+  const sessions = ["开题报告准备"];
 
   function sendMessage() {
     const content = input.trim();
@@ -57,27 +61,13 @@ export function App() {
       </header>
 
       <main className="workbench">
-        <aside className="sidebar">
-          <section>
-            <h2>论文项目</h2>
-            <button>打开项目</button>
-            <button>创建项目</button>
-          </section>
-          <section>
-            <h2>资料</h2>
-            <p>documents</p>
-          </section>
-          <section>
-            <h2>技能</h2>
-            <p>开题报告</p>
-            <p>文献综述</p>
-            <p>系统设计</p>
-          </section>
-          <section>
-            <h2>代码项目</h2>
-            <p>只读绑定</p>
-          </section>
-        </aside>
+        <Sidebar
+          documents={documents}
+          codeProjects={codeProjects}
+          sessions={sessions}
+          onOpenProject={() => undefined}
+          onCreateProject={() => undefined}
+        />
 
         <section className="chat-panel">
           <div className="messages">
