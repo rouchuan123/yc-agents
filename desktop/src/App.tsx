@@ -1,0 +1,117 @@
+import { Pause, Play, Send, Settings, Square, Workflow } from "lucide-react";
+import { useMemo, useState } from "react";
+import type { ChatMessage, RunStatus, RuntimeEvent } from "./types";
+
+export function App() {
+  const [messages, setMessages] = useState<ChatMessage[]>([
+    { role: "assistant", content: "打开或创建论文项目后，可以开始连续会话。" },
+  ]);
+  const [input, setInput] = useState("");
+  const [runStatus, setRunStatus] = useState<RunStatus>("idle");
+  const [events, setEvents] = useState<RuntimeEvent[]>([]);
+
+  const latestEvent = useMemo(() => events[events.length - 1], [events]);
+
+  function sendMessage() {
+    const content = input.trim();
+    if (!content) return;
+    setMessages((current) => [...current, { role: "user", content }]);
+    setInput("");
+    setRunStatus("running");
+  }
+
+  return (
+    <div className="app-shell">
+      <header className="top-bar">
+        <div className="brand">
+          <Workflow size={18} />
+          <span>YC Agents</span>
+        </div>
+        <div className="project-label">未打开论文项目</div>
+        <div className={`status status-${runStatus}`}>{runStatus}</div>
+        <button className="icon-button" aria-label="Settings">
+          <Settings size={18} />
+        </button>
+      </header>
+
+      <main className="workbench">
+        <aside className="sidebar">
+          <section>
+            <h2>论文项目</h2>
+            <button>打开项目</button>
+            <button>创建项目</button>
+          </section>
+          <section>
+            <h2>资料</h2>
+            <p>documents</p>
+          </section>
+          <section>
+            <h2>技能</h2>
+            <p>开题报告</p>
+            <p>文献综述</p>
+            <p>系统设计</p>
+          </section>
+          <section>
+            <h2>代码项目</h2>
+            <p>只读绑定</p>
+          </section>
+        </aside>
+
+        <section className="chat-panel">
+          <div className="messages">
+            {messages.map((message, index) => (
+              <article
+                className={`message message-${message.role}`}
+                key={`${message.role}-${index}`}
+              >
+                {message.content}
+              </article>
+            ))}
+          </div>
+
+          <div className="composer">
+            <textarea
+              value={input}
+              onChange={(event) => setInput(event.target.value)}
+              placeholder="输入你的论文任务..."
+            />
+            <div className="composer-actions">
+              <button
+                className="icon-button"
+                aria-label="Pause"
+                onClick={() => setRunStatus("paused")}
+              >
+                <Pause size={18} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Resume"
+                onClick={() => setRunStatus("running")}
+              >
+                <Play size={18} />
+              </button>
+              <button
+                className="icon-button"
+                aria-label="Cancel"
+                onClick={() => setRunStatus("cancelled")}
+              >
+                <Square size={18} />
+              </button>
+              <button className="send-button" onClick={sendMessage}>
+                <Send size={18} />
+                发送
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <aside className="details-panel">
+          <h2>当前 Run</h2>
+          <p>状态：{runStatus}</p>
+          <h3>事件</h3>
+          <pre>{latestEvent ? JSON.stringify(latestEvent, null, 2) : "暂无事件"}</pre>
+        </aside>
+      </main>
+    </div>
+  );
+}

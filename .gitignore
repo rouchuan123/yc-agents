@@ -34,6 +34,11 @@ docs/%TEMP%/
 .DS_Store
 Thumbs.db
 
+# Frontend dependencies and build output
+node_modules/
+desktop/node_modules/
+desktop/dist/
+
 # 文档
 docs/
 MIGRATION.md
