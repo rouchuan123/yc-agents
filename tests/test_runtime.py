@@ -4,11 +4,56 @@ import json
 from pathlib import Path
 
 from yc_agents.harness.runtime import YCAgentRuntime, ResearchAgentHarness
+from yc_agents.tools.base import BaseTool
+from yc_agents.tools.registry import ToolRegistry
 
 
 class FakeAgent:
     def run(self, user_input):
         return f"echo: {user_input}"
+
+
+class FakeToolCallAgent:
+    def run(self, user_input):
+        return json.dumps(
+            {
+                "type": "tool_call",
+                "tool_name": "fake_tool",
+                "arguments": {
+                    "text": "danger",
+                },
+                "reason": "test approval gate",
+            }
+        )
+
+    def run_with_observation(self, user_input, observation):
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "approval handled",
+            }
+        )
+
+
+class FakeTool(BaseTool):
+    name = "fake_tool"
+    description = "Fake tool."
+
+    def run(self, text):
+        return {
+            "echo": text,
+        }
+
+
+class FakeApprovalGate:
+    def check_tool_call(self, tool_name, arguments):
+        return {
+            "allowed": False,
+            "needs_approval": True,
+            "action": "tool_call",
+            "tool_name": tool_name,
+            "reason": "approval required",
+        }
 
 
 class TestYCAgentRuntime(unittest.TestCase):
@@ -39,6 +84,49 @@ class TestYCAgentRuntime(unittest.TestCase):
         self.assertTrue((latest_run / "input.md").exists())
         self.assertTrue((latest_run / "final_output.md").exists())
         self.assertTrue((latest_run / "trace.json").exists())
+
+    def test_runtime_writes_episode_context_verification_and_state(self):
+        runtime = YCAgentRuntime(FakeAgent())
+        runs_dir = Path("outputs/runs")
+        before = set(runs_dir.iterdir()) if runs_dir.exists() else set()
+
+        runtime.run("check enhanced episode")
+
+        after = set(runs_dir.iterdir())
+        new_runs = list(after - before)
+        self.assertEqual(len(new_runs), 1)
+        run_dir = new_runs[0]
+
+        self.assertTrue((run_dir / "context.json").exists())
+        self.assertTrue((run_dir / "verification.md").exists())
+        self.assertTrue((run_dir / "state.json").exists())
+
+        context_data = json.loads((run_dir / "context.json").read_text(encoding="utf-8"))
+        state_data = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+        self.assertEqual(context_data["run_id"], run_dir.name)
+        self.assertEqual(state_data["status"], "finished")
+
+    def test_runtime_passes_approval_gate_to_tool_gateway(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeToolCallAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            approval_gate=FakeApprovalGate(),
+        )
+        runs_dir = Path("outputs/runs")
+        before = set(runs_dir.iterdir()) if runs_dir.exists() else set()
+
+        response = runtime.run("trigger approval")
+
+        after = set(runs_dir.iterdir())
+        new_runs = list(after - before)
+        trace = json.loads((new_runs[0] / "trace.json").read_text(encoding="utf-8"))
+        event_types = [event["event_type"] for event in trace["events"]]
+        self.assertEqual(response, "approval handled")
+        self.assertIn("tool_needs_approval", event_types)
 
 
 class FakeJSONAgent:

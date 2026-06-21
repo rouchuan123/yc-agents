@@ -9,22 +9,40 @@ from yc_agents.skills.registry import SkillRegistry
 
 
 class SkillRuntimeAgent:
-    def __init__(self, llm, skills_dir="skills", session_memory=None):
+    def __init__(
+        self,
+        llm,
+        skills_dir="skills",
+        session_memory=None,
+        summary_memory=None,
+        profile_memory=None,
+        memory_compressor=None,
+        compression_threshold=None,
+        rag_search_tool=None,
+        rag_top_k=3,
+    ):
         self.llm = llm
         self.skills_dir = skills_dir
         self.skill_agent = SkillAgent(llm)
         self.context_manager = ContextManager()
         self.session_memory = session_memory or SessionMemory()
+        self.summary_memory = summary_memory
+        self.profile_memory = profile_memory
+        self.memory_compressor = memory_compressor
+        self.compression_threshold = compression_threshold
+        self.rag_search_tool = rag_search_tool
+        self.rag_top_k = rag_top_k
 
     def run(self, user_input):
         registry = self._load_registry()
         skills = list(registry.skills.values())
-        memory_messages = self._load_memory_messages()
+        memory_context = self._load_memory_context()
+        memory_messages = memory_context["session"]
 
         selection_context = self.context_manager.build_skill_selection_context(
             user_input,
             skills,
-            memory_messages=memory_messages,
+            memory_context=memory_context,
         )
         selection_text = self.skill_agent.select_skill(selection_context)
 
@@ -36,14 +54,14 @@ class SkillRuntimeAgent:
         selected_name = selection.get("selected_skill")
 
         if not selected_name:
-            return self._plain_answer(user_input, memory_messages)
+            return self._plain_answer(user_input, memory_context)
 
         try:
             selected_skill = registry.get_skill(selected_name)
         except KeyError:
-            return self._plain_answer(user_input, memory_messages)
+            return self._plain_answer(user_input, memory_context)
 
-        return self._answer_with_skill(user_input, selected_skill, selection, memory_messages)
+        return self._answer_with_skill(user_input, selected_skill, selection, memory_context)
 
     def _load_registry(self):
         registry = SkillRegistry()
@@ -53,7 +71,8 @@ class SkillRuntimeAgent:
 
         return registry
 
-    def _plain_answer(self, user_input, memory_messages=None):
+    def _plain_answer(self, user_input, memory_context=None):
+        memory = memory_context or self.context_manager.build_memory_context()
         messages = [
             {
                 "role": "system",
@@ -64,7 +83,8 @@ class SkillRuntimeAgent:
                 "content": json.dumps(
                     {
                         "user_input": user_input,
-                        "recent_messages": memory_messages or [],
+                        "memory": memory,
+                        "recent_messages": memory["session"],
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -73,7 +93,16 @@ class SkillRuntimeAgent:
         ]
         return self.llm.think(messages)
 
-    def _answer_with_skill(self, user_input, selected_skill, selection, memory_messages=None):
+    def _answer_with_skill(self, user_input, selected_skill, selection, memory_context=None):
+        memory = memory_context or self.context_manager.build_memory_context()
+        rag_results = self._load_rag_results(user_input, selected_skill)
+        context = self.context_manager.build_skill_execution_context(
+            user_input=user_input,
+            selected_skill=selected_skill,
+            selection=selection,
+            memory_context=memory,
+            rag_results=rag_results,
+        )
         messages = [
             {
                 "role": "system",
@@ -92,11 +121,48 @@ class SkillRuntimeAgent:
             {
                 "role": "user",
                 "content": json.dumps(
+                    context,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ]
+
+        response = self.llm.think(messages)
+
+        if self._is_repeated_skill_selection(response):
+            return self._retry_skill_execution(user_input, context)
+
+        return response
+
+    def _load_memory_messages(self):
+        return self.session_memory.load()
+
+    def _is_repeated_skill_selection(self, response):
+        try:
+            data = parse_model_json(response)
+        except InvalidModelJSONError:
+            return False
+
+        return data.get("type") == "skill_selection"
+
+    def _retry_skill_execution(self, user_input, context):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "你已经完成 Skill 选择，现在必须执行 selected_skill。"
+                    "不要再输出 skill_selection JSON。"
+                    "如果用户没有要求保存文件，就直接用自然语言回答用户。"
+                    "如果用户明确要求保存文件，只输出 tool_call JSON。"
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
                     {
                         "user_input": user_input,
-                        "recent_messages": memory_messages or [],
-                        "selected_skill": selected_skill.to_dict(),
-                        "selection": selection,
+                        "execution_context": context,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -106,8 +172,26 @@ class SkillRuntimeAgent:
 
         return self.llm.think(messages)
 
-    def _load_memory_messages(self):
-        return self.session_memory.load()
+    def _load_memory_context(self):
+        return self.context_manager.build_memory_context(
+            session=self._load_memory_messages(),
+            summary=self._load_summary_memory(),
+            profile=self._load_profile_memory(),
+            memory_compressor=self.memory_compressor,
+            compression_threshold=self.compression_threshold,
+        )
+
+    def _load_summary_memory(self):
+        if self.summary_memory is None:
+            return ""
+
+        return self.summary_memory.load()
+
+    def _load_profile_memory(self):
+        if self.profile_memory is None:
+            return {}
+
+        return self.profile_memory.load()
 
     def remember_turn(self, user_input, response):
         self.session_memory.load()
@@ -116,7 +200,7 @@ class SkillRuntimeAgent:
         return self.session_memory.save()
 
     def run_with_observation(self, user_input, observation):
-        memory_messages = self._load_memory_messages()
+        memory = self._load_memory_context()
         messages = [
             {
                 "role": "system",
@@ -133,7 +217,8 @@ class SkillRuntimeAgent:
                 "content": json.dumps(
                     {
                         "user_input": user_input,
-                        "recent_messages": memory_messages,
+                        "memory": memory,
+                        "recent_messages": memory["session"],
                         "observation": observation,
                     },
                     ensure_ascii=False,
@@ -143,3 +228,12 @@ class SkillRuntimeAgent:
         ]
 
         return self.llm.think(messages)
+
+    def _load_rag_results(self, user_input, selected_skill):
+        if self.rag_search_tool is None:
+            return []
+
+        if "rag_search" not in selected_skill.allowed_tools:
+            return []
+
+        return self.rag_search_tool.run(user_input, top_k=self.rag_top_k)
