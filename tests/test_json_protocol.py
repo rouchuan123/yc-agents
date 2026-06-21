@@ -36,6 +36,34 @@ class TestJSONProtocol(unittest.TestCase):
         with self.assertRaises(InvalidModelJSONError):
             parse_model_json('{"type":"unknown"}')
 
+    def test_parse_valid_tool_call_json(self):
+        text = (
+            '{"type":"tool_call",'
+            '"tool_name":"markdown_writer",'
+            '"arguments":{"file_name":"draft.md","content":"# Draft"},'
+            '"reason":"保存草稿"}'
+        )
+
+        result = parse_model_json(text)
+
+        self.assertEqual(result["type"], "tool_call")
+        self.assertEqual(result["tool_name"], "markdown_writer")
+        self.assertEqual(result["arguments"]["file_name"], "draft.md")
+
+
+    def test_tool_call_missing_tool_name_raises_error(self):
+        text = '{"type":"tool_call","arguments":{}}'
+
+        with self.assertRaises(InvalidModelJSONError):
+            parse_model_json(text)
+
+
+    def test_tool_call_arguments_must_be_object(self):
+        text = '{"type":"tool_call","tool_name":"markdown_writer","arguments":[] }'
+
+        with self.assertRaises(InvalidModelJSONError):
+            parse_model_json(text)        
+
 
 if __name__ == "__main__":
     unittest.main()

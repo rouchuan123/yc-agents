@@ -1,31 +1,42 @@
 from dotenv import load_dotenv
+
+from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.core.llm import YCAgentsLLM
-from yc_agents.agents.simple_agent import SimpleAgent
-from yc_agents.harness.runtime import ResearchAgentHarness
+from yc_agents.harness.runtime import YCAgentRuntime
+from yc_agents.memory.session import SessionMemory
+from yc_agents.tools.markdown_writer import MarkdownWriterTool
+from yc_agents.tools.registry import ToolRegistry
 
-load_dotenv()
 
-llm = YCAgentsLLM()
+def build_runtime():
+    llm = YCAgentsLLM()
+    session_memory = SessionMemory()
+    agent = SkillRuntimeAgent(llm, session_memory=session_memory)
+    tool_registry = ToolRegistry()
+    tool_registry.register(MarkdownWriterTool())
 
-agent = SimpleAgent(
-    name="YC助手",
-    llm=llm,
-    system_prompt="你是一个耐心的小白编程老师"
-)
+    return YCAgentRuntime(
+        agent,
+        expects_json=True,
+        tool_registry=tool_registry,
+        allowed_tools=["markdown_writer"],
+    )
 
-harness = ResearchAgentHarness(agent)
 
-history_file = "data/memory/session.json"
-agent.load_history(history_file)
+def main():
+    load_dotenv()
+    runtime = build_runtime()
 
-while True:
-    user_input = input("你：")
+    while True:
+        user_input = input("你：")
 
-    if user_input in ["退出", "exit", "quit"]:
-        break
+        if user_input in ["退出", "exit", "quit"]:
+            break
 
-    response = harness.run(user_input)
-    print("YC助手：", response)
+        response = runtime.run(user_input)
 
-    agent.save_history(history_file)
-    
+        print("YC Agent：", response)
+
+
+if __name__ == "__main__":
+    main()
