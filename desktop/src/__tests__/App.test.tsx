@@ -25,4 +25,12 @@ describe("App", () => {
 
     expect(screen.getByText("帮我准备开题报告目录")).toBeTruthy();
   });
+
+  it("opens the settings panel", () => {
+    render(<App />);
+
+    fireEvent.click(screen.getByLabelText("Settings"));
+
+    expect(screen.getByText("模型设置")).toBeTruthy();
+  });
 });
