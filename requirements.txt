@@ -2,3 +2,5 @@ openai
 python-dotenv
 python-docx
 PyYAML
+fastapi
+uvicorn
