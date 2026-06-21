@@ -31,3 +31,29 @@ export function startPythonService(options: {
     },
   };
 }
+
+export async function waitForHealth(
+  options: {
+    url?: string;
+    attempts?: number;
+    delayMs?: number;
+    fetchImpl?: typeof fetch;
+  } = {},
+): Promise<boolean> {
+  const url = options.url ?? "http://127.0.0.1:8765/health";
+  const attempts = options.attempts ?? 20;
+  const delayMs = options.delayMs ?? 250;
+  const fetchImpl = options.fetchImpl ?? fetch;
+
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      const response = await fetchImpl(url);
+      if (response.ok) return true;
+    } catch {
+      // Try again until attempts are exhausted.
+    }
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+  }
+
+  return false;
+}

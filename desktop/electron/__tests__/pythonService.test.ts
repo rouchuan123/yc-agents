@@ -15,7 +15,7 @@ vi.mock("node:child_process", () => ({
 }));
 
 import { spawn } from "node:child_process";
-import { startPythonService } from "../pythonService";
+import { startPythonService, waitForHealth } from "../pythonService";
 
 describe("startPythonService", () => {
   it("starts the desktop backend module", () => {
@@ -33,5 +33,17 @@ describe("startPythonService", () => {
         windowsHide: true,
       }),
     );
+  });
+});
+
+describe("waitForHealth", () => {
+  it("returns true when health endpoint responds", async () => {
+    const ok = await waitForHealth({
+      attempts: 1,
+      delayMs: 1,
+      fetchImpl: vi.fn(async () => ({ ok: true })) as unknown as typeof fetch,
+    });
+
+    expect(ok).toBe(true);
   });
 });
