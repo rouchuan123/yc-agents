@@ -16,6 +16,18 @@ export function App() {
     const content = input.trim();
     if (!content) return;
     setMessages((current) => [...current, { role: "user", content }]);
+    setEvents((current) => [
+      ...current,
+      {
+        message_id: `local_${Date.now()}`,
+        type: "user_message",
+        project_id: "local",
+        session_id: "local",
+        run_id: "",
+        created_at: new Date().toISOString(),
+        payload: { content },
+      },
+    ]);
     setInput("");
     setRunStatus("running");
   }
