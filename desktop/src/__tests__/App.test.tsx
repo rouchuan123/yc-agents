@@ -41,4 +41,15 @@ describe("App", () => {
     expect(screen.getByText("yc-agents")).toBeTruthy();
     expect(screen.getByText("开题报告准备")).toBeTruthy();
   });
+
+  it("shows a readable run event after sending a message", () => {
+    render(<App />);
+
+    fireEvent.change(screen.getByPlaceholderText("输入你的论文任务..."), {
+      target: { value: "帮我准备开题报告目录" },
+    });
+    fireEvent.click(screen.getByText("发送"));
+
+    expect(screen.getByText("user_message")).toBeTruthy();
+  });
 });

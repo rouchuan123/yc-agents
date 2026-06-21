@@ -251,3 +251,18 @@ pre {
   gap: 8px;
   margin-top: 16px;
 }
+
+.event-list {
+  display: grid;
+  gap: 10px;
+  padding-left: 20px;
+}
+
+.event-list li {
+  line-height: 1.4;
+}
+
+.event-list strong {
+  display: block;
+  margin-bottom: 4px;
+}

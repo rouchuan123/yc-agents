@@ -1,6 +1,7 @@
 import { Pause, Play, Send, Settings, Square, Workflow } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ApprovalDialog } from "./components/ApprovalDialog";
+import { RunDetails } from "./components/RunDetails";
 import { Sidebar } from "./components/Sidebar";
 import { SettingsPanel } from "./components/SettingsPanel";
 import type { ChatMessage, RunStatus, RuntimeEvent } from "./types";
@@ -17,7 +18,6 @@ export function App() {
     null,
   );
 
-  const latestEvent = useMemo(() => events[events.length - 1], [events]);
   const documents = ["documents/notes/idea.md"];
   const codeProjects = ["yc-agents"];
   const sessions = ["开题报告准备"];
@@ -117,12 +117,7 @@ export function App() {
           </div>
         </section>
 
-        <aside className="details-panel">
-          <h2>当前 Run</h2>
-          <p>状态：{runStatus}</p>
-          <h3>事件</h3>
-          <pre>{latestEvent ? JSON.stringify(latestEvent, null, 2) : "暂无事件"}</pre>
-        </aside>
+        <RunDetails status={runStatus} events={events} />
       </main>
 
       {settingsOpen ? (
