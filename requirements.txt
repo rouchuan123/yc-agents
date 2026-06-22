@@ -4,3 +4,6 @@ python-docx
 PyYAML
 fastapi
 uvicorn
+websockets
+pypdf
+tiktoken

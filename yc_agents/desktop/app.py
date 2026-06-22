@@ -5,15 +5,18 @@ import anyio
 from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 from starlette.concurrency import run_in_threadpool
+from starlette.middleware.cors import CORSMiddleware
 
 from yc_agents.desktop.code_projects import CodeProjectService
+from yc_agents.desktop.context_usage import ContextUsageService
 from yc_agents.desktop.documents import DocumentService
 from yc_agents.desktop.events import DesktopEvent
 from yc_agents.desktop.run_controller import RunController
 from yc_agents.desktop.runtime_adapter import RuntimeAdapter
 from yc_agents.desktop.sessions import SessionStore
-from yc_agents.desktop.settings import AppSettings, SettingsStore
+from yc_agents.desktop.settings import AppSettings, SettingsStore, apply_settings_to_env
 from yc_agents.desktop.storage import ProjectStore
+from yc_agents.skills.loader import SkillLoader
 
 
 class CreateProjectRequest(BaseModel):
@@ -46,10 +49,20 @@ class SaveSettingsRequest(BaseModel):
 
 def create_app(settings_path=None, runtime_factory=None):
     app = FastAPI(title="YC Agents Desktop API")
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[
+            "http://127.0.0.1:5174",
+            "http://localhost:5174",
+        ],
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
     project_store = ProjectStore()
     settings_store = SettingsStore(
         settings_path or Path.home() / ".yc-agents-desktop" / "app_settings.json"
     )
+    apply_settings_to_env(settings_store.load_with_env_fallback())
 
     @app.get("/health")
     def health():
@@ -61,10 +74,27 @@ def create_app(settings_path=None, runtime_factory=None):
 
     @app.put("/app/settings")
     def save_settings(request: SaveSettingsRequest):
+        current_settings = settings_store.load()
         settings = settings_store.save(
-            AppSettings(request.model, request.base_url, request.api_key)
+            AppSettings(
+                request.model,
+                request.base_url,
+                request.api_key or current_settings.api_key,
+            )
         )
+        apply_settings_to_env(settings)
         return settings.to_public_dict()
+
+    @app.get("/app/skills")
+    def list_skills():
+        return [
+            {
+                "name": skill.name,
+                "description": skill.description,
+                "allowed_tools": skill.allowed_tools,
+            }
+            for skill in SkillLoader("skills").load_all()
+        ]
 
     @app.post("/projects/create")
     def create_project(request: CreateProjectRequest):
@@ -129,6 +159,17 @@ def create_app(settings_path=None, runtime_factory=None):
     def get_session(session_id: str, root: str = Query(...)):
         try:
             return SessionStore(root).get(session_id)
+        except FileNotFoundError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.get("/projects/current/sessions/{session_id}/context-usage")
+    def get_context_usage(
+        session_id: str,
+        root: str = Query(...),
+        max_tokens: int | None = Query(None),
+    ):
+        try:
+            return ContextUsageService(root, max_tokens=max_tokens).for_session(session_id)
         except FileNotFoundError as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
 

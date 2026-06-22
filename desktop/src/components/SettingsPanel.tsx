@@ -1,10 +1,10 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 export interface SettingsPanelProps {
   initialModel?: string;
   initialBaseUrl?: string;
   hasApiKey?: boolean;
-  onSave: (settings: { model: string; base_url: string; api_key: string }) => void;
+  onSave: (settings: { model: string; base_url: string; api_key: string }) => void | Promise<void>;
 }
 
 export function SettingsPanel({
@@ -16,6 +16,22 @@ export function SettingsPanel({
   const [model, setModel] = useState(initialModel);
   const [baseUrl, setBaseUrl] = useState(initialBaseUrl);
   const [apiKey, setApiKey] = useState("");
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setModel(initialModel);
+    setBaseUrl(initialBaseUrl);
+    setApiKey("");
+  }, [initialModel, initialBaseUrl, hasApiKey]);
+
+  async function handleSave() {
+    setSaving(true);
+    try {
+      await onSave({ model, base_url: baseUrl, api_key: apiKey });
+    } finally {
+      setSaving(false);
+    }
+  }
 
   return (
     <section className="settings-panel" aria-label="Settings panel">
@@ -37,7 +53,7 @@ export function SettingsPanel({
           onChange={(event) => setApiKey(event.target.value)}
         />
       </label>
-      <button onClick={() => onSave({ model, base_url: baseUrl, api_key: apiKey })}>
+      <button aria-label="Save settings" disabled={saving} onClick={handleSave}>
         保存设置
       </button>
     </section>

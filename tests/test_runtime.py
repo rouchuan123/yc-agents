@@ -6,10 +6,20 @@ from pathlib import Path
 from yc_agents.harness.runtime import YCAgentRuntime, ResearchAgentHarness
 from yc_agents.tools.base import BaseTool
 from yc_agents.tools.registry import ToolRegistry
+from yc_agents.desktop.run_controller import RunController
 
 
 class FakeAgent:
     def run(self, user_input):
+        return f"echo: {user_input}"
+
+
+class RecordingAgent:
+    def __init__(self):
+        self.inputs = []
+
+    def run(self, user_input):
+        self.inputs.append(user_input)
         return f"echo: {user_input}"
 
 
@@ -45,6 +55,52 @@ class FakeTool(BaseTool):
         }
 
 
+class StepController:
+    def __init__(self, cancel_on=None, redirects=None):
+        self.run_id = "run_001"
+        self.cancelled = False
+        self.paused = False
+        self.cancel_on = cancel_on
+        self.redirects = list(redirects or [])
+        self.checks = []
+
+    def wait_if_paused(self):
+        self.checks.append("wait")
+
+    def raise_if_cancelled(self, checkpoint):
+        self.checks.append(checkpoint)
+        if checkpoint == self.cancel_on:
+            self.cancelled = True
+            raise RuntimeError("cancelled")
+
+    def pop_redirects(self):
+        redirects = list(self.redirects)
+        self.redirects.clear()
+        return redirects
+
+
+class LateRedirectController:
+    def __init__(self):
+        self.run_id = "run_001"
+        self.cancelled = False
+        self.paused = False
+        self.redirects = []
+        self.checks = []
+
+    def wait_if_paused(self):
+        pass
+
+    def raise_if_cancelled(self, checkpoint):
+        self.checks.append(checkpoint)
+        if checkpoint == "before_final_write":
+            self.redirects.append("只列目录")
+
+    def pop_redirects(self):
+        redirects = list(self.redirects)
+        self.redirects.clear()
+        return redirects
+
+
 class FakeApprovalGate:
     def check_tool_call(self, tool_name, arguments):
         return {
@@ -73,13 +129,15 @@ class TestYCAgentRuntime(unittest.TestCase):
 
     def test_runtime_writes_run_outputs(self):
         runtime = YCAgentRuntime(FakeAgent())
+        runs_dir = Path("outputs/runs")
+        before = set(runs_dir.iterdir()) if runs_dir.exists() else set()
 
         runtime.run("check files")
 
-        runs_dir = Path("outputs/runs")
-        run_dirs = sorted(runs_dir.iterdir())
-
-        latest_run = run_dirs[-1]
+        after = set(runs_dir.iterdir())
+        new_runs = list(after - before)
+        self.assertEqual(len(new_runs), 1)
+        latest_run = new_runs[0]
 
         self.assertTrue((latest_run / "input.md").exists())
         self.assertTrue((latest_run / "final_output.md").exists())
@@ -127,6 +185,53 @@ class TestYCAgentRuntime(unittest.TestCase):
         event_types = [event["event_type"] for event in trace["events"]]
         self.assertEqual(response, "approval handled")
         self.assertIn("tool_needs_approval", event_types)
+
+    def test_runtime_cancel_before_model_call_stops_agent(self):
+        agent = FakeAgent()
+        runtime = YCAgentRuntime(agent)
+        controller = StepController(cancel_on="before_model_call")
+
+        with self.assertRaises(RuntimeError):
+            runtime.run("hello", controller=controller)
+
+        self.assertIn("before_model_call", controller.checks)
+
+    def test_runtime_injects_redirects_before_model_call(self):
+        agent = FakeAgent()
+        runtime = YCAgentRuntime(agent)
+        controller = StepController(redirects=["只列目录"])
+
+        response = runtime.run("写开题报告", controller=controller)
+
+        self.assertEqual(response, "echo: 写开题报告\n\n用户中途改方向：\n只列目录")
+
+    def test_runtime_injects_redirects_before_final_write(self):
+        agent = RecordingAgent()
+        runtime = YCAgentRuntime(agent)
+        controller = LateRedirectController()
+
+        response = runtime.run("写开题报告", controller=controller)
+
+        redirected_prompt = "写开题报告\n\n用户中途改方向：\n只列目录"
+        self.assertEqual(agent.inputs, ["写开题报告", redirected_prompt])
+        self.assertEqual(response, f"echo: {redirected_prompt}")
+
+    def test_runtime_checks_controller_around_tool_call_and_final_write(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeToolCallAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+        )
+        controller = StepController()
+
+        runtime.run("trigger tool", controller=controller)
+
+        self.assertIn("before_tool_call", controller.checks)
+        self.assertIn("after_tool_call", controller.checks)
+        self.assertIn("before_final_write", controller.checks)
 
 
 class FakeJSONAgent:

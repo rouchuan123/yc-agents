@@ -1,4 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import net from "node:net";
 import path from "node:path";
 
 export interface PythonService {
@@ -56,4 +57,32 @@ export async function waitForHealth(
   }
 
   return false;
+}
+
+export async function findAvailablePort(
+  startPort: number,
+  attempts = 50,
+): Promise<number> {
+  for (let offset = 0; offset < attempts; offset += 1) {
+    const port = startPort + offset;
+    if (await isPortAvailable(port)) {
+      return port;
+    }
+  }
+
+  throw new Error(`No available desktop backend port near ${startPort}`);
+}
+
+function isPortAvailable(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+
+    server.once("error", () => {
+      resolve(false);
+    });
+    server.once("listening", () => {
+      server.close(() => resolve(true));
+    });
+    server.listen(port, "127.0.0.1");
+  });
 }

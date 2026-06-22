@@ -49,7 +49,22 @@ class SettingsStore:
     def load_with_env_fallback(self):
         settings = self.load()
         return AppSettings(
-            model=settings.model or os.environ.get("YC_AGENTS_MODEL", ""),
-            base_url=settings.base_url or os.environ.get("YC_AGENTS_BASE_URL", ""),
-            api_key=settings.api_key or os.environ.get("OPENAI_API_KEY", ""),
+            model=settings.model
+            or os.environ.get("LLM_MODEL_ID", "")
+            or os.environ.get("YC_AGENTS_MODEL", ""),
+            base_url=settings.base_url
+            or os.environ.get("LLM_BASE_URL", "")
+            or os.environ.get("YC_AGENTS_BASE_URL", ""),
+            api_key=settings.api_key
+            or os.environ.get("LLM_API_KEY", "")
+            or os.environ.get("OPENAI_API_KEY", ""),
         )
+
+
+def apply_settings_to_env(settings):
+    if settings.model:
+        os.environ["LLM_MODEL_ID"] = settings.model
+    if settings.base_url:
+        os.environ["LLM_BASE_URL"] = settings.base_url
+    if settings.api_key:
+        os.environ["LLM_API_KEY"] = settings.api_key

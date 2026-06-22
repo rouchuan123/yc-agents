@@ -20,6 +20,19 @@ class TestDocumentService(unittest.TestCase):
             paths = [item["relative_path"] for item in result]
             self.assertEqual(paths, ["documents/notes/idea.md"])
 
+    def test_scan_lists_pdf_literature_files(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "documents" / "literature" / "paper.pdf"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"%PDF-1.4\n% test pdf placeholder\n")
+
+            service = DocumentService(root)
+            result = service.scan()
+
+            self.assertEqual(result[0]["relative_path"], "documents/literature/paper.pdf")
+            self.assertEqual(result[0]["extension"], ".pdf")
+
     def test_preview_reads_text_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -52,6 +65,19 @@ class TestDocumentService(unittest.TestCase):
 
             self.assertEqual(preview["kind"], "binary")
             self.assertEqual(preview["content"], "")
+
+    def test_preview_pdf_returns_structured_result(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            path = root / "documents" / "literature" / "paper.pdf"
+            path.parent.mkdir(parents=True)
+            path.write_bytes(b"%PDF-1.4\n% test pdf placeholder\n")
+
+            service = DocumentService(root)
+            preview = service.preview("documents/literature/paper.pdf")
+
+            self.assertEqual(preview["relative_path"], "documents/literature/paper.pdf")
+            self.assertIn(preview["kind"], ["text", "binary"])
 
 
 if __name__ == "__main__":

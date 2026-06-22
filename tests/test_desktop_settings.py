@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from yc_agents.desktop.settings import AppSettings, SettingsStore
+from yc_agents.desktop.settings import AppSettings, SettingsStore, apply_settings_to_env
 
 
 class TestDesktopSettings(unittest.TestCase):
@@ -47,13 +47,27 @@ class TestDesktopSettings(unittest.TestCase):
                     "YC_AGENTS_BASE_URL": "https://env.test",
                     "OPENAI_API_KEY": "env-key",
                 },
-                clear=False,
+                clear=True,
             ):
                 settings = store.load_with_env_fallback()
 
             self.assertEqual(settings.model, "env-model")
             self.assertEqual(settings.base_url, "https://env.test")
             self.assertEqual(settings.api_key, "env-key")
+
+    def test_apply_settings_to_env_uses_runtime_variable_names(self):
+        settings = AppSettings(
+            model="gpt-test",
+            base_url="https://example.test/v1",
+            api_key="secret",
+        )
+
+        with patch.dict(os.environ, {}, clear=True):
+            apply_settings_to_env(settings)
+
+            self.assertEqual(os.environ["LLM_MODEL_ID"], "gpt-test")
+            self.assertEqual(os.environ["LLM_BASE_URL"], "https://example.test/v1")
+            self.assertEqual(os.environ["LLM_API_KEY"], "secret")
 
     def test_to_public_dict_masks_api_key(self):
         settings = AppSettings(
