@@ -21,7 +21,8 @@ class RunContext:
     created_at: str = field(default_factory=_now_iso)
     selected_skill: str | None = None
     intent_result: dict | None = None
+    output_root: Path | None = None
     outputs_dir: Path = field(init=False)
 
     def __post_init__(self):
-        self.outputs_dir = Path("outputs/runs") / self.run_id
+        self.outputs_dir = Path(self.output_root or "outputs/runs") / self.run_id

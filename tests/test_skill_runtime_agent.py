@@ -89,6 +89,46 @@ def write_skill(skills_dir):
 
 
 class TestSkillRuntimeAgent(unittest.TestCase):
+    def test_run_includes_workspace_context_in_model_prompts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            skills_dir = tmp_path / "skills"
+            workspace = tmp_path / "workspace"
+            workspace.mkdir()
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    (
+                        '{"type":"skill_selection",'
+                        '"selected_skill":null,'
+                        '"confidence":0.2,'
+                        '"reason":"plain answer"}'
+                    ),
+                    "可以读取当前工作区。",
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                workspace_context={
+                    "path": str(workspace),
+                    "name": "workspace",
+                    "available_tools": ["workspace_files", "file_reader"],
+                },
+            )
+
+            response = agent.run("当前工作区是什么？")
+
+            self.assertEqual(response, "可以读取当前工作区。")
+            selection_context = json.loads(llm.messages[0][1]["content"])
+            answer_context = json.loads(llm.messages[1][1]["content"])
+            answer_system_prompt = llm.messages[1][0]["content"]
+            self.assertEqual(selection_context["workspace"]["path"], str(workspace))
+            self.assertIn("workspace_files", selection_context["workspace"]["available_tools"])
+            self.assertEqual(answer_context["workspace"]["path"], str(workspace))
+            self.assertIn("workspace_files", answer_system_prompt)
+            self.assertIn("file_reader", answer_system_prompt)
+
     def test_stream_plain_answer_yields_llm_chunks(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

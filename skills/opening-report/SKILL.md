@@ -3,6 +3,8 @@ name: opening-report
 description: Use when the user wants help with thesis proposal, opening report, topic planning, or research plan drafting.
 allowed_tools:
   - docx_reader
+  - file_reader
+  - workspace_files
   - rag_search
   - markdown_writer
 ---
@@ -34,12 +36,13 @@ allowed_tools:
 
 1. 判断用户当前需求属于选题、提纲、研究背景、研究问题、技术路线、可行性分析、风险分析、完整开题草稿还是修改润色。
 2. 阅读用户提供的背景、草稿、模板或导师意见，提取约束和关键目标。
-3. 如果用户提供了 Word 文档路径，可以请求使用 `docx_reader` 读取正文。
-4. 如果需要事实依据、文献依据或已有资料支撑，可以请求使用 `rag_search` 检索相关片段。
-5. 根据用户需求组织输出结构，不要默认一次性生成完整开题报告。
-6. 输出时说明当前版本基于哪些已知信息，以及哪些地方仍是假设。
-7. 如果用户明确要求保存为文件，可以请求使用 `markdown_writer` 写出 Markdown 草稿。
-8. 最后给出下一步建议，例如需要补充哪些资料、下一轮应该先改哪一部分。
+3. 如果用户询问当前工作区有什么文件，可以请求使用 `workspace_files` 列出可读文件。
+4. 如果用户提供或选定 `.docx`、`.pdf`、`.md` 或 `.txt` 文件，可以请求使用 `file_reader` 读取正文。
+5. 如果需要事实依据、文献依据或已有资料支撑，可以请求使用 `rag_search` 检索相关片段。
+6. 根据用户需求组织输出结构，不要默认一次性生成完整开题报告。
+7. 输出时说明当前版本基于哪些已知信息，以及哪些地方仍是假设。
+8. 如果用户明确要求保存为文件，可以请求使用 `markdown_writer` 写出 Markdown 草稿。
+9. 最后给出下一步建议，例如需要补充哪些资料、下一轮应该先改哪一部分。
 
 ## 输出类型
 
@@ -129,7 +132,9 @@ allowed_tools:
 
 ## 工具使用原则
 
-- 只有用户提供 Word 文档路径，或明确要求读取 Word 文档时，才请求 `docx_reader`。
+- 用户询问工作区文件、资料目录或“你能读取到什么”时，可以请求 `workspace_files` 列出当前工作区可读文件。
+- 用户提供或选择 `.docx`、`.pdf`、`.md`、`.txt` 文件时，可以请求 `file_reader` 读取正文内容。
+- `docx_reader` 保留兼容旧流程；新文档读取优先使用 `file_reader`。
 - 只有需要基于资料、文献、笔记或已有知识库找依据时，才请求 `rag_search`。
 - 只有用户明确要求生成、保存或导出文件时，才请求 `markdown_writer`。
 - 不要为了显得复杂而调用工具；能直接回答的小问题可以直接回答。

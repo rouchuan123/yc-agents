@@ -16,6 +16,7 @@ class YCAgentRuntime:
         allowed_tools=None,
         approval_gate=None,
         verification_gate=None,
+        output_root=None,
     ):
         self.agent = agent
         self.expects_json = expects_json
@@ -23,9 +24,10 @@ class YCAgentRuntime:
         self.allowed_tools = allowed_tools or []
         self.approval_gate = approval_gate
         self.verification_gate = verification_gate or VerificationGate()
+        self.output_root = output_root
 
     def run(self, user_input):
-        context = RunContext(user_input=user_input)
+        context = RunContext(user_input=user_input, output_root=self.output_root)
         trace = TraceRecorder(context)
         writer = RunOutputWriter(context)
         state_store = StateStore(context.outputs_dir / "state.json")
@@ -63,7 +65,7 @@ class YCAgentRuntime:
             yield self.run(user_input)
             return
 
-        context = RunContext(user_input=user_input)
+        context = RunContext(user_input=user_input, output_root=self.output_root)
         trace = TraceRecorder(context)
         writer = RunOutputWriter(context)
         state_store = StateStore(context.outputs_dir / "state.json")

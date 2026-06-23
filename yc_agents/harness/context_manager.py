@@ -5,6 +5,7 @@ class ContextManager:
         skills,
         memory_messages=None,
         memory_context=None,
+        workspace_context=None,
     ):
         memory = self.build_memory_context(
             session=memory_messages,
@@ -14,6 +15,7 @@ class ContextManager:
         return {
             "task": "skill_selection",
             "user_input": user_input,
+            "workspace": workspace_context or {},
             "memory": memory,
             "recent_messages": memory["session"],
             "skills": [
@@ -29,12 +31,14 @@ class ContextManager:
         selection,
         memory_context=None,
         rag_results=None,
+        workspace_context=None,
     ):
         memory = self.build_memory_context(memory_context=memory_context)
 
         return {
             "task": "skill_execution",
             "user_input": user_input,
+            "workspace": workspace_context or {},
             "memory": memory,
             "recent_messages": memory["session"],
             "selected_skill": selected_skill.to_dict(),

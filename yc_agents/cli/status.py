@@ -50,7 +50,8 @@ class StatusCollector:
         self.model_provider = model_provider or (lambda: "unknown")
         self.context_provider = context_provider or (lambda: 0)
         self.branch_provider = branch_provider or (lambda: "no-git")
-        self.session_id = session_id or f"session-{uuid4().hex[:8]}"
+        self.session_provider = session_id if callable(session_id) else None
+        self.session_id = None if callable(session_id) else (session_id or f"session-{uuid4().hex[:8]}")
         self.context_limit = context_limit
 
     def collect(self):
@@ -60,7 +61,7 @@ class StatusCollector:
             context_used=self._safe_context_used(),
             context_limit=self.context_limit,
             branch=self._safe_branch(),
-            session_id=self.session_id,
+            session_id=self._safe_session_id(),
         )
 
     def _safe_workspace(self):
@@ -92,3 +93,14 @@ class StatusCollector:
             return "no-git"
 
         return str(branch or "no-git")
+
+    def _safe_session_id(self):
+        if self.session_provider is None:
+            return self.session_id
+
+        try:
+            session_id = self.session_provider()
+        except Exception:
+            return "session-unknown"
+
+        return str(session_id or "session-unknown")

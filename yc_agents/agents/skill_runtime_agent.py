@@ -20,6 +20,7 @@ class SkillRuntimeAgent:
         compression_threshold=None,
         rag_search_tool=None,
         rag_top_k=3,
+        workspace_context=None,
     ):
         self.llm = llm
         self.skills_dir = skills_dir
@@ -32,6 +33,7 @@ class SkillRuntimeAgent:
         self.compression_threshold = compression_threshold
         self.rag_search_tool = rag_search_tool
         self.rag_top_k = rag_top_k
+        self.workspace_context = workspace_context or {}
 
     def run(self, user_input):
         registry = self._load_registry()
@@ -43,6 +45,7 @@ class SkillRuntimeAgent:
             user_input,
             skills,
             memory_context=memory_context,
+            workspace_context=self.workspace_context,
         )
         selection_text = self.skill_agent.select_skill(selection_context)
 
@@ -72,6 +75,7 @@ class SkillRuntimeAgent:
             user_input,
             skills,
             memory_context=memory_context,
+            workspace_context=self.workspace_context,
         )
         selection_text = self.skill_agent.select_skill(selection_context)
 
@@ -130,7 +134,20 @@ class SkillRuntimeAgent:
         return [
             {
                 "role": "system",
-                "content": "你是一个耐心的小白编程老师和论文助手。",
+                "content": (
+                    "你是一个运行在用户本机 YCore CLI 中的论文和编程助手。"
+                    "当前 active workspace 会在用户消息的 workspace 字段中给出。"
+                    "当用户询问工作区文件、资料目录、能读取什么文件时，"
+                    "应请求使用 workspace_files 列出当前工作区可读文件。"
+                    "当用户要求读取 .docx、.pdf、.md 或 .txt 文件内容时，"
+                    "应请求使用 file_reader，不要声称无法访问 active workspace。"
+                    "工具调用必须只输出合法 JSON，例如："
+                    '{"type":"tool_call","tool_name":"workspace_files",'
+                    '"arguments":{"pattern":"*"},"reason":"列出当前工作区文件"}'
+                    "或"
+                    '{"type":"tool_call","tool_name":"file_reader",'
+                    '"arguments":{"file_path":"paper.pdf"},"reason":"读取文件正文"}'
+                ),
             },
             {
                 "role": "user",
@@ -139,6 +156,7 @@ class SkillRuntimeAgent:
                         "user_input": user_input,
                         "memory": memory,
                         "recent_messages": memory["session"],
+                        "workspace": self.workspace_context,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -155,6 +173,7 @@ class SkillRuntimeAgent:
             selection=selection,
             memory_context=memory,
             rag_results=rag_results,
+            workspace_context=self.workspace_context,
         )
         messages = [
             {
@@ -162,6 +181,17 @@ class SkillRuntimeAgent:
                 "content": (
                     "你是 YCore 的 Skill-driven Agent。"
                     "你必须根据给定 Skill 的操作说明来回答用户。"
+                    "当前 active workspace 会在用户消息的 workspace 字段中给出。"
+                    "当用户询问工作区文件、资料目录、能读取什么文件时，"
+                    "应请求使用 workspace_files 列出当前工作区可读文件。"
+                    "当用户要求读取 .docx、.pdf、.md 或 .txt 文件内容时，"
+                    "应请求使用 file_reader，不要声称无法访问 active workspace。"
+                    "工具调用必须只输出合法 JSON，例如："
+                    '{"type":"tool_call","tool_name":"workspace_files",'
+                    '"arguments":{"pattern":"*"},"reason":"列出当前工作区文件"}'
+                    "或"
+                    '{"type":"tool_call","tool_name":"file_reader",'
+                    '"arguments":{"file_path":"paper.pdf"},"reason":"读取文件正文"}'
                     "不要编造资料、文献、导师意见或文件路径。"
                     "如果用户明确要求保存、导出或生成 Markdown 文件，"
                     "你必须只输出合法 tool_call JSON，不要输出 Markdown 或解释。"
@@ -209,6 +239,7 @@ class SkillRuntimeAgent:
             selection=selection,
             memory_context=memory,
             rag_results=rag_results,
+            workspace_context=self.workspace_context,
         )
         messages = [
             {
@@ -216,6 +247,10 @@ class SkillRuntimeAgent:
                 "content": (
                     "You are the YCore Skill-driven Agent. "
                     "Follow the selected Skill instructions when answering the user. "
+                    "The current active workspace is provided in the workspace field. "
+                    "Use workspace_files when the user asks what files are available, "
+                    "and use file_reader to read .docx, .pdf, .md, or .txt files. "
+                    "Do not claim you cannot access the active workspace. "
                     "Do not invent sources, papers, supervisor feedback, or file paths. "
                     "If the user explicitly asks to save, export, or generate a Markdown file, "
                     "return only valid tool_call JSON and do not return Markdown prose. "
@@ -316,6 +351,7 @@ class SkillRuntimeAgent:
                 "content": (
                     "You are the YCore Skill-driven Agent. "
                     "You have received one tool execution observation. "
+                    "The active workspace is provided in the user message workspace field. "
                     "Return only valid final_answer JSON. "
                     "Do not return Markdown or extra explanation. "
                     'Format: {"type":"final_answer","content":"final answer for the user"}'
@@ -328,6 +364,7 @@ class SkillRuntimeAgent:
                         "user_input": user_input,
                         "memory": memory,
                         "recent_messages": memory["session"],
+                        "workspace": self.workspace_context,
                         "observation": observation,
                     },
                     ensure_ascii=False,

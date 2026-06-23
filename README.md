@@ -12,6 +12,25 @@ CLI 状态栏字段：
 - `Branch`: 当前 Git 分支，非 Git 目录时显示 `no-git`。
 - `Session`: 当前 CLI 会话编号。
 
+CLI 支持 workspace 和 session 隔离。YCore 代码仍从本仓库运行，但可以通过 `/workspace` 进入其他工作区；每个工作区会自动创建自己的 `.ycore` 目录，用来保存该工作区的 sessions、记忆和 run 产物。
+
+常用 CLI 命令：
+
+- `/session`: 打开当前 workspace 的 session 列表，用上下键选择并切换。
+- `/session new`: 新建一个默认命名 session。
+- `/session new 开题报告`: 新建名为“开题报告”的 session。
+- `/session session_xxx`: 切换到指定 session。
+- `/session delete`: 删除当前 session，确认后会删除它的记忆和 runs。
+- `/workspace`: 打开已登记 workspace 列表，用上下键选择并切换。
+- `/workspace add E:\paper-project`: 添加并切换到一个已存在的目录。
+- `/workspace workspace_xxx`: 切换到指定 workspace。
+- `/workspace current`: 查看当前 workspace。
+- `/workspace delete`: 删除当前 workspace 的 `.ycore` 状态并移除索引，确认后不会删除普通项目文件。
+- `/clear`: 只清空当前屏幕聊天框，不删除 session 记忆。
+- `/status`: 查看当前状态。
+
+输入 `/` 时会出现命令提示，方向键选择，`Tab` 补全，`Enter` 执行当前输入的命令。
+
 ## 项目是什么
 
 `YCore` 是一个面向研究生科研流程的 Skill 驱动研究 Agent。它主要服务开题报告、文献综述、资料整理、系统设计和研究方案拆解等场景，也可以作为一个展示 Agent 运行时工程能力的项目。
@@ -31,7 +50,7 @@ CLI 状态栏字段：
 - 提供 RAG 检索工具，支持元数据分块、测试用确定性本地 embedding、关键词/向量混合检索、重排序和引用格式化。
 - 使用 `ToolGateway` 统一管理工具权限、允许列表和人工审批。
 - 支持会话记忆、摘要记忆和用户画像记忆。
-- 在 `outputs/runs` 下写入 trace 和 state checkpoint，便于调试、复盘和解释。
+- 在当前 workspace 的 `.ycore/runs/<session_id>/<run_id>` 下写入 trace 和 state checkpoint，便于调试、复盘和解释。
 - 支持从已保存用户输入中保守恢复任务，并允许追加重定向指令。
 - 提供 FastAPI 后端和 Electron 桌面端壳层。
 
