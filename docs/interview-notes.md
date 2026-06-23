@@ -1,45 +1,45 @@
-# YCore Interview Notes
+# YCore 面试笔记
 
-## 60-Second Project Introduction
+## 60 秒项目介绍
 
-`YCore` is a Skill-driven Research Agent for graduate research workflows such as opening reports, literature review, and system design. I built it around explicit Agent runtime boundaries: skill selection, RAG context, tool execution, memory, trace, approval, and state persistence.
+`YCore` 是一个面向研究生科研工作流的技能驱动科研 Agent，覆盖开题报告、文献综述、系统设计等任务。我围绕明确的 Agent 运行时边界来设计它：skill 选择、RAG 上下文、工具执行、记忆、追踪、审批和状态持久化。
 
-## Why This Is Not A Chatbot
+## 为什么它不是普通 Chatbot
 
-A chatbot mainly maps one user message to one model response. This project routes the request through a runtime harness. The harness can select a skill, add memory and retrieval context, call tools through a gateway, ask for approval, record trace events, persist state, and write inspectable outputs.
+普通 chatbot 主要是把一条用户消息映射成一条模型回复。这个项目会把请求送入运行时控制层。控制层可以选择 skill，加入记忆和检索上下文，通过 gateway 调用工具，请求人工确认，记录追踪事件，持久化状态，并写出可检查的输出。
 
-## Hardest Technical Point
+## 最难的技术点
 
-The hardest point is keeping model freedom inside engineering boundaries. The LLM can propose actions, but the runtime decides which tools are allowed, whether approval is needed, how outputs are recorded, and how failures become observable.
+最难的点是把模型的自由度控制在工程边界之内。LLM 可以提出动作，但 runtime 决定哪些工具被允许、是否需要审批、输出如何记录，以及失败如何变得可观测。
 
-## Tool Calling Failure Handling
+## 工具调用失败处理
 
-Tool failure is handled at the harness layer rather than hidden inside prompts. The ToolGateway validates arguments, checks permissions and approvals, applies timeout/retry policy, blocks repeated calls, records trace events, and returns structured errors so the model can correct parameters or switch strategy.
+工具失败在 harness 层处理，而不是藏在 prompt 里。ToolGateway 会校验参数，检查权限和审批，应用超时/重试策略，阻止重复调用，记录 trace events，并返回结构化错误，使模型可以修正参数或切换策略。
 
-## RAG Explanation
+## RAG 解释
 
-Currently supports chunking, keyword search, and citation formatting boundaries. Planned next: metadata chunks, document loaders, API-first embeddings, local-provider compatibility, hybrid retrieval, reranking, citation-aware output, and RAG evaluation cases.
+当前支持分块、关键词搜索和引用格式化边界。下一步计划包括元数据分块、文档加载器、API 优先的 embeddings、本地 provider 兼容、混合检索、重排序、引用感知输出和 RAG 评估用例。
 
-## Skill Discovery Explanation
+## Skill Discovery 解释
 
-Currently supports loading skills from `SKILL.md`, expanded metadata, top-k discovery, summary-first skill selection, and full skill loading after selection. Token budget estimation gives a simple pressure signal for future context trimming.
+当前支持从 `SKILL.md` 加载 skills，支持扩展元数据、top-k 发现、先看摘要的 skill 选择，以及选中后再加载完整 skill。Token 预算估算为未来的上下文裁剪提供一个简单的压力信号。
 
-## Memory And State Explanation
+## Memory 与 State 解释
 
-Currently supports session, summary, profile memory, trace recording, explicit statuses, state checkpoint files, and conservative resume from saved user input plus optional redirect instruction. It is not a full VM-style continuation; it is a practical Agent task recovery path for failed or interrupted runs.
+当前支持会话、摘要和用户画像记忆，支持追踪记录、显式状态、状态检查点文件，以及基于已保存用户输入和可选重定向指令的保守恢复。它不是完整 VM 风格的续跑，而是面向失败或中断运行的实用 Agent 任务恢复路径。
 
-## Evaluation Explanation
+## Evaluation 解释
 
-Current verification is unit-test based. Planned next: a 30-case evaluation set with keyword-based task success, latency, and later tool/retrieval/citation metrics.
+当前验证以单元测试为基础。下一步计划是 30 条用例的评估集，先统计基于关键词的任务成功率和延迟，之后再加入工具/检索/引用指标。
 
-## MCP Explanation
+## MCP 解释
 
-MCP is treated as the protocol boundary for external tools/resources. Function Calling is how the model asks to call a tool; ToolGateway is the harness layer that validates and controls that call; MCP is one possible source of tools behind the gateway.
+MCP 被视为外部工具/资源的协议边界。Function Calling 是模型请求调用工具的方式；ToolGateway 是校验和控制该调用的控制层；MCP 是 gateway 后方可能的工具来源之一。
 
-## Desktop Explanation
+## Desktop 解释
 
-The desktop app is not the core Agent intelligence. It is the observability surface for status, trace, tool calls, and approvals.
+desktop app 不是核心 Agent 智能。它是查看状态、追踪、工具调用和审批的可观测性界面。
 
-## Engineering Credibility
+## 工程可信度
 
-The project declares Python metadata in `pyproject.toml`, keeps dependency commands in README, and provides `scripts/test.ps1` for Python tests, desktop tests, and desktop build. It is positioned as an interview-ready engineering prototype, not a fake production platform.
+项目在 `pyproject.toml` 中声明 Python 元数据，在 README 中保留依赖安装命令，并提供 `scripts/test.ps1` 来运行 Python 测试、desktop 测试和 desktop 构建。它的定位是一个面试可讲、可验证的工程原型，而不是伪装成生产平台的 demo。

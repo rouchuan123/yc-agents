@@ -1,49 +1,49 @@
-# YCore Demo Script
+# YCore 演示脚本
 
-## Demo Goal
+## 演示目标
 
-Show that `YCore` is a controllable Agent runtime for research workflows: skill selection, retrieval, tool calls, memory, trace, approval, and verification are visible engineering boundaries.
+展示 `YCore` 是一个面向科研工作流的可控 Agent 运行时：skill 选择、检索、工具调用、记忆、追踪、审批和验证都是可见、可解释的工程边界。
 
-## Before Demo
+## 演示前准备
 
-- Install Python dependencies with `pip install -r requirements.txt`.
-- Install desktop dependencies with `npm install` inside `desktop`.
-- Run `python -m pytest -q`.
-- Run `cd desktop` then `npm test -- --run`.
+- 使用 `pip install -r requirements.txt` 安装 Python 依赖。
+- 在 `desktop` 目录内执行 `npm install` 安装 desktop 依赖。
+- 运行 `python -m pytest -q`。
+- 先运行 `cd desktop`，再运行 `npm test -- --run`。
 
-## Scenario 1: Skill Selection
+## 场景 1：Skill 选择
 
-Prompt:
+提示词：
 
 ```text
 帮我围绕多智能体论文助手写一个开题报告大纲。
 ```
 
-Show how the request enters `YCAgentRuntime`, how `SkillRuntimeAgent` selects the opening-report skill, and how the run records trace/state files.
+展示请求如何进入 `YCAgentRuntime`，`SkillRuntimeAgent` 如何选择开题报告 skill，以及一次运行如何记录追踪/状态文件。
 
-## Scenario 2: RAG-Assisted Answer
+## 场景 2：RAG 辅助回答
 
-Prompt:
+提示词：
 
 ```text
 基于已有资料检索证据，并生成带引用的文献综述片段。
 ```
 
-Show that RAG is a tool boundary rather than hidden prompt text. Current retrieval is keyword-first; later phases add hybrid retrieval, embeddings, and citation metrics.
+展示 RAG 是一个工具边界，而不是藏在提示词里的文本拼接。当前检索以关键词优先；后续阶段会加入混合检索、embeddings 和引用指标。
 
-## Scenario 3: Tool Call And Trace
+## 场景 3：工具调用与追踪
 
-Prompt:
+提示词：
 
 ```text
 把结果写入 markdown 文件，并说明为什么需要工具调用。
 ```
 
-Show that tool calls pass through `ToolGateway`, allowed-tool checks, approval checks, and trace recording.
+展示工具调用会经过 `ToolGateway`、允许工具检查、审批检查和追踪记录。
 
-MCP is shown as an external tool/resource protocol. In this project the filesystem MCP config is kept separate and MCP tools still pass through ToolGateway, approval, path policy, and trace.
+MCP 作为外部工具/资源协议展示。在本项目中，文件系统 MCP 配置独立保存，MCP 工具仍然要经过 ToolGateway、审批、路径策略和追踪。
 
-## What To Show In Outputs
+## 输出中要展示的内容
 
 - `outputs/<run_id>/input.md`
 - `outputs/<run_id>/context.json`
@@ -52,15 +52,15 @@ MCP is shown as an external tool/resource protocol. In this project the filesyst
 - `outputs/<run_id>/state.json`
 - `outputs/<run_id>/verification.json`
 
-## Five-Minute Talk Track
+## 五分钟讲解稿
 
-YCore is a Skill-driven Research Agent for graduate research workflows. The point is not to replace a thesis writer with one prompt, but to show how a long task can be decomposed into skills, retrieval, tool calls, memory, trace, approval, and verification. In the demo I will show how a user request enters `YCAgentRuntime`, how `SkillRuntimeAgent` selects or executes a skill, how tools go through `ToolGateway`, and how the run leaves trace and state files for debugging.
+YCore 是一个面向研究生科研工作流的技能驱动科研 Agent。它的重点不是用一句提示词替代论文写作者，而是展示一个长任务如何被拆解为 skills、检索、工具调用、记忆、追踪、审批和验证。在演示中，我会展示用户请求如何进入 `YCAgentRuntime`，`SkillRuntimeAgent` 如何选择或执行 skill，工具如何通过 `ToolGateway`，以及一次运行如何留下用于调试的追踪和状态文件。
 
-## Common Interview Follow-Ups
+## 常见面试追问
 
-- How is this different from a chatbot?
-- How are tool calls validated and approved?
-- What happens when a tool fails?
-- How would you measure task success?
-- How does RAG avoid unsupported claims?
-- How would MCP fit behind the same ToolGateway boundary?
+- 它和普通 chatbot 有什么区别？
+- 工具调用如何校验和审批？
+- 工具失败时会发生什么？
+- 如何衡量任务是否成功？
+- RAG 如何避免没有证据支撑的结论？
+- MCP 如何接入同一个 ToolGateway 边界？

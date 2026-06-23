@@ -1,31 +1,31 @@
-# YCore Evaluation Report
+# YCore 评估报告
 
-## Purpose
+## 目的
 
-This report tracks whether the Agent succeeds on research workflow tasks, not only whether unit tests pass.
+这份报告用于跟踪 Agent 在科研工作流任务上是否真正成功，而不只是单元测试是否通过。
 
-## Case Set
+## 用例集合
 
-- Total cases: 30
-- Categories: literature review, opening report, system design, RAG QA, tool use
-- Additional RAG-specific cases: 10 in `eval/cases/rag_cases.jsonl`
+- 总用例数：30
+- 类别：文献综述、开题报告、系统设计、RAG QA、工具使用
+- 额外 RAG 专项用例：`eval/cases/rag_cases.jsonl` 中的 10 条
 
-## Metrics
+## 指标
 
-- Task success rate: keyword-based baseline before human grading
-- Tool success rate: planned after ToolGateway trace metrics are expanded
-- Retrieval hit rate: planned after RAG metadata and citation metrics are expanded
-- Citation precision: planned after citation-aware RAG output is implemented
-- Average latency: measured by the eval runner
+- 任务成功率：人工评分前先使用基于关键词的基线
+- 工具成功率：计划在 ToolGateway 追踪指标扩展后统计
+- 检索命中率：计划在 RAG 元数据和引用指标扩展后统计
+- 引用精确率：计划在支持引用感知的 RAG 输出实现后统计
+- 平均延迟：由评估运行器测量
 
-RAG-specific metrics can use `retrieval_hit` and `citation_precision` once a populated corpus and citation extraction layer are wired into the runner output.
+当有内容的语料库和引用抽取层接入运行器输出后，RAG 专项指标可以使用 `retrieval_hit` 和 `citation_precision`。
 
-## Current Baseline
+## 当前基线
 
-Run:
+运行：
 
 ```powershell
 python -m yc_agents.eval.runner --cases eval/cases/research_agent_cases.jsonl --output outputs/eval/baseline.json
 ```
 
-The first baseline should be generated with valid model credentials or a deterministic runtime adapter for local verification. Do not report aggregate success numbers until the baseline output has been reviewed.
+第一次基线应使用有效的模型凭证生成，或使用确定性的运行时适配器进行本地验证。在基线输出经过人工检查之前，不要汇报聚合成功率数字。
