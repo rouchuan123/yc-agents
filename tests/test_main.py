@@ -1,19 +1,18 @@
 import unittest
-from pathlib import Path
 from unittest.mock import patch
 
 import main
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
-from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.harness.permissions import HumanApprovalGate
+from yc_agents.harness.runtime import YCAgentRuntime
+from yc_agents.memory.compressor import MemoryCompressor
+from yc_agents.memory.profile import ResearchProfileMemory
 from yc_agents.memory.session import SessionMemory
 from yc_agents.memory.summary import SummaryMemory
-from yc_agents.memory.profile import ResearchProfileMemory
-from yc_agents.memory.compressor import MemoryCompressor
 from yc_agents.tools.docx_reader import DocxReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
-from yc_agents.tools.rag_search import RAGSearchTool
 from yc_agents.tools.mcp_adapter import MCPToolAdapter
+from yc_agents.tools.rag_search import RAGSearchTool
 
 
 class FakeLLM:
@@ -79,15 +78,26 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_exports_build_runtime(self):
         self.assertTrue(callable(main.build_runtime))
 
-    def test_main_cli_text_is_readable(self):
-        source = Path("main.py").read_text(encoding="utf-8")
+    @patch("main.run_tui")
+    @patch("main.build_runtime")
+    @patch("main.load_dotenv")
+    def test_main_loads_env_builds_runtime_and_starts_tui(
+        self,
+        mock_load_dotenv,
+        mock_build_runtime,
+        mock_run_tui,
+    ):
+        runtime = object()
+        mock_build_runtime.return_value = runtime
 
-        self.assertIn("你：", source)
-        self.assertIn("退出", source)
-        self.assertIn("YC Agent：", source)
-        self.assertNotIn("浣狅細", source)
-        self.assertNotIn("閫€鍑?", source)
-        self.assertNotIn("锛?", source)
+        main.main()
+
+        mock_load_dotenv.assert_called_once_with()
+        mock_build_runtime.assert_called_once_with()
+        mock_run_tui.assert_called_once_with(runtime)
+
+    def test_main_imports_tui_entrypoint(self):
+        self.assertTrue(callable(main.run_tui))
 
     def test_build_mcp_tools_uses_config_when_client_is_supplied(self):
         class FakeClient:
