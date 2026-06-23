@@ -11,7 +11,7 @@ describe("App", () => {
   it("renders the workbench shell", () => {
     render(<App />);
 
-    expect(screen.getByText("YC Agents")).toBeTruthy();
+    expect(screen.getByText("YCore")).toBeTruthy();
     expect(screen.getByText("论文项目")).toBeTruthy();
     expect(screen.getByText("当前 Run")).toBeTruthy();
   });
@@ -39,7 +39,7 @@ describe("App", () => {
     render(<App />);
 
     expect(screen.getByText("documents/notes/idea.md")).toBeTruthy();
-    expect(screen.getByText("yc-agents")).toBeTruthy();
+    expect(screen.getByText("YCore Workspace")).toBeTruthy();
     expect(screen.getByText("开题报告准备")).toBeTruthy();
   });
 

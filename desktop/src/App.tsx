@@ -19,7 +19,7 @@ export function App() {
   );
 
   const documents = ["documents/notes/idea.md"];
-  const codeProjects = ["yc-agents"];
+  const codeProjects = ["YCore Workspace"];
   const sessions = ["开题报告准备"];
 
   function sendMessage() {
@@ -47,7 +47,7 @@ export function App() {
       <header className="top-bar">
         <div className="brand">
           <Workflow size={18} />
-          <span>YC Agents</span>
+          <span>YCore</span>
         </div>
         <div className="project-label">未打开论文项目</div>
         <div className={`status status-${runStatus}`}>{runStatus}</div>

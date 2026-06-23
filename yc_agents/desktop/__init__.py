@@ -1,1 +1,1 @@
-"""Desktop app backend package for YC Agents."""
+"""Desktop app backend package for YCore."""

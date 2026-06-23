@@ -21,7 +21,7 @@ class SkillAgent:
 
     def _system_prompt(self):
         return (
-            "你是 yc-agents 的 SkillAgent。"
+            "你是 YCore 的 SkillAgent。"
             "你的任务是根据用户输入和 skills 列表选择最合适的 Skill。"
             "你必须只输出合法 JSON，不要输出 Markdown，不要解释。"
             "JSON 格式为："

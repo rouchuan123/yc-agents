@@ -35,5 +35,30 @@ class YCAgentsLLM:
             ) from exc
 
         return response.choices[0].message.content
+
+    def stream_think(self, messages, **kwargs):
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                stream=True,
+                **kwargs,
+            )
+        except Exception as exc:
+            raise LLMCallError(
+                f"妯″瀷璋冪敤澶辫触 provider={self.provider} model={self.model}: {exc.__class__.__name__}"
+            ) from exc
+
+        for chunk in response:
+            choices = getattr(chunk, "choices", None) or []
+
+            if not choices:
+                continue
+
+            delta = getattr(choices[0], "delta", None)
+            content = getattr(delta, "content", None)
+
+            if content:
+                yield content
     
     

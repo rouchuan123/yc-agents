@@ -1,8 +1,8 @@
-# YC Agents Demo Script
+# YCore Demo Script
 
 ## Demo Goal
 
-Show that `YC Agents` is a controllable Agent runtime for research workflows: skill selection, retrieval, tool calls, memory, trace, approval, and verification are visible engineering boundaries.
+Show that `YCore` is a controllable Agent runtime for research workflows: skill selection, retrieval, tool calls, memory, trace, approval, and verification are visible engineering boundaries.
 
 ## Before Demo
 
@@ -54,7 +54,7 @@ MCP is shown as an external tool/resource protocol. In this project the filesyst
 
 ## Five-Minute Talk Track
 
-YC Agents is a Skill-driven Research Agent for graduate research workflows. The point is not to replace a thesis writer with one prompt, but to show how a long task can be decomposed into skills, retrieval, tool calls, memory, trace, approval, and verification. In the demo I will show how a user request enters `YCAgentRuntime`, how `SkillRuntimeAgent` selects or executes a skill, how tools go through `ToolGateway`, and how the run leaves trace and state files for debugging.
+YCore is a Skill-driven Research Agent for graduate research workflows. The point is not to replace a thesis writer with one prompt, but to show how a long task can be decomposed into skills, retrieval, tool calls, memory, trace, approval, and verification. In the demo I will show how a user request enters `YCAgentRuntime`, how `SkillRuntimeAgent` selects or executes a skill, how tools go through `ToolGateway`, and how the run leaves trace and state files for debugging.
 
 ## Common Interview Follow-Ups
 

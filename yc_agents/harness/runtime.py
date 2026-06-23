@@ -56,6 +56,72 @@ class YCAgentRuntime:
 
         return response
 
+    def stream(self, user_input):
+        stream_agent = getattr(self.agent, "stream", None)
+
+        if not callable(stream_agent):
+            yield self.run(user_input)
+            return
+
+        context = RunContext(user_input=user_input)
+        trace = TraceRecorder(context)
+        writer = RunOutputWriter(context)
+        state_store = StateStore(context.outputs_dir / "state.json")
+
+        trace.record("run_started")
+        state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
+        writer.write_input()
+        writer.write_context(self._build_context_snapshot(context))
+
+        chunks = []
+        buffered_for_json = self.expects_json
+        first_chunk_seen = False
+
+        for chunk in stream_agent(user_input):
+            if chunk is None:
+                continue
+
+            text = str(chunk)
+
+            if not text:
+                continue
+
+            chunks.append(text)
+
+            if not buffered_for_json:
+                yield text
+                continue
+
+            if not first_chunk_seen:
+                if not text.strip():
+                    continue
+
+                first_chunk_seen = True
+
+                if not text.lstrip().startswith("{"):
+                    buffered_for_json = False
+                    yield text
+
+        response = "".join(chunks)
+        trace.record("model_called")
+        state_store.save_checkpoint("model_called", "running")
+
+        if self.expects_json and buffered_for_json:
+            response = self._handle_json_response(trace, user_input, response)
+            yield response
+
+        writer.write_final_output(response)
+        verification = self.verification_gate.verify_final_output(response)
+        writer.write_verification(verification)
+        self._remember_turn(user_input, response)
+        trace.record("run_finished")
+        state_store.save_checkpoint(
+            "run_finished",
+            "finished" if verification["passed"] else "failed",
+            {"verification": verification},
+        )
+        trace.save()
+
     def resume_from_state(self, state_path, redirect_instruction=None):
         state_store = StateStore(state_path)
         checkpoint = state_store.latest_checkpoint()

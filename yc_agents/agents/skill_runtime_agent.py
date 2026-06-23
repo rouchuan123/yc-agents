@@ -63,6 +63,43 @@ class SkillRuntimeAgent:
 
         return self._answer_with_skill(user_input, selected_skill, selection, memory_context)
 
+    def stream(self, user_input):
+        registry = self._load_registry()
+        skills = self._discover_candidate_skills(registry, user_input)
+        memory_context = self._load_memory_context()
+
+        selection_context = self.context_manager.build_skill_selection_context(
+            user_input,
+            skills,
+            memory_context=memory_context,
+        )
+        selection_text = self.skill_agent.select_skill(selection_context)
+
+        try:
+            selection = parse_model_json(selection_text)
+        except InvalidModelJSONError:
+            yield selection_text
+            return
+
+        selected_name = selection.get("selected_skill")
+
+        if not selected_name:
+            yield from self._stream_plain_answer(user_input, memory_context)
+            return
+
+        try:
+            selected_skill = registry.get_skill(selected_name)
+        except KeyError:
+            yield from self._stream_plain_answer(user_input, memory_context)
+            return
+
+        yield from self._stream_answer_with_skill(
+            user_input,
+            selected_skill,
+            selection,
+            memory_context,
+        )
+
     def _load_registry(self):
         registry = SkillRegistry()
 
@@ -72,8 +109,25 @@ class SkillRuntimeAgent:
         return registry
 
     def _plain_answer(self, user_input, memory_context=None):
+        return self.llm.think(
+            self._build_plain_answer_messages(user_input, memory_context)
+        )
+
+    def _stream_plain_answer(self, user_input, memory_context=None):
+        stream_think = getattr(self.llm, "stream_think", None)
+
+        if not callable(stream_think):
+            yield self._plain_answer(user_input, memory_context)
+            return
+
+        yield from stream_think(
+            self._build_plain_answer_messages(user_input, memory_context)
+        )
+
+    def _build_plain_answer_messages(self, user_input, memory_context=None):
         memory = memory_context or self.context_manager.build_memory_context()
-        messages = [
+
+        return [
             {
                 "role": "system",
                 "content": "你是一个耐心的小白编程老师和论文助手。",
@@ -91,7 +145,6 @@ class SkillRuntimeAgent:
                 ),
             },
         ]
-        return self.llm.think(messages)
 
     def _answer_with_skill(self, user_input, selected_skill, selection, memory_context=None):
         memory = memory_context or self.context_manager.build_memory_context()
@@ -107,7 +160,7 @@ class SkillRuntimeAgent:
             {
                 "role": "system",
                 "content": (
-                    "你是 yc-agents 的 Skill-driven Agent。"
+                    "你是 YCore 的 Skill-driven Agent。"
                     "你必须根据给定 Skill 的操作说明来回答用户。"
                     "不要编造资料、文献、导师意见或文件路径。"
                     "如果用户明确要求保存、导出或生成 Markdown 文件，"
@@ -134,6 +187,55 @@ class SkillRuntimeAgent:
             return self._retry_skill_execution(user_input, context)
 
         return response
+
+    def _stream_answer_with_skill(
+        self,
+        user_input,
+        selected_skill,
+        selection,
+        memory_context=None,
+    ):
+        stream_think = getattr(self.llm, "stream_think", None)
+
+        if not callable(stream_think):
+            yield self._answer_with_skill(user_input, selected_skill, selection, memory_context)
+            return
+
+        memory = memory_context or self.context_manager.build_memory_context()
+        rag_results = self._load_rag_results(user_input, selected_skill)
+        context = self.context_manager.build_skill_execution_context(
+            user_input=user_input,
+            selected_skill=selected_skill,
+            selection=selection,
+            memory_context=memory,
+            rag_results=rag_results,
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are the YCore Skill-driven Agent. "
+                    "Follow the selected Skill instructions when answering the user. "
+                    "Do not invent sources, papers, supervisor feedback, or file paths. "
+                    "If the user explicitly asks to save, export, or generate a Markdown file, "
+                    "return only valid tool_call JSON and do not return Markdown prose. "
+                    "tool_call format: "
+                    '{"type":"tool_call","tool_name":"markdown_writer",'
+                    '"arguments":{"file_name":"draft.md","content":"# Draft"},'
+                    '"reason":"Save Markdown draft"}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    context,
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ]
+
+        yield from stream_think(messages)
 
     def _discover_candidate_skills(self, registry, user_input):
         discovered = registry.discover(user_input, top_k=5)
@@ -212,7 +314,7 @@ class SkillRuntimeAgent:
             {
                 "role": "system",
                 "content": (
-                    "You are the yc-agents Skill-driven Agent. "
+                    "You are the YCore Skill-driven Agent. "
                     "You have received one tool execution observation. "
                     "Return only valid final_answer JSON. "
                     "Do not return Markdown or extra explanation. "

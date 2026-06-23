@@ -1,8 +1,8 @@
-# YC Agents Interview Notes
+# YCore Interview Notes
 
 ## 60-Second Project Introduction
 
-`YC Agents` is a Skill-driven Research Agent for graduate research workflows such as opening reports, literature review, and system design. I built it around explicit Agent runtime boundaries: skill selection, RAG context, tool execution, memory, trace, approval, and state persistence.
+`YCore` is a Skill-driven Research Agent for graduate research workflows such as opening reports, literature review, and system design. I built it around explicit Agent runtime boundaries: skill selection, RAG context, tool execution, memory, trace, approval, and state persistence.
 
 ## Why This Is Not A Chatbot
 

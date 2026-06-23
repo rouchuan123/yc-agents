@@ -15,7 +15,7 @@ class CLIStatus:
     session_id: str
 
     def first_row(self, width=100):
-        left = "YC Agents"
+        left = "YCore"
         right = f"Session {self.session_id}"
 
         if width <= len(left) + len(right) + 1:
