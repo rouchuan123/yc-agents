@@ -20,6 +20,44 @@ class FakeLLM:
         return self.responses.pop(0)
 
 
+class FakeSummaryMemory:
+    def load(self):
+        return "阶段摘要：已经接入 SessionMemory。"
+
+
+class FakeProfileMemory:
+    def load(self):
+        return {
+            "major": "通信工程",
+            "research_direction": "工业遮挡失联场景定位",
+        }
+
+
+class FakeMemoryCompressor:
+    def __init__(self):
+        self.received_messages = None
+
+    def compress_and_save(self, messages):
+        self.received_messages = messages
+        return "自动压缩后的阶段摘要"
+
+
+class FakeRAGSearchTool:
+    def __init__(self):
+        self.calls = []
+
+    def run(self, query, top_k=3):
+        self.calls.append({"query": query, "top_k": top_k})
+        return [
+            {
+                "source": "paper.md",
+                "chunk_id": 0,
+                "score": 2,
+                "text": "工业遮挡会影响定位稳定性。",
+            }
+        ]
+
+
 def write_skill(skills_dir):
     skill_dir = skills_dir / "opening-report"
     skill_dir.mkdir(parents=True)
@@ -109,6 +147,132 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertIn("上一轮回答", selection_context)
             self.assertIn("上一轮问题", answer_context)
             self.assertIn("上一轮回答", answer_context)
+
+    def test_run_includes_summary_and_profile_memory_in_model_context(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            skills_dir = tmp_path / "skills"
+            memory_file = tmp_path / "session.json"
+            write_skill(skills_dir)
+            memory = SessionMemory(file_path=memory_file)
+            memory.add_message("user", "上一轮问题")
+            memory.save()
+            llm = FakeLLM(
+                [
+                    (
+                        '{"type":"skill_selection",'
+                        '"selected_skill":"opening-report",'
+                        '"confidence":0.9,'
+                        '"reason":"用户正在准备开题"}'
+                    ),
+                    "这是基于三层记忆的回答。",
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=memory,
+                summary_memory=FakeSummaryMemory(),
+                profile_memory=FakeProfileMemory(),
+            )
+
+            response = agent.run("继续")
+
+            self.assertEqual(response, "这是基于三层记忆的回答。")
+            selection_context = llm.messages[0][1]["content"]
+            answer_context = llm.messages[1][1]["content"]
+            self.assertIn("阶段摘要：已经接入 SessionMemory。", selection_context)
+            self.assertIn("通信工程", selection_context)
+            self.assertIn("阶段摘要：已经接入 SessionMemory。", answer_context)
+            self.assertIn("工业遮挡失联场景定位", answer_context)
+
+    def test_run_triggers_memory_compression_when_threshold_reached(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            skills_dir = tmp_path / "skills"
+            memory_file = tmp_path / "session.json"
+            write_skill(skills_dir)
+            memory = SessionMemory(file_path=memory_file)
+            memory.add_message("user", "问题 1")
+            memory.add_message("assistant", "回答 1")
+            memory.add_message("user", "问题 2")
+            memory.save()
+            compressor = FakeMemoryCompressor()
+            llm = FakeLLM(
+                [
+                    (
+                        '{"type":"skill_selection",'
+                        '"selected_skill":"opening-report",'
+                        '"confidence":0.9,'
+                        '"reason":"用户正在准备开题"}'
+                    ),
+                    "这是基于压缩摘要的回答。",
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=memory,
+                memory_compressor=compressor,
+                compression_threshold=3,
+            )
+
+            response = agent.run("继续")
+
+            selection_context = llm.messages[0][1]["content"]
+            self.assertEqual(response, "这是基于压缩摘要的回答。")
+            self.assertEqual(len(compressor.received_messages), 3)
+            self.assertIn("自动压缩后的阶段摘要", selection_context)
+
+    def test_run_includes_rag_results_when_selected_skill_allows_rag_search(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            skills_dir = tmp_path / "skills"
+            skill_dir = skills_dir / "opening-report"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: opening-report",
+                        "description: Use when the user wants help with opening reports.",
+                        "allowed_tools:",
+                        "  - rag_search",
+                        "---",
+                        "",
+                        "# 开题报告 Skill",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+            rag_tool = FakeRAGSearchTool()
+            llm = FakeLLM(
+                [
+                    (
+                        '{"type":"skill_selection",'
+                        '"selected_skill":"opening-report",'
+                        '"confidence":0.9,'
+                        '"reason":"用户正在准备开题"}'
+                    ),
+                    "这是基于 RAG 的回答。",
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                rag_search_tool=rag_tool,
+            )
+
+            response = agent.run("工业遮挡定位怎么写开题？")
+
+            answer_context = llm.messages[1][1]["content"]
+            self.assertEqual(response, "这是基于 RAG 的回答。")
+            self.assertEqual(
+                rag_tool.calls,
+                [{"query": "工业遮挡定位怎么写开题？", "top_k": 3}],
+            )
+            self.assertIn("rag_results", answer_context)
+            self.assertIn("工业遮挡会影响定位稳定性。", answer_context)
 
     def test_runtime_handles_markdown_writer_tool_call_and_final_answer(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -257,6 +421,42 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             answer_context = llm.messages[1][1]["content"]
             self.assertIn("开题报告 Skill", answer_context)
             self.assertIn("opening-report", answer_context)
+
+    def test_run_retries_when_skill_execution_repeats_skill_selection(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "opening-report",
+                            "confidence": 0.95,
+                            "reason": "用户请求准备开题报告",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "opening-report",
+                            "confidence": 0.95,
+                            "reason": "错误地重复了选 Skill 阶段",
+                        },
+                        ensure_ascii=False,
+                    ),
+                    "开题报告目录结构：\n\n1. 研究背景\n2. 研究目标\n3. 技术路线",
+                ]
+            )
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
+
+            response = agent.run("帮我准备开题报告，先给我一个目录结构")
+
+            self.assertIn("开题报告目录结构", response)
+            self.assertEqual(len(llm.messages), 3)
+            retry_prompt = llm.messages[2][0]["content"]
+            self.assertIn("不要再输出 skill_selection", retry_prompt)
 
     def test_run_falls_back_to_plain_answer_when_no_skill_selected(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

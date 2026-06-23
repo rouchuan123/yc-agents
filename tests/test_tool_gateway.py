@@ -36,6 +36,26 @@ class FakeTrace:
         )
 
 
+class FakeApprovalGate:
+    def check_tool_call(self, tool_name, arguments):
+        if tool_name == "fake_tool" and arguments.get("text") == "danger":
+            return {
+                "allowed": False,
+                "needs_approval": True,
+                "action": "tool_call",
+                "reason": "dangerous test call",
+                "tool_name": tool_name,
+            }
+
+        return {
+            "allowed": True,
+            "needs_approval": False,
+            "action": "tool_call",
+            "reason": "safe test call",
+            "tool_name": tool_name,
+        }
+
+
 class TestToolGateway(unittest.TestCase):
     def test_allowed_tool_can_be_called(self):
         registry = ToolRegistry()
@@ -123,6 +143,28 @@ class TestToolGateway(unittest.TestCase):
         ]
 
         self.assertIn("tool_failed", event_types)
+
+    def test_returns_needs_approval_without_calling_tool(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        trace = FakeTrace()
+
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            trace=trace,
+            approval_gate=FakeApprovalGate(),
+        )
+
+        result = gateway.run_tool("fake_tool", text="danger")
+
+        self.assertTrue(result["needs_approval"])
+        self.assertEqual(result["tool_name"], "fake_tool")
+        self.assertNotIn("echo", result)
+        self.assertIn(
+            "tool_needs_approval",
+            [event["event_type"] for event in trace.events],
+        )
 
 
 if __name__ == "__main__":

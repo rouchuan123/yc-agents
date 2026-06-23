@@ -1,59 +1,39 @@
-import os #读取环境变量
 from openai import OpenAI #创建 API 客户端
+
+from yc_agents.core.config import ProviderConfig
+from yc_agents.core.exceptions import LLMCallError
 
 
 class YCAgentsLLM:
-    def __init__(self):
-        self.model = os.getenv("LLM_MODEL_ID")
-        self.api_key = os.getenv("LLM_API_KEY")
-        self.base_url = os.getenv("LLM_BASE_URL")
-        
-        if not self.model:
-            raise ValueError("缺少 LLM_MODEL_ID")
+    def __init__(self, config=None, client=None):
+        self.config = config or ProviderConfig.from_env()
+        self.model = self.config.model
+        self.api_key = self.config.api_key
+        self.base_url = self.config.base_url
+        self.provider = self.config.provider
 
-        if not self.api_key:
-            raise ValueError("缺少 LLM_API_KEY")
+        self.client = client or self._create_client()
 
-        if not self.base_url:
-            raise ValueError("缺少 LLM_BASE_URL")
-
-        self.client = OpenAI(
+    def _create_client(self):
+        return OpenAI(
             api_key=self.api_key,
             base_url=self.base_url,
+            timeout=self.config.timeout,
         )
-        self.provider = os.getenv("LLM_PROVIDER", "auto").lower()
-
-        if self.provider == "auto":
-            self.provider = self._detect_provider(self.base_url)
 
 
     def think(self, messages, **kwargs):   
-        response = self.client.chat.completions.create(
-            model=self.model,
-            messages=messages,
-            **kwargs,
-        )
+        try:
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=messages,
+                **kwargs,
+            )
+        except Exception as exc:
+            raise LLMCallError(
+                f"模型调用失败 provider={self.provider} model={self.model}: {exc.__class__.__name__}"
+            ) from exc
 
         return response.choices[0].message.content
-    
-    
-    @staticmethod
-    def _detect_provider(base_url):
-        normalized_url = base_url.lower()
-
-        provider_keywords = {
-            "deepseek": "deepseek",
-            "modelscope": "modelscope",
-            "openai": "openai",
-            "ollama": "ollama",
-            "11434": "ollama",
-            "vllm": "vllm",
-        }
-
-        for keyword, provider in provider_keywords.items():
-            if keyword in normalized_url:
-                return provider
-
-        return "openai_compatible"
     
     
