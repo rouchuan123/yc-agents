@@ -41,6 +41,10 @@ class SkillLoader:
         name = metadata.get("name")
         description = metadata.get("description", "")
         allowed_tools = metadata.get("allowed_tools", [])
+        triggers = metadata.get("triggers", [])
+        inputs = metadata.get("inputs", [])
+        outputs = metadata.get("outputs", [])
+        examples = metadata.get("examples", [])
 
         if not name:
             raise ValueError(f"Skill name is required: {skill_file}")
@@ -52,6 +56,10 @@ class SkillLoader:
             name=name,
             description=description,
             allowed_tools=list(allowed_tools),
+            triggers=list(triggers or []),
+            inputs=list(inputs or []),
+            outputs=list(outputs or []),
+            examples=list(examples or []),
             body=body.strip(),
             path=str(skill_path).replace("\\", "/"),
             scripts=self._discover_scripts(skill_path / "scripts"),

@@ -45,6 +45,42 @@ class FakeTool(BaseTool):
         }
 
 
+class SchemaTool(BaseTool):
+    name = "schema_tool"
+    description = "Schema tool."
+
+    from yc_agents.harness.tool_schema import ToolField, ToolSchema
+
+    schema = ToolSchema(fields=[ToolField(name="query", type="str", required=True)])
+
+    def run(self, query):
+        return {"query": query}
+
+
+class FakeSchemaToolCallAgent:
+    def __init__(self):
+        self.observation = None
+
+    def run(self, user_input):
+        return json.dumps(
+            {
+                "type": "tool_call",
+                "tool_name": "schema_tool",
+                "arguments": {"wrong": "x"},
+                "reason": "test validation",
+            }
+        )
+
+    def run_with_observation(self, user_input, observation):
+        self.observation = observation
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "validation handled",
+            }
+        )
+
+
 class FakeApprovalGate:
     def check_tool_call(self, tool_name, arguments):
         return {
@@ -127,6 +163,26 @@ class TestYCAgentRuntime(unittest.TestCase):
         event_types = [event["event_type"] for event in trace["events"]]
         self.assertEqual(response, "approval handled")
         self.assertIn("tool_needs_approval", event_types)
+
+    def test_runtime_sends_structured_tool_failure_to_agent(self):
+        registry = ToolRegistry()
+        registry.register(SchemaTool())
+        agent = FakeSchemaToolCallAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["schema_tool"],
+        )
+
+        response = runtime.run("trigger validation")
+
+        self.assertEqual(response, "validation handled")
+        self.assertFalse(agent.observation["tool_result"]["ok"])
+        self.assertEqual(
+            agent.observation["tool_result"]["error_type"],
+            "validation_error",
+        )
 
 
 class FakeJSONAgent:

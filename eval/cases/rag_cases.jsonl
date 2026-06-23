@@ -1,0 +1,10 @@
+{"id":"rag-upgrade-001","category":"rag_qa","input":"基于资料总结多智能体论文助手的研究问题。","expected_keywords":["多智能体","研究问题"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-002","category":"rag_qa","input":"检索资料并列出论文助手的技术路线。","expected_keywords":["论文助手","技术路线"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-003","category":"rag_qa","input":"根据资料说明 RAG 在系统中的作用。","expected_keywords":["RAG","系统"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-004","category":"rag_qa","input":"查找可支持开题报告研究背景的资料。","expected_keywords":["开题报告","研究背景"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-005","category":"rag_qa","input":"总结工具调用与检索协作的证据。","expected_keywords":["工具调用","检索"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-006","category":"rag_qa","input":"检索 Agent Runtime 的关键设计点。","expected_keywords":["Agent","Runtime"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-007","category":"rag_qa","input":"依据材料说明 trace 和 state 的价值。","expected_keywords":["trace","state"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-008","category":"rag_qa","input":"根据材料提炼引用片段。","expected_keywords":["引用","片段"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-009","category":"rag_qa","input":"检索并说明混合检索的优势。","expected_keywords":["混合检索","优势"],"reference_sources":["demo-research-notes.md"]}
+{"id":"rag-upgrade-010","category":"rag_qa","input":"基于资料写出有依据的结论。","expected_keywords":["依据","结论"],"reference_sources":["demo-research-notes.md"]}

@@ -27,6 +27,9 @@ class TestContextManager(unittest.TestCase):
                 {
                     "name": "opening-report",
                     "description": "Help with opening report.",
+                    "triggers": [],
+                    "inputs": [],
+                    "outputs": [],
                     "allowed_tools": ["rag_search"],
                 }
             ],

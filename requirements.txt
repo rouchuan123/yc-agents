@@ -2,3 +2,8 @@ openai
 python-dotenv
 python-docx
 PyYAML
+fastapi
+uvicorn
+numpy
+rank-bm25
+pypdf

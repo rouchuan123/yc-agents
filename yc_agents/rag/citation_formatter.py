@@ -28,14 +28,25 @@ class RAGCitationFormatter:
         chunk_id = result.get("chunk_id", "unknown")
         score = result.get("score", 0)
         text = result.get("text", "")
+        metadata = result.get("metadata", {}) or {}
+        section = metadata.get("section")
 
-        return [
+        lines = [
             f"### 依据 {index}",
             "",
             f"- 来源：{source}",
             f"- 片段：{chunk_id}",
             f"- 分数：{score}",
-            "",
-            f"> {text}",
-            "",
         ]
+
+        if section:
+            lines.append(f"- 章节：{section}")
+
+        lines.extend(
+            [
+                "",
+                f"> {text}",
+                "",
+            ]
+        )
+        return lines

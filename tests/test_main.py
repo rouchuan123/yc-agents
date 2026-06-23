@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 import main
@@ -12,6 +13,7 @@ from yc_agents.memory.compressor import MemoryCompressor
 from yc_agents.tools.docx_reader import DocxReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.rag_search import RAGSearchTool
+from yc_agents.tools.mcp_adapter import MCPToolAdapter
 
 
 class FakeLLM:
@@ -73,6 +75,29 @@ class TestMainEntryPoint(unittest.TestCase):
         runtime = main.build_runtime()
 
         self.assertIsInstance(runtime.approval_gate, HumanApprovalGate)
+
+    def test_main_exports_build_runtime(self):
+        self.assertTrue(callable(main.build_runtime))
+
+    def test_main_cli_text_is_readable(self):
+        source = Path("main.py").read_text(encoding="utf-8")
+
+        self.assertIn("你：", source)
+        self.assertIn("退出", source)
+        self.assertIn("YC Agent：", source)
+        self.assertNotIn("浣狅細", source)
+        self.assertNotIn("閫€鍑?", source)
+        self.assertNotIn("锛?", source)
+
+    def test_build_mcp_tools_uses_config_when_client_is_supplied(self):
+        class FakeClient:
+            def call_tool(self, server_name, tool_name, arguments):
+                return {"server_name": server_name, "tool_name": tool_name}
+
+        tools = main.build_mcp_tools(client=FakeClient())
+
+        self.assertGreaterEqual(len(tools), 1)
+        self.assertIsInstance(tools[0], MCPToolAdapter)
 
 
 if __name__ == "__main__":

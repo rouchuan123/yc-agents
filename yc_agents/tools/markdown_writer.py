@@ -1,11 +1,18 @@
 from pathlib import Path
 
+from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.tools.base import BaseTool
 
 
 class MarkdownWriterTool(BaseTool):
     name = "markdown_writer"
     description = "Write Markdown content to an output file."
+    schema = ToolSchema(
+        fields=[
+            ToolField(name="file_name", type="str", required=True),
+            ToolField(name="content", type="str", required=True),
+        ]
+    )
 
     def __init__(self, output_dir="outputs"):
         self.output_dir = Path(output_dir)

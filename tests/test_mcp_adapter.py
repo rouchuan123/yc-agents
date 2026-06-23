@@ -1,7 +1,10 @@
 import unittest
+import tempfile
+from pathlib import Path
 
 from yc_agents.harness.tool_gateway import ToolGateway
 from yc_agents.tools.mcp_adapter import MCPToolAdapter
+from yc_agents.tools.mcp_client import MCPClientConfig, StaticMCPClient
 from yc_agents.tools.registry import ToolRegistry
 
 
@@ -36,6 +39,29 @@ class FakeTrace:
 
 
 class TestMCPToolAdapter(unittest.TestCase):
+    def test_static_mcp_client_returns_registered_tool_result(self):
+        client = StaticMCPClient(
+            {
+                ("filesystem", "read_file"): {"content": "hello"},
+            }
+        )
+
+        result = client.call_tool("filesystem", "read_file", {"path": "README.md"})
+
+        self.assertEqual(result, {"content": "hello"})
+
+    def test_mcp_client_config_loads_json(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "mcp_servers.json"
+            path.write_text(
+                '{"servers":{"filesystem":{"type":"stdio","command":"npx","args":["x"]}}}',
+                encoding="utf-8",
+            )
+
+            config = MCPClientConfig.from_file(path)
+
+            self.assertEqual(config.servers["filesystem"]["command"], "npx")
+
     def test_adapter_calls_mcp_client(self):
         client = FakeMCPClient()
         adapter = MCPToolAdapter(

@@ -1,4 +1,6 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from yc_agents.skills.loader import SkillLoader
 
@@ -39,6 +41,43 @@ class TestSkillLoader(unittest.TestCase):
         self.assertIsInstance(opening_report.scripts, list)
         self.assertIsInstance(opening_report.assets, list)
         self.assertIsInstance(opening_report.references, list)
+
+    def test_load_one_reads_expanded_metadata(self):
+        with TemporaryDirectory() as tmpdir:
+            skill_dir = Path(tmpdir) / "literature-review"
+            skill_dir.mkdir()
+            (skill_dir / "SKILL.md").write_text(
+                "\n".join(
+                    [
+                        "---",
+                        "name: literature-review",
+                        "description: Generate literature review",
+                        "triggers:",
+                        "  - 文献综述",
+                        "  - related work",
+                        "inputs:",
+                        "  - topic",
+                        "outputs:",
+                        "  - markdown",
+                        "allowed_tools:",
+                        "  - rag_search",
+                        "examples:",
+                        "  - 帮我写多智能体方向文献综述",
+                        "---",
+                        "",
+                        "# Literature Review",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            skill = SkillLoader(tmpdir).load_one(skill_dir)
+
+            self.assertEqual(skill.triggers, ["文献综述", "related work"])
+            self.assertEqual(skill.inputs, ["topic"])
+            self.assertEqual(skill.outputs, ["markdown"])
+            self.assertEqual(skill.allowed_tools, ["rag_search"])
+            self.assertEqual(skill.examples, ["帮我写多智能体方向文献综述"])
 
 
 if __name__ == "__main__":

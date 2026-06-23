@@ -1,19 +1,32 @@
+from yc_agents.rag.document import DocumentChunk
+
+
 class KeywordIndex:
     def __init__(self):
         self.items = []
 
     def add_chunks(self, source, chunks):
-        for chunk_id, chunk in enumerate(chunks):
-            text = chunk.strip()
+        for fallback_chunk_id, chunk in enumerate(chunks):
+            if isinstance(chunk, DocumentChunk):
+                text = chunk.text.strip()
+                chunk_source = chunk.source
+                chunk_id = chunk.chunk_id
+                metadata = dict(chunk.metadata)
+            else:
+                text = chunk.strip()
+                chunk_source = source
+                chunk_id = fallback_chunk_id
+                metadata = {}
 
             if not text:
                 continue
 
             self.items.append(
                 {
-                    "source": source,
+                    "source": chunk_source,
                     "chunk_id": chunk_id,
                     "text": text,
+                    "metadata": metadata,
                 }
             )
 
@@ -37,6 +50,7 @@ class KeywordIndex:
                     "chunk_id": item["chunk_id"],
                     "score": score,
                     "text": text,
+                    "metadata": dict(item.get("metadata", {})),
                 }
             )
 

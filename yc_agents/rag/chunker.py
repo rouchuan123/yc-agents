@@ -1,3 +1,6 @@
+from yc_agents.rag.document import DocumentChunk
+
+
 class DocumentChunker:
     def __init__(self, chunk_size=500, overlap=50):
         if chunk_size <= 0:
@@ -12,7 +15,7 @@ class DocumentChunker:
         self.chunk_size = chunk_size
         self.overlap = overlap
 
-    def chunk_text(self, text):
+    def chunk_text(self, text, source=None, metadata=None):
         if not text or not text.strip():
             return []
 
@@ -28,5 +31,18 @@ class DocumentChunker:
                 chunks.append(chunk)
 
             start = end - self.overlap
+
+        if source is not None or metadata is not None:
+            chunk_source = source or "unknown"
+            chunk_metadata = dict(metadata or {})
+            return [
+                DocumentChunk(
+                    source=chunk_source,
+                    chunk_id=chunk_id,
+                    text=chunk,
+                    metadata=dict(chunk_metadata),
+                )
+                for chunk_id, chunk in enumerate(chunks)
+            ]
 
         return chunks

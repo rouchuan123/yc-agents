@@ -2,12 +2,14 @@ from pathlib import Path
 
 from docx import Document
 
+from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.tools.base import BaseTool
 
 
 class DocxReaderTool(BaseTool):
     name = "docx_reader"
     description = "Read text from a docx file."
+    schema = ToolSchema(fields=[ToolField(name="file_path", type="str", required=True)])
 
     def read(self, file_path):
         path = Path(file_path)

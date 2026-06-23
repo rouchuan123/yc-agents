@@ -1,0 +1,20 @@
+[project]
+name = "yc-agents"
+version = "0.1.0"
+description = "Skill-driven research Agent runtime for graduate research workflows."
+requires-python = ">=3.11"
+dependencies = [
+  "openai",
+  "python-dotenv",
+  "python-docx",
+  "PyYAML",
+  "fastapi",
+  "uvicorn",
+  "numpy",
+  "rank-bm25",
+  "pypdf"
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

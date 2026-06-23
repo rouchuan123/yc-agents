@@ -35,7 +35,7 @@ class SkillRuntimeAgent:
 
     def run(self, user_input):
         registry = self._load_registry()
-        skills = list(registry.skills.values())
+        skills = self._discover_candidate_skills(registry, user_input)
         memory_context = self._load_memory_context()
         memory_messages = memory_context["session"]
 
@@ -134,6 +134,13 @@ class SkillRuntimeAgent:
             return self._retry_skill_execution(user_input, context)
 
         return response
+
+    def _discover_candidate_skills(self, registry, user_input):
+        discovered = registry.discover(user_input, top_k=5)
+        if not discovered:
+            return list(registry.skills.values())
+
+        return [result.skill for result in discovered]
 
     def _load_memory_messages(self):
         return self.session_memory.load()

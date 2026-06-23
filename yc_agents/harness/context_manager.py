@@ -91,6 +91,10 @@ class ContextManager:
         return memory_compressor.compress_and_save(session_messages)
 
     def _summarize_skill(self, skill):
+        to_summary = getattr(skill, "to_summary", None)
+        if to_summary is not None:
+            return to_summary()
+
         return {
             "name": skill.name,
             "description": skill.description,

@@ -1,4 +1,5 @@
 from yc_agents.skills.definition import SkillDefinition
+from yc_agents.skills.discovery import SkillDiscoveryIndex
 
 
 class SkillRegistry:
@@ -33,3 +34,6 @@ class SkillRegistry:
             }
             for skill in self.skills.values()
         ]
+
+    def discover(self, query, top_k=5):
+        return SkillDiscoveryIndex(self.skills.values()).search(query, top_k=top_k)

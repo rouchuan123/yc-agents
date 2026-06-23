@@ -24,6 +24,9 @@ class StateStore:
 
     def save_checkpoint(self, step, status, details=None):
         state = self.load()
+        if hasattr(status, "value"):
+            status = status.value
+
         checkpoint = {
             "step": step,
             "status": status,
@@ -41,3 +44,8 @@ class StateStore:
             json.dump(state, f, ensure_ascii=False, indent=2)
 
         return state
+
+    def latest_checkpoint(self):
+        state = self.load()
+        history = state.get("history", [])
+        return history[-1] if history else None

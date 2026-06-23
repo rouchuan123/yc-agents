@@ -31,7 +31,7 @@ class YCAgentRuntime:
         state_store = StateStore(context.outputs_dir / "state.json")
 
         trace.record("run_started")
-        state_store.save_checkpoint("run_started", "running")
+        state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
         writer.write_input()
         writer.write_context(self._build_context_snapshot(context))
 
@@ -55,6 +55,24 @@ class YCAgentRuntime:
         trace.save()
 
         return response
+
+    def resume_from_state(self, state_path, redirect_instruction=None):
+        state_store = StateStore(state_path)
+        checkpoint = state_store.latest_checkpoint()
+
+        if checkpoint is None:
+            return "No checkpoint available to resume."
+
+        details = checkpoint.get("details", {})
+        user_input = details.get("user_input")
+
+        if not user_input:
+            return "Checkpoint does not contain user input; cannot resume safely."
+
+        if redirect_instruction:
+            user_input = f"{user_input}\n\n用户追加指令：{redirect_instruction}"
+
+        return self.run(user_input)
 
     def _build_context_snapshot(self, context):
         return {

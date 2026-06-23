@@ -4,6 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from yc_agents.harness.state import StateStore
+from yc_agents.harness.status import RunStatus
 
 
 class TestStateStore(unittest.TestCase):
@@ -34,6 +35,20 @@ class TestStateStore(unittest.TestCase):
 
             self.assertEqual(result["status"], "not_started")
             self.assertEqual(result["history"], [])
+
+    def test_run_status_values_are_stable(self):
+        self.assertEqual(RunStatus.CREATED.value, "created")
+        self.assertEqual(RunStatus.WAITING_APPROVAL.value, "waiting_approval")
+        self.assertEqual(RunStatus.FAILED.value, "failed")
+
+    def test_save_checkpoint_accepts_status_enum_and_latest_checkpoint(self):
+        with TemporaryDirectory() as tmpdir:
+            store = StateStore(Path(tmpdir) / "state.json")
+
+            store.save_checkpoint("created", RunStatus.CREATED)
+            latest = store.latest_checkpoint()
+
+            self.assertEqual(latest["status"], "created")
 
 
 if __name__ == "__main__":
