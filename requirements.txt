@@ -8,3 +8,4 @@ numpy
 rank-bm25
 pypdf
 textual
+pytest

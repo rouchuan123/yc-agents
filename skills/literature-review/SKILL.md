@@ -3,6 +3,8 @@ name: literature-review
 description: Use when the user wants help reviewing papers, summarizing literature, comparing studies, extracting research status, or drafting a literature review.
 allowed_tools:
   - docx_reader
+  - file_reader
+  - workspace_files
   - rag_search
   - markdown_writer
 ---
@@ -32,13 +34,14 @@ allowed_tools:
 
 1. 明确用户要做的是文献摘要、论文对比、研究现状、研究趋势、研究不足，还是完整文献综述草稿。
 2. 检查用户是否提供了文献资料、Word 文档路径、资料目录或检索关键词。
-3. 如果用户提供 Word 文档路径，可以请求使用 `docx_reader` 读取正文。
-4. 如果需要从已有资料库中查找依据，可以请求使用 `rag_search` 检索相关片段。
-5. 提取每篇文献的研究问题、方法、实验或数据、结论、不足和可借鉴点。
-6. 按主题、方法、时间线或问题链组织综述，不要简单堆叠每篇论文摘要。
-7. 输出时明确哪些内容来自用户资料，哪些只是待补充方向。
-8. 如果用户明确要求保存草稿，可以请求使用 `markdown_writer` 写出 Markdown 文件。
-9. 最后给出下一步建议，例如还缺哪些文献、应该补哪类关键词、哪些部分需要导师确认。
+3. 如果用户询问当前工作区有什么文件，可以请求使用 `workspace_files` 列出可读文件。
+4. 如果用户提供或选定 `.docx`、`.pdf`、`.md` 或 `.txt` 文件，可以请求使用 `file_reader` 读取正文。
+5. 如果需要从已有资料库中查找依据，可以请求使用 `rag_search` 检索相关片段。
+6. 提取每篇文献的研究问题、方法、实验或数据、结论、不足和可借鉴点。
+7. 按主题、方法、时间线或问题链组织综述，不要简单堆叠每篇论文摘要。
+8. 输出时明确哪些内容来自用户资料，哪些只是待补充方向。
+9. 如果用户明确要求保存草稿，可以请求使用 `markdown_writer` 写出 Markdown 文件。
+10. 最后给出下一步建议，例如还缺哪些文献、应该补哪类关键词、哪些部分需要导师确认。
 
 ## 文献提取维度
 
@@ -82,7 +85,9 @@ allowed_tools:
 
 ## 工具使用原则
 
-- 只有用户提供 Word 文档路径，或明确要求读取 Word 文档时，才请求 `docx_reader`。
+- 用户询问工作区文件、资料目录或“你能读取到什么”时，可以请求 `workspace_files` 列出当前工作区可读文件。
+- 用户提供或选择 `.docx`、`.pdf`、`.md`、`.txt` 文件时，可以请求 `file_reader` 读取正文内容。
+- `docx_reader` 保留兼容旧流程；新文档读取优先使用 `file_reader`。
 - 只有需要从已有资料、笔记或知识库中查找依据时，才请求 `rag_search`。
 - 只有用户明确要求保存、导出或生成文件时，才请求 `markdown_writer`。
 - 没有资料时不要编造作者、年份、题名、期刊、实验数据或引用。

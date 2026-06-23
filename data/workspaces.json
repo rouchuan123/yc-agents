@@ -1,0 +1,21 @@
+{
+  "current_workspace_id": "workspace_测试_c4e4e1fb",
+  "workspaces": [
+    {
+      "id": "workspace_yc-agents_15b1cf86",
+      "name": "yc-agents",
+      "path": "E:\\code\\yc-agents",
+      "created_at": "2026-06-24T00:40:12",
+      "updated_at": "2026-06-24T00:43:55",
+      "last_used_at": "2026-06-24T00:43:55"
+    },
+    {
+      "id": "workspace_测试_c4e4e1fb",
+      "name": "测试",
+      "path": "E:\\文件\\测试",
+      "created_at": "2026-06-24T00:44:34",
+      "updated_at": "2026-06-24T00:44:34",
+      "last_used_at": "2026-06-24T00:44:34"
+    }
+  ]
+}

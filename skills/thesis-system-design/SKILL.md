@@ -3,6 +3,8 @@ name: thesis-system-design
 description: Use when the user wants help designing thesis system architecture, engineering implementation, modules, APIs, databases, or Spring Boot project plans.
 allowed_tools:
   - docx_reader
+  - file_reader
+  - workspace_files
   - rag_search
   - markdown_writer
 ---
@@ -36,14 +38,15 @@ allowed_tools:
 
 1. 判断用户当前需要的是系统总体方案、模块拆分、数据库设计、接口设计、流程设计、验证方案、章节草稿还是工程实现计划。
 2. 提取用户提供的研究方向、论文目标、工程约束和技术栈。
-3. 如果用户提供 Word 模板、草稿或需求文档，可以请求使用 `docx_reader` 读取正文。
-4. 如果需要参考已有资料、文献依据或项目笔记，可以请求使用 `rag_search` 检索相关片段。
-5. 先明确系统边界：系统要解决什么问题，不解决什么问题。
-6. 再拆分模块：每个模块说明职责、输入、输出和依赖。
-7. 再设计数据流：说明数据从哪里来、如何处理、如何展示或保存。
-8. 再设计接口和数据库：只给和当前需求相关的最小必要设计，不一次性堆太多表和接口。
-9. 最后把工程设计映射成论文可以写的章节结构。
-10. 如果用户明确要求保存，可以请求使用 `markdown_writer` 写出 Markdown 草稿。
+3. 如果用户询问当前工作区有什么文件，可以请求使用 `workspace_files` 列出可读文件。
+4. 如果用户提供 Word 模板、草稿、PDF 文献或需求文档，可以请求使用 `file_reader` 读取正文。
+5. 如果需要参考已有资料、文献依据或项目笔记，可以请求使用 `rag_search` 检索相关片段。
+6. 先明确系统边界：系统要解决什么问题，不解决什么问题。
+7. 再拆分模块：每个模块说明职责、输入、输出和依赖。
+8. 再设计数据流：说明数据从哪里来、如何处理、如何展示或保存。
+9. 再设计接口和数据库：只给和当前需求相关的最小必要设计，不一次性堆太多表和接口。
+10. 最后把工程设计映射成论文可以写的章节结构。
+11. 如果用户明确要求保存，可以请求使用 `markdown_writer` 写出 Markdown 草稿。
 
 ## 系统需求分析
 
@@ -132,7 +135,9 @@ allowed_tools:
 
 ## 工具使用原则
 
-- 只有用户提供 Word 文档路径，或明确要求读取 Word 文档时，才请求 `docx_reader`。
+- 用户询问工作区文件、资料目录或“你能读取到什么”时，可以请求 `workspace_files` 列出当前工作区可读文件。
+- 用户提供或选择 `.docx`、`.pdf`、`.md`、`.txt` 文件时，可以请求 `file_reader` 读取正文内容。
+- `docx_reader` 保留兼容旧流程；新文档读取优先使用 `file_reader`。
 - 只有需要参考已有资料、文献、笔记或知识库时，才请求 `rag_search`。
 - 只有用户明确要求保存、导出或生成文件时，才请求 `markdown_writer`。
 - 能直接解释的小范围系统设计问题，不需要强行调用工具。

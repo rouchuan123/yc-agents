@@ -22,6 +22,8 @@ class TestSkillLoader(unittest.TestCase):
             opening_report.allowed_tools,
             [
                 "docx_reader",
+                "file_reader",
+                "workspace_files",
                 "rag_search",
                 "markdown_writer",
             ],
