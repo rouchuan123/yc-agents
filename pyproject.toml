@@ -12,7 +12,8 @@ dependencies = [
   "uvicorn",
   "numpy",
   "rank-bm25",
-  "pypdf"
+  "pypdf",
+  "textual"
 ]
 
 [tool.pytest.ini_options]
