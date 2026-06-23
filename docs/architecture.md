@@ -1,4 +1,4 @@
-# YC Agents Architecture
+# YCore Architecture
 
 ## Runtime Boundary
 

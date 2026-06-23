@@ -9,7 +9,7 @@ set "PYTHON=%ROOT%.venv\Scripts\python.exe"
 set "LOG_DIR=%ROOT%outputs"
 set "ELECTRON_LOG=%LOG_DIR%\desktop-electron.log"
 
-echo === YC Agents Desktop Launcher ===
+echo === YCore Desktop Launcher ===
 echo.
 
 if not exist "%PYTHON%" (
@@ -60,10 +60,10 @@ if errorlevel 1 (
 
 echo [2/3] Starting Electron desktop app...
 echo Electron log: %ELECTRON_LOG%
-start "YC Agents Desktop" "%ComSpec%" /k call "%~f0" --electron "%DESKTOP%" "%ELECTRON_LOG%"
+start "YCore Desktop" "%ComSpec%" /k call "%~f0" --electron "%DESKTOP%" "%ELECTRON_LOG%"
 
-echo [3/3] YC Agents desktop is launching.
-echo Keep the YC Agents Desktop command window open while using the app.
+echo [3/3] YCore desktop is launching.
+echo Keep the YCore Desktop command window open while using the app.
 echo If the desktop window does not appear, check:
 echo   %ELECTRON_LOG%
 echo.
@@ -74,12 +74,12 @@ exit /b 0
 :run_electron
 set "DESKTOP=%~2"
 set "ELECTRON_LOG=%~3"
-echo Starting YC Agents Electron desktop app.
+echo Starting YCore Electron desktop app.
 echo Output is also written to:
 echo   %ELECTRON_LOG%
 echo.
 cd /d "%DESKTOP%" || exit /b 1
-echo ==== YC Agents Electron start ====>>"%ELECTRON_LOG%"
+echo ==== YCore Electron start ====>>"%ELECTRON_LOG%"
 npm.cmd run electron:start >>"%ELECTRON_LOG%" 2>>&1
-echo ==== YC Agents Electron exited with %ERRORLEVEL% ====>>"%ELECTRON_LOG%"
+echo ==== YCore Electron exited with %ERRORLEVEL% ====>>"%ELECTRON_LOG%"
 exit /b %ERRORLEVEL%

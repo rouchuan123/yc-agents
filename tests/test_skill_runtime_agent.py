@@ -14,10 +14,17 @@ class FakeLLM:
     def __init__(self, responses):
         self.responses = list(responses)
         self.messages = []
+        self.stream_messages = []
 
     def think(self, messages):
         self.messages.append(messages)
         return self.responses.pop(0)
+
+    def stream_think(self, messages):
+        self.stream_messages.append(messages)
+
+        for chunk in self.responses.pop(0):
+            yield chunk
 
 
 class FakeSummaryMemory:
@@ -82,6 +89,52 @@ def write_skill(skills_dir):
 
 
 class TestSkillRuntimeAgent(unittest.TestCase):
+    def test_stream_plain_answer_yields_llm_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            skills_dir = tmp_path / "skills"
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    (
+                        '{"type":"skill_selection",'
+                        '"selected_skill":null,'
+                        '"confidence":0.2,'
+                        '"reason":"plain answer"}'
+                    ),
+                    ["**hello**", "\n\n- streamed"],
+                ]
+            )
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
+
+            chunks = list(agent.stream("hello"))
+
+            self.assertEqual(chunks, ["**hello**", "\n\n- streamed"])
+            self.assertEqual(len(llm.stream_messages), 1)
+
+    def test_stream_selected_skill_yields_llm_chunks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            tmp_path = Path(tmp_dir)
+            skills_dir = tmp_path / "skills"
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    (
+                        '{"type":"skill_selection",'
+                        '"selected_skill":"opening-report",'
+                        '"confidence":0.9,'
+                        '"reason":"selected"}'
+                    ),
+                    ["# Title", "\n\ncontent"],
+                ]
+            )
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
+
+            chunks = list(agent.stream("hello"))
+
+            self.assertEqual(chunks, ["# Title", "\n\ncontent"])
+            self.assertEqual(len(llm.stream_messages), 1)
+
     def test_runtime_saves_final_response_to_session_memory(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)

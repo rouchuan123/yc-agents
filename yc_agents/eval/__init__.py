@@ -1,1 +1,1 @@
-"""Evaluation utilities for YC Agents."""
+"""Evaluation utilities for YCore."""

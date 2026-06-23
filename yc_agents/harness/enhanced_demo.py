@@ -1,7 +1,7 @@
 def build_enhanced_demo_summary():
     return {
         "type": "enhanced_runtime_demo",
-        "title": "yc-agents enhanced Skill Runtime",
+        "title": "YCore enhanced Skill Runtime",
         "capabilities": [
             {
                 "name": "ProviderHub",

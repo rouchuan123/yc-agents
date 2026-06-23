@@ -46,7 +46,7 @@ class SaveSettingsRequest(BaseModel):
 
 
 def create_app(settings_path=None, runtime_factory=None):
-    app = FastAPI(title="YC Agents Desktop API")
+    app = FastAPI(title="YCore Desktop API")
     project_store = ProjectStore()
     settings_store = SettingsStore(
         settings_path or Path.home() / ".yc-agents-desktop" / "app_settings.json"

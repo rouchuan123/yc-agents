@@ -60,7 +60,7 @@ class TestCLIStatus(unittest.TestCase):
 
         result = status.first_row(width=40)
 
-        self.assertTrue(result.startswith("YC Agents"))
+        self.assertTrue(result.startswith("YCore"))
         self.assertTrue(result.endswith("Session session-1234"))
         self.assertEqual(len(result), 40)
 

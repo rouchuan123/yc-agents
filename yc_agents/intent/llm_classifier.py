@@ -42,7 +42,7 @@ class LLMIntentClassifier:
 
     def _system_prompt(self):
         return (
-            "你是 yc-agents 的 LLMIntentClassifier。"
+            "你是 YCore 的 LLMIntentClassifier。"
             "你的任务是根据用户输入和 Skill 摘要列表，判断最可能使用哪个 Skill。"
             "你只输出合法 JSON，不要输出 Markdown 或解释。"
             "JSON 格式为："

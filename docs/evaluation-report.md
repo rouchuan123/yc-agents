@@ -1,4 +1,4 @@
-# YC Agents Evaluation Report
+# YCore Evaluation Report
 
 ## Purpose
 

@@ -13,6 +13,62 @@ class FakeAgent:
         return f"echo: {user_input}"
 
 
+class FakeStreamingAgent:
+    def __init__(self):
+        self.stream_calls = []
+        self.run_calls = []
+        self.remembered_turns = []
+
+    def stream(self, user_input):
+        self.stream_calls.append(user_input)
+        yield "hello"
+        yield " world"
+
+    def run(self, user_input):
+        self.run_calls.append(user_input)
+        return "fallback"
+
+    def remember_turn(self, user_input, response):
+        self.remembered_turns.append((user_input, response))
+
+
+class FakeStreamingToolCallAgent:
+    def __init__(self):
+        self.stream_calls = []
+        self.run_calls = []
+        self.observation = None
+
+    def stream(self, user_input):
+        self.stream_calls.append(user_input)
+        yield '{"type":"tool_call",'
+        yield '"tool_name":"fake_tool",'
+        yield '"arguments":{"text":"danger"},'
+        yield '"reason":"test approval gate"}'
+
+    def run(self, user_input):
+        self.run_calls.append(user_input)
+        return "fallback"
+
+    def run_with_observation(self, user_input, observation):
+        self.observation = observation
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "approval handled",
+            }
+        )
+
+
+class FakeWhitespacePrefixedToolCallAgent(FakeStreamingToolCallAgent):
+    def stream(self, user_input):
+        self.stream_calls.append(user_input)
+        yield "\n  "
+        yield '{"type":"tool_call",'
+        yield '"tool_name":"fake_tool",'
+        yield '"arguments":{"text":"danger"},'
+        yield '"reason":"test approval gate"}'
+
+
 class FakeToolCallAgent:
     def run(self, user_input):
         return json.dumps(
@@ -99,6 +155,66 @@ class TestYCAgentRuntime(unittest.TestCase):
         response = runtime.run("hello")
 
         self.assertEqual(response, "echo: hello")
+
+    def test_runtime_stream_yields_agent_chunks_and_remembers_final_response(self):
+        agent = FakeStreamingAgent()
+        runtime = YCAgentRuntime(agent)
+
+        chunks = list(runtime.stream("hello"))
+
+        self.assertEqual(chunks, ["hello", " world"])
+        self.assertEqual(agent.stream_calls, ["hello"])
+        self.assertEqual(agent.run_calls, [])
+        self.assertEqual(agent.remembered_turns, [("hello", "hello world")])
+
+    def test_runtime_stream_with_json_protocol_still_yields_non_json_chunks(self):
+        agent = FakeStreamingAgent()
+        runtime = YCAgentRuntime(agent, expects_json=True)
+
+        chunks = list(runtime.stream("hello"))
+
+        self.assertEqual(chunks, ["hello", " world"])
+        self.assertEqual(agent.stream_calls, ["hello"])
+        self.assertEqual(agent.run_calls, [])
+
+    def test_runtime_stream_falls_back_to_single_run_response(self):
+        runtime = YCAgentRuntime(FakeAgent())
+
+        chunks = list(runtime.stream("hello"))
+
+        self.assertEqual(chunks, ["echo: hello"])
+
+    def test_runtime_stream_buffers_json_tool_calls_until_final_answer(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeStreamingToolCallAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+        )
+
+        chunks = list(runtime.stream("trigger tool"))
+
+        self.assertEqual(chunks, ["approval handled"])
+        self.assertNotIn("tool_call", "".join(chunks))
+        self.assertEqual(runtime.agent.stream_calls, ["trigger tool"])
+        self.assertEqual(runtime.agent.run_calls, [])
+
+    def test_runtime_stream_buffers_whitespace_prefixed_json_tool_calls(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeWhitespacePrefixedToolCallAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+        )
+
+        chunks = list(runtime.stream("trigger tool"))
+
+        self.assertEqual(chunks, ["approval handled"])
+        self.assertNotIn("tool_call", "".join(chunks))
 
     def test_old_research_harness_name_still_works(self):
         runtime = ResearchAgentHarness(FakeAgent())
