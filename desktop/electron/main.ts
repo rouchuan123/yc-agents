@@ -1,8 +1,20 @@
 import { app, BrowserWindow } from "electron";
+import { mkdirSync } from "node:fs";
 import path from "node:path";
-import { startPythonService, type PythonService } from "./pythonService";
+import { fileURLToPath } from "node:url";
+import { startPythonService, type PythonService } from "./pythonService.js";
 
 let service: PythonService | null = null;
+const currentDir = path.dirname(fileURLToPath(import.meta.url));
+const repoRoot = path.resolve(currentDir, "..", "..");
+const userDataDir = path.join(repoRoot, "outputs", "electron-user-data");
+
+mkdirSync(userDataDir, { recursive: true });
+app.setPath("userData", userDataDir);
+app.disableHardwareAcceleration();
+app.commandLine.appendSwitch("disable-gpu");
+app.commandLine.appendSwitch("disable-gpu-compositing");
+app.commandLine.appendSwitch("disable-gpu-sandbox");
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -11,7 +23,7 @@ function createWindow() {
     minWidth: 960,
     minHeight: 640,
     webPreferences: {
-      preload: path.join(__dirname, "preload.js"),
+      preload: path.join(currentDir, "preload.js"),
       contextIsolation: true,
       nodeIntegration: false,
     },
@@ -20,12 +32,11 @@ function createWindow() {
   if (process.env.VITE_DEV_SERVER_URL) {
     win.loadURL(process.env.VITE_DEV_SERVER_URL);
   } else {
-    win.loadFile(path.join(__dirname, "../dist/index.html"));
+    win.loadFile(path.join(currentDir, "../dist/index.html"));
   }
 }
 
 app.whenReady().then(() => {
-  const repoRoot = path.resolve(__dirname, "..", "..");
   service = startPythonService({ repoRoot });
   createWindow();
 });

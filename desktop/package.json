@@ -7,7 +7,9 @@
     "dev": "vite",
     "test": "vitest run",
     "build": "vite build",
-    "electron:dev": "electron ."
+    "build:electron": "tsc -p tsconfig.electron.json",
+    "electron:start": "npm.cmd run build && npm.cmd run build:electron && electron . --disable-gpu --disable-gpu-compositing --disable-gpu-sandbox",
+    "electron:dev": "npm.cmd run electron:start"
   },
   "dependencies": {
     "@vitejs/plugin-react": "^4.3.0",
@@ -17,7 +19,7 @@
     "react-dom": "^18.3.0",
     "lucide-react": "^0.468.0"
   },
-  "main": "electron/main.ts",
+  "main": ".electron-dist/main.js",
   "devDependencies": {
     "@testing-library/jest-dom": "^6.4.0",
     "@testing-library/react": "^15.0.0",

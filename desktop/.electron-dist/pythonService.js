@@ -1,5 +1,4 @@
 import { spawn } from "node:child_process";
-import net from "node:net";
 import path from "node:path";
 export function startPythonService(options) {
     const pythonPath = options.pythonPath ?? path.join(options.repoRoot, ".venv", "Scripts", "python.exe");
@@ -37,26 +36,5 @@ export async function waitForHealth(options = {}) {
         await new Promise((resolve) => setTimeout(resolve, delayMs));
     }
     return false;
-}
-export async function findAvailablePort(startPort, attempts = 50) {
-    for (let offset = 0; offset < attempts; offset += 1) {
-        const port = startPort + offset;
-        if (await isPortAvailable(port)) {
-            return port;
-        }
-    }
-    throw new Error(`No available desktop backend port near ${startPort}`);
-}
-function isPortAvailable(port) {
-    return new Promise((resolve) => {
-        const server = net.createServer();
-        server.once("error", () => {
-            resolve(false);
-        });
-        server.once("listening", () => {
-            server.close(() => resolve(true));
-        });
-        server.listen(port, "127.0.0.1");
-    });
 }
 //# sourceMappingURL=pythonService.js.map

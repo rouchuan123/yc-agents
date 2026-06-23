@@ -42,6 +42,7 @@ desktop/dist/
 # 文档
 docs/superpowers/
 MIGRATION.md
+rules/
 
 # Local git worktrees
 .worktrees/
