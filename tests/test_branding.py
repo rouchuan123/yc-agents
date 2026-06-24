@@ -25,7 +25,6 @@ def test_user_facing_runtime_text_uses_ycore_brand():
         ROOT / "yc_agents" / "agents" / "skill_runtime_agent.py",
         ROOT / "yc_agents" / "intent" / "llm_classifier.py",
         ROOT / "yc_agents" / "harness" / "enhanced_demo.py",
-        ROOT / "desktop" / "src" / "App.tsx",
     ]
 
     for path in user_facing_paths:

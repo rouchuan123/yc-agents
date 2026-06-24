@@ -2,73 +2,49 @@
 
 ## 演示目标
 
-展示 `YCore` 是一个面向科研工作流的可控 Agent 运行时：skill 选择、检索、工具调用、记忆、追踪、审批和验证都是可见、可解释的工程边界。
+展示 YCore 作为 CLI Agent 运行时，如何把“Word 文档格式调整”拆成技能选择、工具调用、状态追踪和结果审计，而不是只生成一段口头建议。
 
 ## 演示前准备
 
-- 使用 `pip install -r requirements.txt` 安装 Python 依赖。
-- 在 `desktop` 目录内执行 `npm install` 安装 desktop 依赖。
-- 运行 `python -m pytest -q`。
-- 先运行 `cd desktop`，再运行 `npm test -- --run`。
+- 执行 `pip install -r requirements.txt` 安装依赖。
+- 执行 `python -m pytest -q` 确认测试通过。
+- 准备一份格式混乱的 `messy-demo.docx`，放在当前 workspace。
 
-## 场景 1：Skill 选择
+## 场景：Word 文档格式调整
 
-提示词：
-
-```text
-帮我围绕多智能体论文助手写一个开题报告大纲。
-```
-
-展示请求如何进入 `YCAgentRuntime`，`SkillRuntimeAgent` 如何选择开题报告 skill，以及一次运行如何记录追踪/状态文件。
-
-## 场景 2：RAG 辅助回答
-
-提示词：
+用户输入：
 
 ```text
-基于已有资料检索证据，并生成带引用的文献综述片段。
+使用 document-format-normalizer 处理 messy-demo.docx，按 report-standard 模板调整格式，输出名为 demo-normalized。
 ```
 
-展示 RAG 是一个工具边界，而不是藏在提示词里的文本拼接。当前检索以关键词优先；后续阶段会加入混合检索、embeddings 和引用指标。
+演示重点：
 
-## 场景 3：工具调用与追踪
+1. CLI 接收用户请求。
+2. `SkillRuntimeAgent` 选择 `document-format-normalizer`。
+3. 模型发起 `docx_format_normalizer` 工具调用。
+4. 工具在 workspace 内读取源 `.docx`。
+5. DOCX pipeline 生成 `.ycore/docx-format/demo-normalized.docx`。
+6. 同时生成 `.ycore/docx-format/demo-normalized.audit.md` 和 `.audit.json`。
+7. 最终回复说明输出路径，并标出需要人工复核的 warning。
 
-提示词：
+## 可以展示的文件
 
-```text
-把结果写入 markdown 文件，并说明为什么需要工具调用。
-```
-
-展示工具调用会经过 `ToolGateway`、允许工具检查、审批检查和追踪记录。
-
-MCP 作为外部工具/资源协议展示。在本项目中，文件系统 MCP 配置独立保存，MCP 工具仍然要经过 ToolGateway、审批、路径策略和追踪。
-
-## 输出中要展示的内容
-
-- `outputs/<run_id>/input.md`
-- `outputs/<run_id>/context.json`
-- `outputs/<run_id>/final_output.md`
-- `outputs/<run_id>/trace.json`
-- `outputs/<run_id>/state.json`
-- `outputs/<run_id>/verification.json`
+- `.ycore/docx-format/demo-normalized.docx`
+- `.ycore/docx-format/demo-normalized.audit.md`
+- `.ycore/docx-format/demo-normalized.audit.json`
+- `.ycore/runs/<session_id>/<run_id>/trace.json`
+- `.ycore/runs/<session_id>/<run_id>/state.json`
+- `.ycore/runs/<session_id>/<run_id>/final_output.md`
 
 ## 五分钟讲解稿
 
-YCore 是一个面向研究生科研工作流的技能驱动科研 Agent。它的重点不是用一句提示词替代论文写作者，而是展示一个长任务如何被拆解为 skills、检索、工具调用、记忆、追踪、审批和验证。在演示中，我会展示用户请求如何进入 `YCAgentRuntime`，`SkillRuntimeAgent` 如何选择或执行 skill，工具如何通过 `ToolGateway`，以及一次运行如何留下用于调试的追踪和状态文件。
+YCore 当前的首个落地点是 Word 文档格式调整。用户把一份格式混乱的 `.docx` 草稿交给 CLI，Agent 先根据技能说明选择 `document-format-normalizer`，再通过 `ToolGateway` 调用确定性的 DOCX 工具。工具负责分析文档结构、套用内置模板、生成新 Word 文件，并输出审计报告。这样可以展示 Agent 不只是聊天，而是在一个可追踪、可验证、可恢复的运行时里完成真实文件处理任务。
 
-## 常见面试追问
+## 常见追问
 
-- 它和普通 chatbot 有什么区别？
-- 工具调用如何校验和审批？
-- 工具失败时会发生什么？
-- 如何衡量任务是否成功？
-- RAG 如何避免没有证据支撑的结论？
-- MCP 如何接入同一个 ToolGateway 边界？
-
-### Word Format Normalization
-
-1. Place a deliberately messy `messy-demo.docx` in the active workspace.
-2. Ask: `Use document-format-normalizer on messy-demo.docx and save it as demo-normalized.`
-3. Show the generated `.ycore/docx-format/demo-normalized.docx`.
-4. Show `.ycore/docx-format/demo-normalized.audit.md`.
-5. Explain that the agent selected the skill while deterministic DOCX tools performed the formatting and audit.
+- 为什么不用模型直接输出排版建议？
+- 工具如何保证不覆盖源文件？
+- 上传模板能支持到什么程度？
+- 复杂 Word 对象无法重建时怎么处理？
+- 如何通过 trace 和 audit report 复核一次运行？

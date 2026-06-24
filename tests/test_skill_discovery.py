@@ -22,26 +22,30 @@ def make_skill(name, description, triggers):
 def test_skill_discovery_returns_top_k_by_trigger():
     index = SkillDiscoveryIndex(
         [
-            make_skill("literature-review", "文献综述", ["文献综述", "论文"]),
-            make_skill("system-design", "系统设计", ["系统架构", "设计"]),
+            make_skill(
+                "document-format-normalizer",
+                "Word 文档格式调整",
+                ["Word 格式", "docx", "模板排版"],
+            ),
+            make_skill("other-skill", "其他能力", ["聊天"]),
         ]
     )
 
-    results = index.search("帮我写文献综述", top_k=1)
+    results = index.search("帮我把 docx 按模板排版", top_k=1)
 
-    assert results[0].skill.name == "literature-review"
+    assert results[0].skill.name == "document-format-normalizer"
     assert results[0].score > 0
 
 
 def test_skill_summary_includes_discovery_metadata():
-    skill = make_skill("literature-review", "文献综述", ["论文"])
-    skill.inputs = ["topic"]
-    skill.outputs = ["markdown"]
-    skill.allowed_tools = ["rag_search"]
+    skill = make_skill("document-format-normalizer", "Word 文档格式调整", ["docx"])
+    skill.inputs = ["source_docx"]
+    skill.outputs = ["normalized_docx"]
+    skill.allowed_tools = ["docx_format_normalizer"]
 
     summary = skill.to_summary()
 
-    assert summary["triggers"] == ["论文"]
-    assert summary["inputs"] == ["topic"]
-    assert summary["outputs"] == ["markdown"]
-    assert summary["allowed_tools"] == ["rag_search"]
+    assert summary["triggers"] == ["docx"]
+    assert summary["inputs"] == ["source_docx"]
+    assert summary["outputs"] == ["normalized_docx"]
+    assert summary["allowed_tools"] == ["docx_format_normalizer"]

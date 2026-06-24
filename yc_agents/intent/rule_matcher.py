@@ -1,7 +1,17 @@
 DEFAULT_KEYWORDS = {
-    "opening-report": ["开题", "开题报告", "选题", "proposal"],
-    "literature-review": ["文献", "综述", "研究现状", "literature", "review"],
-    "thesis-system-design": ["系统方案", "系统设计", "接口", "数据库", "spring boot"],
+    "document-format-normalizer": [
+        "word",
+        "docx",
+        "格式",
+        "排版",
+        "模板",
+        "文档",
+        "报告格式",
+        "格式调整",
+        "格式规范",
+        "normalize",
+        "format",
+    ],
 }
 
 
