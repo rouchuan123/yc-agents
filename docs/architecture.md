@@ -1,66 +1,83 @@
 # YCore 架构
 
-## 运行时边界
+## 定位
 
-`YCAgentRuntime` 负责一次运行的整体编排。它接收用户输入，调用 Agent，处理 JSON 协议，通过 `ToolGateway` 分发工具调用，写入运行输出，记录追踪事件，并持久化状态检查点。
+YCore 当前是一个 CLI 优先的本地 Agent 运行时。首个落地点是 Word 文档格式调整：用户给出 `.docx` 草稿，Agent 选择 `document-format-normalizer` 技能，再通过确定性 Python 工具生成规范化文档和审计报告。
+
+## 运行链路
+
+```text
+用户输入
+  -> CLI
+  -> YCAgentRuntime
+  -> SkillRuntimeAgent
+  -> document-format-normalizer
+  -> ToolGateway
+  -> docx_format_normalizer
+  -> yc_agents.docx_format pipeline
+  -> normalized .docx + audit report
+```
+
+## Runtime 边界
+
+`YCAgentRuntime` 负责编排一次运行：
+
+- 写入 run 输入和上下文快照。
+- 调用 Agent。
+- 解析模型返回的 JSON 协议。
+- 通过 `ToolGateway` 执行工具。
+- 写入最终输出、verification、trace 和 state checkpoint。
 
 ## Agent 边界
 
-`SkillRuntimeAgent` 决定用户输入如何映射到某个 skill，并准备执行所需的提示词上下文。在请求 LLM 给出最终回答或工具调用之前，它会注入会话记忆、摘要上下文、用户画像上下文和 RAG 片段。
+`SkillRuntimeAgent` 负责：
 
-## Skill 系统
+- 加载 `skills` 目录下的技能。
+- 先用技能摘要进行候选技能发现。
+- 在技能被选中后再加载完整 `SKILL.md` 正文。
+- 将 workspace、记忆、RAG 上下文和技能说明组织成模型提示。
 
-`SkillLoader` 从 `skills` 目录读取 `SKILL.md`、扩展元数据、引用资料、脚本和资源文件。`SkillRegistry` 保存加载后的 `SkillDefinition` 对象，并通过 `SkillDiscoveryIndex` 支持 top-k 检索。
+当前发布态只保留一个技能：`document-format-normalizer`。
 
-skill 选择阶段只使用摘要信息：名称、描述、触发条件、输入、输出和允许使用的工具。完整的 skill 正文会在某个 skill 被选中之后再使用。
+## Skill 边界
 
-## Tool 系统
+`SkillLoader` 从 `skills` 目录读取：
 
-`ToolGateway` 是工具执行的控制边界。它检查工具是否被允许，校验基于 schema 的参数，应用最大调用次数和重复调用策略，询问 `HumanApprovalGate` 是否需要人工确认，按超时和重试策略执行工具，返回结构化失败信息，并记录追踪事件。现有工具包括 Markdown 写入、DOCX 读取和 RAG 搜索。
+- `SKILL.md`
+- `references/`
+- `scripts/`
+- `assets/`
 
-## RAG 系统
+`document-format-normalizer` 的职责是告诉模型什么时候调用 Word 格式调整工具、需要哪些输入、如何解释输出和 warning。它不直接承诺复杂 Word 对象的完美保真。
 
-当前 RAG 组件包括 `DocumentChunker`、`DocumentChunk`、文档加载器、`KeywordIndex`、`VectorStore`、`HybridRetriever`、`QueryTermReranker`、embedding 提供方接口和 `RAGCitationFormatter`。
+## Tool 边界
 
-RAG 流水线：文档加载器 -> 元数据分块器 -> 关键词索引 -> embedding 提供方 -> 向量存储 -> 混合检索 -> 重排序 -> 引用格式化器 -> Agent 上下文。
+`ToolGateway` 负责工具权限、参数 schema 校验、审批策略、追踪和失败返回。
 
-默认的本地测试路径使用确定性 embeddings，因此单元测试不需要网络访问。API embedding 提供方和本地 HTTP embedding 提供方是通过依赖注入接入的边界，可用于兼容 OpenAI 风格 API 或未来的本地 embedding 服务。
+`docx_format_normalizer` 是当前核心业务工具，负责：
 
-## Memory 系统
+- 限制文件路径在当前 workspace 内。
+- 调用 DOCX pipeline。
+- 返回生成 `.docx`、`.audit.md` 和 `.audit.json` 的相对路径。
 
-Agent 可以使用会话记忆、摘要记忆、用户画像记忆和 `MemoryCompressor`。这样可以把短期对话上下文、压缩摘要，以及长期保存的用户/研究画像笔记分开管理。
+## DOCX Pipeline
 
-## Trace 与状态
+`yc_agents/docx_format` 是确定性 Word 处理包：
 
-`TraceRecorder` 记录运行时行为的结构化事件。`StateStore` 持久化检查点状态，使每次运行都能在 `outputs/runs/<run_id>` 下留下可检查的产物。运行时检查点会保存用户输入，`YCAgentRuntime.resume_from_state` 则基于已保存输入和可选的重定向指令提供保守的重放能力。
+- `analyzer.py`：读取源 `.docx`，提取标题、正文、表格、题注、图片和不支持对象。
+- `template.py`：加载内置 `report-standard` 模板，或从上传模板提取部分规则。
+- `formatter.py`：生成新的规范化 `.docx`。
+- `auditor.py`：检查输出文档是否符合模板关键规则。
+- `pipeline.py`：串联 analyze -> template -> format -> audit。
 
-## Desktop 边界
+## 记忆、追踪和状态
 
-`yc_agents/desktop` 中的桌面端后端通过 FastAPI 暴露运行时操作。`desktop` app 是一个基于 Electron 和 React 的外壳，用来启动运行并查看运行产物。桌面端 UI 是观察状态、追踪、工具调用和审批的可观测性界面，不是核心 Agent 智能本身。
-
-## MCP 边界
-
-MCP 被视为外部工具/资源的协议边界。Function Calling 是模型请求调用工具的方式；`ToolGateway` 是校验和控制该调用的控制层；MCP 则是 gateway 后方可能的工具来源之一。
-
-仓库包含用于文件系统 MCP 服务端演示的 `mcp_servers.json`，以及可测试的 `MCPClientConfig`/`StaticMCPClient` 边界。单元测试不会启动 `npx` 或外部 MCP 子进程。
-
-## 失败处理模型
-
-当前失败处理包括 JSON 协议兜底事件、允许工具检查、schema 校验、审批状态追踪、超时、重试、重复调用检测、最大调用次数控制、结构化工具失败，以及输出持久化。工具失败会作为观察结果返回给 Agent，使模型能够解释失败原因或调整策略。
+YCore 保留会话记忆、摘要记忆和用户画像记忆。每次运行会在当前 workspace 的 `.ycore/runs/` 下留下可复核产物，包括输入、输出、trace 和 state checkpoint。
 
 ## 当前限制
 
-- 默认 runtime 在文档加载之前只有一个空的内存 RAG 索引。
-- RAG 评估用例已经存在，但聚合检索指标需要在有语料的情况下运行评估框架。
-- ToolGateway 策略是每个运行时 gateway 实例内存级别的；尚未实现分布式或持久化的工具预算。
-- Resume 是保守的用户输入重放，不是完整 VM 风格的中间帧续跑。
-- MCP 配置和适配器边界已经存在；生产级子进程生命周期管理有意放在这个原型之外。
-
-## 面试讲解映射
-
-- 运行时边界：`YCAgentRuntime`。
-- Agent 边界：`SkillRuntimeAgent`。
-- Skill 加载：`SkillLoader` 和 `SkillRegistry`。
-- 工具安全边界：`ToolGateway` 和 `HumanApprovalGate`。
-- 可观测性：`TraceRecorder`、`StateStore` 和桌面端运行视图。
-- RAG 边界：分块器、索引/存储、搜索工具和引用格式化器。
+- 只保留 CLI 端。
+- 只发布 `document-format-normalizer` 技能。
+- `report-standard` 是第一版主要稳定模板。
+- 上传模板解析是有限能力，只读取页边距和 Normal 样式等可稳定字段。
+- 批注、修订痕迹、SmartArt、复杂图表、嵌入对象、宏和复杂浮动布局只做 warning，不承诺完美重建。

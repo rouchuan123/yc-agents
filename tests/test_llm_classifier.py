@@ -22,31 +22,31 @@ class TestLLMIntentClassifier(unittest.TestCase):
             json.dumps(
                 {
                     "type": "skill_selection",
-                    "selected_skill": "opening-report",
+                    "selected_skill": "document-format-normalizer",
                     "confidence": 0.9,
-                    "reason": "用户正在准备开题报告",
+                    "reason": "用户正在处理 Word 文档格式调整",
                 },
                 ensure_ascii=False,
             )
         )
         skills = [
             SkillDefinition(
-                name="opening-report",
-                description="Help with opening reports.",
+                name="document-format-normalizer",
+                description="Help normalize Word documents.",
                 allowed_tools=[],
                 body="",
-                path="skills/opening-report",
+                path="skills/document-format-normalizer",
             )
         ]
 
-        result = LLMIntentClassifier(llm).classify("帮我准备开题", skills)
+        result = LLMIntentClassifier(llm).classify("帮我调整 Word 格式", skills)
 
-        self.assertEqual(result["selected_skill"], "opening-report")
+        self.assertEqual(result["selected_skill"], "document-format-normalizer")
         self.assertEqual(result["confidence"], 0.9)
         self.assertEqual(len(llm.messages), 1)
         prompt = llm.messages[0][1]["content"]
-        self.assertIn("帮我准备开题", prompt)
-        self.assertIn("opening-report", prompt)
+        self.assertIn("帮我调整 Word 格式", prompt)
+        self.assertIn("document-format-normalizer", prompt)
 
     def test_classify_rejects_invalid_json(self):
         llm = FakeLLM("这不是 JSON")

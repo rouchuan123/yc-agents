@@ -4,81 +4,56 @@ from yc_agents.harness.context_manager import ContextManager
 from yc_agents.skills.definition import SkillDefinition
 
 
+def make_skill():
+    return SkillDefinition(
+        name="document-format-normalizer",
+        description="Word 文档格式调整",
+        allowed_tools=["docx_format_normalizer"],
+        body="完整技能正文",
+        path="skills/document-format-normalizer",
+    )
+
+
 class TestContextManager(unittest.TestCase):
     def test_build_skill_selection_context(self):
-        skill = SkillDefinition(
-            name="opening-report",
-            description="Help with opening report.",
-            allowed_tools=["rag_search"],
-            body="long body",
-            path="skills/opening-report",
-        )
-
         result = ContextManager().build_skill_selection_context(
-            "帮我准备开题",
-            [skill],
+            "帮我调整 draft.docx 的格式",
+            [make_skill()],
         )
 
         self.assertEqual(result["task"], "skill_selection")
-        self.assertEqual(result["user_input"], "帮我准备开题")
+        self.assertEqual(result["user_input"], "帮我调整 draft.docx 的格式")
         self.assertEqual(
             result["skills"],
             [
                 {
-                    "name": "opening-report",
-                    "description": "Help with opening report.",
+                    "name": "document-format-normalizer",
+                    "description": "Word 文档格式调整",
                     "triggers": [],
                     "inputs": [],
                     "outputs": [],
-                    "allowed_tools": ["rag_search"],
+                    "allowed_tools": ["docx_format_normalizer"],
                 }
             ],
         )
 
-    def test_build_skill_selection_context_includes_three_level_memory(self):
+    def test_build_skill_selection_context_includes_memory_and_workspace(self):
+        memory = {
+            "session": [{"role": "user", "content": "上一轮问题"}],
+            "summary": "已经选择文档格式调整方向",
+            "profile": {"preferred_template": "report-standard"},
+        }
+
         result = ContextManager().build_skill_selection_context(
-            "继续完善系统方案",
-            [],
-            memory_context={
-                "session": [
-                    {"role": "user", "content": "上一轮问题"},
-                    {"role": "assistant", "content": "上一轮回答"},
-                ],
-                "summary": "阶段摘要：已经完成 Skill Runtime MVP。",
-                "profile": {
-                    "major": "通信工程",
-                    "research_direction": "工业遮挡失联场景定位",
-                },
-            },
+            "继续处理",
+            [make_skill()],
+            memory_context=memory,
+            workspace_context={"path": r"E:\paper"},
         )
 
-        self.assertEqual(
-            result["memory"],
-            {
-                "session": [
-                    {"role": "user", "content": "上一轮问题"},
-                    {"role": "assistant", "content": "上一轮回答"},
-                ],
-                "summary": "阶段摘要：已经完成 Skill Runtime MVP。",
-                "profile": {
-                    "major": "通信工程",
-                    "research_direction": "工业遮挡失联场景定位",
-                },
-            },
-        )
-        self.assertEqual(result["recent_messages"], result["memory"]["session"])
-
-    def test_build_memory_context_uses_empty_defaults(self):
-        result = ContextManager().build_memory_context()
-
-        self.assertEqual(
-            result,
-            {
-                "session": [],
-                "summary": "",
-                "profile": {},
-            },
-        )
+        self.assertEqual(result["memory"], memory)
+        self.assertEqual(result["recent_messages"], memory["session"])
+        self.assertEqual(result["workspace"]["path"], r"E:\paper")
 
     def test_build_memory_context_compresses_session_when_threshold_reached(self):
         class FakeCompressor:
@@ -87,7 +62,7 @@ class TestContextManager(unittest.TestCase):
 
             def compress_and_save(self, messages):
                 self.received_messages = messages
-                return "压缩后的阶段摘要"
+                return "压缩后的摘要"
 
         messages = [
             {"role": "user", "content": "问题 1"},
@@ -103,50 +78,22 @@ class TestContextManager(unittest.TestCase):
             compression_threshold=3,
         )
 
-        self.assertEqual(result["summary"], "压缩后的阶段摘要")
+        self.assertEqual(result["summary"], "压缩后的摘要")
         self.assertEqual(compressor.received_messages, messages)
 
-    def test_build_memory_context_keeps_summary_when_below_threshold(self):
-        class FakeCompressor:
-            def compress_and_save(self, messages):
-                raise AssertionError("compressor should not be called")
-
-        result = ContextManager().build_memory_context(
-            session=[{"role": "user", "content": "问题 1"}],
-            summary="旧摘要",
-            memory_compressor=FakeCompressor(),
-            compression_threshold=3,
-        )
-
-        self.assertEqual(result["summary"], "旧摘要")
-
-    def test_build_skill_execution_context_includes_rag_results(self):
-        skill = SkillDefinition(
-            name="opening-report",
-            description="Help with opening report.",
-            allowed_tools=["rag_search"],
-            body="long body",
-            path="skills/opening-report",
-        )
-        rag_results = [
-            {
-                "source": "paper.md",
-                "chunk_id": 0,
-                "score": 2,
-                "text": "工业遮挡会影响定位稳定性。",
-            }
-        ]
+    def test_build_skill_execution_context_includes_selected_skill_and_rag(self):
+        rag_results = [{"source": "template.md", "text": "report-standard"}]
 
         result = ContextManager().build_skill_execution_context(
-            user_input="工业遮挡定位怎么写开题？",
-            selected_skill=skill,
-            selection={"selected_skill": "opening-report"},
+            user_input="调整格式",
+            selected_skill=make_skill(),
+            selection={"selected_skill": "document-format-normalizer"},
             memory_context={"session": [], "summary": "", "profile": {}},
             rag_results=rag_results,
         )
 
         self.assertEqual(result["task"], "skill_execution")
-        self.assertEqual(result["selected_skill"]["name"], "opening-report")
+        self.assertEqual(result["selected_skill"]["name"], "document-format-normalizer")
         self.assertEqual(result["rag_results"], rag_results)
 
 

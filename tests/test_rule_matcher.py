@@ -5,38 +5,32 @@ from yc_agents.skills.definition import SkillDefinition
 
 
 class TestRuleIntentMatcher(unittest.TestCase):
-    def test_match_opening_report_by_keywords(self):
+    def test_match_document_format_normalizer_by_keywords(self):
         skills = [
             SkillDefinition(
-                name="opening-report",
-                description="Use for 开题 报告 proposal tasks.",
+                name="document-format-normalizer",
+                description="用于 Word 文档格式调整",
                 allowed_tools=[],
                 body="",
-                path="skills/opening-report",
-            ),
-            SkillDefinition(
-                name="literature-review",
-                description="Use for 文献 综述 literature review tasks.",
-                allowed_tools=[],
-                body="",
-                path="skills/literature-review",
-            ),
+                path="skills/document-format-normalizer",
+            )
         ]
 
-        matches = RuleIntentMatcher().match("帮我准备开题报告", skills)
+        matches = RuleIntentMatcher().match("帮我把 draft.docx 按模板调整格式", skills)
 
-        self.assertEqual(matches[0]["skill_name"], "opening-report")
+        self.assertEqual(matches[0]["skill_name"], "document-format-normalizer")
         self.assertGreater(matches[0]["confidence"], 0)
-        self.assertIn("开题", matches[0]["matched_keywords"])
+        self.assertIn("docx", matches[0]["matched_keywords"])
+        self.assertIn("格式", matches[0]["matched_keywords"])
 
     def test_match_returns_empty_list_when_no_keywords_match(self):
         skills = [
             SkillDefinition(
-                name="opening-report",
-                description="Use for 开题 报告 proposal tasks.",
+                name="document-format-normalizer",
+                description="用于 Word 文档格式调整",
                 allowed_tools=[],
                 body="",
-                path="skills/opening-report",
+                path="skills/document-format-normalizer",
             )
         ]
 

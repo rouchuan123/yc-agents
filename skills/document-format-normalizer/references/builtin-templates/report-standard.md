@@ -1,39 +1,46 @@
-# Report Standard Template
+# 报告标准模板
 
-## Page
+`report-standard` 是 `document-format-normalizer` 的默认内置模板，适合中文报告、项目文档、制度材料、开题材料等常见 Word 文档的第一轮格式整理。
 
-- Size: A4.
-- Orientation: portrait.
-- Margins: top 2.54 cm, bottom 2.54 cm, left 3.18 cm, right 3.18 cm.
-- Header distance: 1.50 cm.
-- Footer distance: 1.75 cm.
+## 页面设置
 
-## Body
+- 纸张大小：A4。
+- 页面方向：纵向。
+- 页边距：上 2.54 cm，下 2.54 cm，左 3.18 cm，右 3.18 cm。
+- 页眉距离：1.50 cm。
+- 页脚距离：1.75 cm。
 
-- East Asian font: SimSun.
-- Latin font: Times New Roman.
-- Font size: 12 pt.
-- Line spacing: fixed 24 pt.
-- First-line indent: 24 pt.
-- Alignment: justified.
-- Space before: 0 pt.
-- Space after: 0 pt.
+## 正文
 
-## Headings
+- 中文字体：宋体。
+- 西文字体：Times New Roman。
+- 字号：12 pt。
+- 行距：固定值 24 pt。
+- 首行缩进：24 pt。
+- 对齐方式：两端对齐。
+- 段前：0 pt。
+- 段后：0 pt。
 
-- Heading 1: SimHei, 22 pt, bold, centered, outline level 1, page break before.
-- Heading 2: SimHei, 16 pt, bold, left aligned, outline level 2.
-- Heading 3: SimSun, 16 pt, bold, left aligned, outline level 3.
+## 标题
 
-## Captions
+- 一级标题：黑体，22 pt，加粗，居中，大纲级别 1，段前分页。
+- 二级标题：黑体，16 pt，加粗，左对齐，大纲级别 2。
+- 三级标题：宋体，16 pt，加粗，左对齐，大纲级别 3。
 
-- Font: SimSun.
-- Font size: 12 pt.
-- Alignment: centered.
-- Space before: 6 pt.
-- Space after: 6 pt.
+## 图题和表题
 
-## Generated Fields
+- 字体：宋体。
+- 字号：12 pt。
+- 对齐方式：居中。
+- 段前：6 pt。
+- 段后：6 pt。
 
-- Table of contents: Word field code `TOC \\o "1-3" \\h \\u`.
-- Page numbers: footer-centered decimal page number field.
+## 自动生成字段
+
+- 目录：插入 Word 字段代码 `TOC \\o "1-3" \\h \\u`，覆盖一至三级标题。
+- 页码：在页脚居中插入十进制页码字段。
+
+## 维护提示
+
+- 如果要把模板改成学校或企业规范，建议先改这份说明，再同步修改代码里的内置模板数据。
+- 每次修改页边距、正文或标题规则后，都应该生成一个测试文档，并查看 `.audit.md` 确认规则被正确应用。

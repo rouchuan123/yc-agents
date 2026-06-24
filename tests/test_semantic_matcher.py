@@ -8,35 +8,35 @@ class TestSemanticIntentMatcher(unittest.TestCase):
     def test_match_scores_skill_by_text_overlap(self):
         skills = [
             SkillDefinition(
-                name="opening-report",
-                description="开题 报告 研究 背景 技术路线",
+                name="document-format-normalizer",
+                description="Word 文档 格式 调整 模板 docx",
                 allowed_tools=[],
                 body="",
-                path="skills/opening-report",
+                path="skills/document-format-normalizer",
             ),
             SkillDefinition(
-                name="thesis-system-design",
-                description="系统 设计 接口 数据库 Spring Boot",
+                name="other-skill",
+                description="聊天 问答 闲聊",
                 allowed_tools=[],
                 body="",
-                path="skills/thesis-system-design",
+                path="skills/other-skill",
             ),
         ]
 
-        matches = SemanticIntentMatcher().match("研究背景和技术路线怎么写", skills)
+        matches = SemanticIntentMatcher().match("Word 文档格式怎么按模板调整", skills)
 
-        self.assertEqual(matches[0]["skill_name"], "opening-report")
+        self.assertEqual(matches[0]["skill_name"], "document-format-normalizer")
         self.assertGreater(matches[0]["confidence"], matches[1]["confidence"])
         self.assertIn("overlap_terms", matches[0])
 
     def test_match_returns_empty_list_for_empty_input(self):
         skills = [
             SkillDefinition(
-                name="opening-report",
-                description="开题 报告",
+                name="document-format-normalizer",
+                description="Word 文档格式调整",
                 allowed_tools=[],
                 body="",
-                path="skills/opening-report",
+                path="skills/document-format-normalizer",
             )
         ]
 

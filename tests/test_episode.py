@@ -1,4 +1,4 @@
-import unittest
+﻿import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -17,7 +17,7 @@ class TestEpisodePackage(unittest.TestCase):
             context.outputs_dir = Path(tmpdir) / context.run_id
             writer = RunOutputWriter(context)
             writer.write_input()
-            writer.write_context({"selected_skill": "opening-report"})
+            writer.write_context({"selected_skill": "document-format-normalizer"})
             writer.write_final_output("done")
             writer.write_retrieved_sources(
                 [
@@ -54,3 +54,4 @@ class TestEpisodePackage(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
