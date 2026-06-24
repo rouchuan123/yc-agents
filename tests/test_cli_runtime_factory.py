@@ -60,6 +60,23 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             tool = runtime.tool_registry.get_tool("docx_format_normalizer")
             self.assertEqual(tool.workspace_root, workspace.path.resolve())
 
+    def test_runtime_factory_registers_generic_web_search_tool(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("web")
+
+            runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
+
+            self.assertIn("web_search", runtime.allowed_tools)
+            self.assertEqual(runtime.tool_registry.get_tool("web_search").name, "web_search")
+            self.assertIn("web_search", runtime.agent.workspace_context["available_tools"])
+
+    def test_env_example_documents_tavily_api_key(self):
+        env_example = Path(".env.example").read_text(encoding="utf-8")
+
+        self.assertIn("TAVILY_API_KEY=", env_example)
+
 
 if __name__ == "__main__":
     unittest.main()

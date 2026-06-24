@@ -141,12 +141,18 @@ class SkillRuntimeAgent:
                     "应请求使用 workspace_files 列出当前工作区可读文件。"
                     "当用户要求读取 .docx、.pdf、.md 或 .txt 文件内容时，"
                     "应请求使用 file_reader，不要声称无法访问 active workspace。"
+                    "When the user asks for current, recent, latest, external, or web information, "
+                    "request the web_search tool with a focused query. "
                     "工具调用必须只输出合法 JSON，例如："
                     '{"type":"tool_call","tool_name":"workspace_files",'
                     '"arguments":{"pattern":"*"},"reason":"列出当前工作区文件"}'
                     "或"
                     '{"type":"tool_call","tool_name":"file_reader",'
                     '"arguments":{"file_path":"paper.pdf"},"reason":"读取文件正文"}'
+                    "或"
+                    '{"type":"tool_call","tool_name":"web_search",'
+                    '"arguments":{"query":"latest Word document automation tools",'
+                    '"max_results":5},"reason":"Search current web information"}'
                 ),
             },
             {
@@ -186,12 +192,18 @@ class SkillRuntimeAgent:
                     "应请求使用 workspace_files 列出当前工作区可读文件。"
                     "当用户要求读取 .docx、.pdf、.md 或 .txt 文件内容时，"
                     "应请求使用 file_reader，不要声称无法访问 active workspace。"
+                    "When the user asks for current, recent, latest, external, or web information, "
+                    "request the web_search tool with a focused query. "
                     "工具调用必须只输出合法 JSON，例如："
                     '{"type":"tool_call","tool_name":"workspace_files",'
                     '"arguments":{"pattern":"*"},"reason":"列出当前工作区文件"}'
                     "或"
                     '{"type":"tool_call","tool_name":"file_reader",'
                     '"arguments":{"file_path":"paper.pdf"},"reason":"读取文件正文"}'
+                    "或"
+                    '{"type":"tool_call","tool_name":"web_search",'
+                    '"arguments":{"query":"latest Word document automation tools",'
+                    '"max_results":5},"reason":"Search current web information"}'
                     "不要编造资料、文献、导师意见或文件路径。"
                     "如果用户明确要求保存、导出或生成 Markdown 文件，"
                     "你必须只输出合法 tool_call JSON，不要输出 Markdown 或解释。"
@@ -250,6 +262,8 @@ class SkillRuntimeAgent:
                     "The current active workspace is provided in the workspace field. "
                     "Use workspace_files when the user asks what files are available, "
                     "and use file_reader to read .docx, .pdf, .md, or .txt files. "
+                    "When the user asks for current, recent, latest, external, or web information, "
+                    "request the web_search tool with a focused query. "
                     "Do not claim you cannot access the active workspace. "
                     "Do not invent sources, papers, supervisor feedback, or file paths. "
                     "If the user explicitly asks to save, export, or generate a Markdown file, "
@@ -257,7 +271,10 @@ class SkillRuntimeAgent:
                     "tool_call format: "
                     '{"type":"tool_call","tool_name":"markdown_writer",'
                     '"arguments":{"file_name":"draft.md","content":"# Draft"},'
-                    '"reason":"Save Markdown draft"}'
+                    '"reason":"Save Markdown draft"} '
+                    'web_search example: {"type":"tool_call","tool_name":"web_search",'
+                    '"arguments":{"query":"latest Word document automation tools",'
+                    '"max_results":5},"reason":"Search current web information"}'
                 ),
             },
             {

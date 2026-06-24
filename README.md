@@ -37,6 +37,16 @@ CLI 顶部会显示当前工作区、模型、估算上下文占用、Git 分支
 - `/skills`：查看当前可用技能。
 - `/clear`：清空当前屏幕内容，不删除 session 记忆。
 
+## 联网搜索
+
+YCore 提供通用工具 `web_search`，第一版底层使用 Tavily。将 API key 写入 `.env`：
+
+```env
+TAVILY_API_KEY=你的 Tavily key
+```
+
+在 CLI 中可以直接询问需要最新信息的问题，Agent 会在需要时调用 `web_search`。
+
 ## 可用 Skill
 
 当前项目只随仓库发布一个技能：

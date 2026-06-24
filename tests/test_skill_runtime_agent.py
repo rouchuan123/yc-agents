@@ -97,6 +97,31 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(selection_context["workspace"]["path"], str(workspace))
             self.assertEqual(answer_context["workspace"]["path"], str(workspace))
 
+    def test_plain_answer_prompt_mentions_web_search_for_current_information(self):
+        llm = FakeLLM(
+            [
+                json.dumps(
+                    {
+                        "type": "skill_selection",
+                        "selected_skill": None,
+                        "confidence": 0.1,
+                        "reason": "plain answer",
+                    }
+                ),
+                "plain",
+            ]
+        )
+        agent = SkillRuntimeAgent(
+            llm,
+            workspace_context={"available_tools": ["web_search"]},
+        )
+
+        agent.run("查一下今天的新闻")
+
+        plain_prompt = llm.messages[1][0]["content"]
+        self.assertIn("web_search", plain_prompt)
+        self.assertIn("current", plain_prompt.lower())
+
     def test_stream_selected_skill_yields_llm_chunks(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"

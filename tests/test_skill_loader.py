@@ -21,6 +21,12 @@ class TestSkillLoader(unittest.TestCase):
         self.assertIn("Word 文档格式调整", skill.body)
         self.assertEqual(skill.path, "skills/document-format-normalizer")
 
+    def test_document_format_skill_does_not_allow_web_search(self):
+        skill = SkillLoader("skills").load_all()[0]
+
+        self.assertEqual(skill.name, "document-format-normalizer")
+        self.assertNotIn("web_search", skill.allowed_tools)
+
     def test_load_all_discovers_nested_skill_related_files(self):
         loader = SkillLoader("skills")
 
