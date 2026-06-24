@@ -241,6 +241,26 @@ class FakeInputEvent:
         self.value = value
 
 
+class FakePrompt:
+    def __init__(self, value=""):
+        self.value = value
+        self.cursor_position = 0
+        self.action_end_calls = 0
+
+    def action_end(self):
+        self.action_end_calls += 1
+        self.cursor_position = len(self.value)
+
+
+class FakeStatic:
+    def __init__(self):
+        self.value = ""
+        self.display = True
+
+    def update(self, value):
+        self.value = value
+
+
 class TestYCAgentsTUIApp(unittest.TestCase):
     def test_render_status_uses_collector(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
@@ -328,6 +348,14 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertTrue(app.transcript.allow_select)
         self.assertIn("#processing-elapsed", app.CSS)
         self.assertIn("#chat-box", app.CSS)
+
+    def test_prompt_keeps_visible_input_box_and_cursor_style(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        list(app.compose())
+
+        self.assertFalse(app.prompt.compact)
+        self.assertIn("#prompt > .input--cursor", app.CSS)
+        self.assertIn("text-style: underline", app.CSS)
 
     def test_redraw_transcript_renders_assistant_markdown_in_rich_log(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
@@ -702,6 +730,44 @@ class TestYCAgentsTUIApp(unittest.TestCase):
             ],
         )
 
+    def test_command_suggestions_scroll_with_selection(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.command_suggestions = FakeStatic()
+        app.command_suggestion_window_size = 5
+        app.update_command_suggestions("/")
+
+        for _ in range(6):
+            app.move_suggestion_selection(1)
+
+        lines = app.command_suggestions.value.splitlines()
+        self.assertEqual(len(lines), 5)
+        self.assertTrue(any(line.startswith(">") for line in lines))
+        self.assertIn(
+            app.filtered_suggestions[app.selected_suggestion_index].command,
+            app.command_suggestions.value,
+        )
+        self.assertGreater(app.command_suggestion_scroll_offset, 0)
+
+    def test_command_suggestions_reset_scroll_when_filter_changes(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.command_suggestion_scroll_offset = 5
+
+        app.update_command_suggestions("/se")
+
+        self.assertEqual(app.command_suggestion_scroll_offset, 0)
+
+    def test_command_suggestions_display_only_when_visible(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.command_suggestions = FakeStatic()
+
+        app.hide_command_suggestions()
+
+        self.assertFalse(app.command_suggestions.display)
+
+        app.update_command_suggestions("/")
+
+        self.assertTrue(app.command_suggestions.display)
+
     def test_tab_completion_uses_selected_suggestion(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         app.prompt = type("Prompt", (), {"value": "/se"})()
@@ -721,6 +787,16 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         self.assertEqual(app.prompt.value, "/workspace add ")
         self.assertFalse(app.command_suggestions_visible)
+
+    def test_tab_completion_moves_cursor_to_end(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.prompt = FakePrompt("/workspace add")
+        app.update_command_suggestions("/workspace add")
+
+        app.complete_selected_suggestion()
+
+        self.assertEqual(app.prompt.value, "/workspace add ")
+        self.assertEqual(app.prompt.cursor_position, len("/workspace add "))
 
     def test_escape_hides_command_suggestions(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())

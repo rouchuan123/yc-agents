@@ -16,6 +16,7 @@ from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.rag_search import RAGSearchTool
 from yc_agents.tools.registry import ToolRegistry
+from yc_agents.tools.web_search import WebSearchTool
 from yc_agents.tools.workspace_files import WorkspaceFilesTool
 
 
@@ -51,6 +52,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
                 "workspace_files",
                 "file_reader",
                 "docx_format_normalizer",
+                "web_search",
             ],
         },
     )
@@ -60,6 +62,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     tool_registry.register(WorkspaceFilesTool(session.workspace.path))
     tool_registry.register(FileReaderTool(session.workspace.path))
     tool_registry.register(DocxFormatNormalizerTool(session.workspace.path))
+    tool_registry.register(WebSearchTool())
     tool_registry.register(rag_search_tool)
 
     return YCAgentRuntime(
@@ -73,6 +76,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
             "file_reader",
             "workspace_files",
             "rag_search",
+            "web_search",
         ],
         approval_gate=HumanApprovalGate(),
         output_root=session.runs_path,

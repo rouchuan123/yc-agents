@@ -52,7 +52,7 @@ class YCAgentsTUIApp(App):
     }
 
     #command-suggestions {
-        height: auto;
+        height: 8;
         max-height: 8;
         padding: 0 1;
         background: $surface;
@@ -69,6 +69,12 @@ class YCAgentsTUIApp(App):
 
     #prompt {
         dock: bottom;
+    }
+
+    #prompt > .input--cursor {
+        background: transparent;
+        color: $accent;
+        text-style: underline;
     }
     """
 
@@ -119,6 +125,8 @@ class YCAgentsTUIApp(App):
         self.suggestion_registry = suggestion_registry or CommandSuggestionRegistry()
         self.filtered_suggestions = []
         self.selected_suggestion_index = 0
+        self.command_suggestion_window_size = 8
+        self.command_suggestion_scroll_offset = 0
         self.command_suggestions_visible = False
         self.selection_list_visible = False
         self.selection_list_kind = None
@@ -141,7 +149,11 @@ class YCAgentsTUIApp(App):
         self.elapsed_status = Static("", id="processing-elapsed")
         self.selection_list = Static("", id="selection-list")
         self.command_suggestions = Static("", id="command-suggestions")
-        self.prompt = Input(placeholder="输入消息，或使用 /status /stop /skills /clear /exit", id="prompt")
+        self.command_suggestions.display = False
+        self.prompt = Input(
+            placeholder="输入消息，或使用 /status /stop /skills /clear /exit",
+            id="prompt",
+        )
 
         yield self.status_widget
         yield Vertical(self.transcript, self.elapsed_status, id="chat-box")
@@ -734,6 +746,7 @@ class YCAgentsTUIApp(App):
 
         self.filtered_suggestions = self.suggestion_registry.filter(text)
         self.selected_suggestion_index = 0
+        self.command_suggestion_scroll_offset = 0
         self.command_suggestions_visible = bool(self.filtered_suggestions)
         self.redraw_command_suggestions()
 
@@ -741,6 +754,7 @@ class YCAgentsTUIApp(App):
         self.command_suggestions_visible = False
         self.filtered_suggestions = []
         self.selected_suggestion_index = 0
+        self.command_suggestion_scroll_offset = 0
         self.redraw_command_suggestions()
 
     def move_suggestion_selection(self, delta):
@@ -750,7 +764,16 @@ class YCAgentsTUIApp(App):
         self.selected_suggestion_index = (
             self.selected_suggestion_index + delta
         ) % len(self.filtered_suggestions)
+        self.keep_selected_suggestion_visible()
         self.redraw_command_suggestions()
+
+    def keep_selected_suggestion_visible(self):
+        window_size = max(1, self.command_suggestion_window_size)
+        selected = self.selected_suggestion_index
+        if selected < self.command_suggestion_scroll_offset:
+            self.command_suggestion_scroll_offset = selected
+        elif selected >= self.command_suggestion_scroll_offset + window_size:
+            self.command_suggestion_scroll_offset = selected - window_size + 1
 
     def complete_selected_suggestion(self):
         if not self.filtered_suggestions:
@@ -759,18 +782,37 @@ class YCAgentsTUIApp(App):
         suggestion = self.filtered_suggestions[self.selected_suggestion_index]
         if self.prompt is not None:
             self.prompt.value = suggestion.completion or suggestion.command
+            self.move_prompt_cursor_to_end()
         self.hide_command_suggestions()
+
+    def move_prompt_cursor_to_end(self):
+        if self.prompt is None:
+            return
+
+        if hasattr(self.prompt, "cursor_position"):
+            self.prompt.cursor_position = len(self.prompt.value)
+            return
+
+        action_end = getattr(self.prompt, "action_end", None)
+        if callable(action_end):
+            action_end()
 
     def redraw_command_suggestions(self):
         if self.command_suggestions is None:
             return
 
         if not self.command_suggestions_visible:
+            self.command_suggestions.display = False
             self.command_suggestions.update("")
             return
 
+        self.command_suggestions.display = True
+        start = self.command_suggestion_scroll_offset
+        end = start + max(1, self.command_suggestion_window_size)
+        visible_suggestions = self.filtered_suggestions[start:end]
+
         lines = []
-        for index, suggestion in enumerate(self.filtered_suggestions):
+        for index, suggestion in enumerate(visible_suggestions, start=start):
             marker = ">" if index == self.selected_suggestion_index else " "
             lines.append(f"{marker} {suggestion.command:<18} {suggestion.description}")
         self.command_suggestions.update("\n".join(lines))

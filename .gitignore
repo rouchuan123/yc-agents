@@ -13,6 +13,7 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 .coverage
+.ycore
 htmlcov/
 
 # 运行输出与本地数据
