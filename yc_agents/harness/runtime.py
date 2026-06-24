@@ -17,6 +17,7 @@ class YCAgentRuntime:
         approval_gate=None,
         verification_gate=None,
         output_root=None,
+        event_callback=None,
     ):
         self.agent = agent
         self.expects_json = expects_json
@@ -25,38 +26,43 @@ class YCAgentRuntime:
         self.approval_gate = approval_gate
         self.verification_gate = verification_gate or VerificationGate()
         self.output_root = output_root
+        self.event_callback = event_callback
 
     def run(self, user_input):
         context = RunContext(user_input=user_input, output_root=self.output_root)
-        trace = TraceRecorder(context)
+        trace = TraceRecorder(context, event_callback=self.event_callback)
         writer = RunOutputWriter(context)
         state_store = StateStore(context.outputs_dir / "state.json")
 
-        trace.record("run_started")
-        state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
-        writer.write_input()
-        writer.write_context(self._build_context_snapshot(context))
+        try:
+            trace.record("run_started")
+            state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
+            writer.write_input()
+            writer.write_context(self._build_context_snapshot(context))
 
-        response = self.agent.run(user_input)
-        trace.record("model_called")
-        state_store.save_checkpoint("model_called", "running")
+            response = self.agent.run(user_input)
+            trace.record("model_called")
+            state_store.save_checkpoint("model_called", "running")
 
-        if self.expects_json:
-            response = self._handle_json_response(trace, user_input, response)
+            if self.expects_json:
+                response = self._handle_json_response(trace, user_input, response)
 
-        writer.write_final_output(response)
-        verification = self.verification_gate.verify_final_output(response)
-        writer.write_verification(verification)
-        self._remember_turn(user_input, response)
-        trace.record("run_finished")
-        state_store.save_checkpoint(
-            "run_finished",
-            "finished" if verification["passed"] else "failed",
-            {"verification": verification},
-        )
-        trace.save()
+            writer.write_final_output(response)
+            verification = self.verification_gate.verify_final_output(response)
+            writer.write_verification(verification)
+            self._remember_turn(user_input, response)
+            trace.record("run_finished")
+            state_store.save_checkpoint(
+                "run_finished",
+                "finished" if verification["passed"] else "failed",
+                {"verification": verification},
+            )
+            trace.save()
 
-        return response
+            return response
+        except Exception as exc:
+            self._record_run_failed(trace, state_store, exc)
+            raise
 
     def stream(self, user_input):
         stream_agent = getattr(self.agent, "stream", None)
@@ -66,63 +72,67 @@ class YCAgentRuntime:
             return
 
         context = RunContext(user_input=user_input, output_root=self.output_root)
-        trace = TraceRecorder(context)
+        trace = TraceRecorder(context, event_callback=self.event_callback)
         writer = RunOutputWriter(context)
         state_store = StateStore(context.outputs_dir / "state.json")
 
-        trace.record("run_started")
-        state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
-        writer.write_input()
-        writer.write_context(self._build_context_snapshot(context))
+        try:
+            trace.record("run_started")
+            state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
+            writer.write_input()
+            writer.write_context(self._build_context_snapshot(context))
 
-        chunks = []
-        buffered_for_json = self.expects_json
-        first_chunk_seen = False
+            chunks = []
+            buffered_for_json = self.expects_json
+            first_chunk_seen = False
 
-        for chunk in stream_agent(user_input):
-            if chunk is None:
-                continue
-
-            text = str(chunk)
-
-            if not text:
-                continue
-
-            chunks.append(text)
-
-            if not buffered_for_json:
-                yield text
-                continue
-
-            if not first_chunk_seen:
-                if not text.strip():
+            for chunk in stream_agent(user_input):
+                if chunk is None:
                     continue
 
-                first_chunk_seen = True
+                text = str(chunk)
 
-                if not text.lstrip().startswith("{"):
-                    buffered_for_json = False
+                if not text:
+                    continue
+
+                chunks.append(text)
+
+                if not buffered_for_json:
                     yield text
+                    continue
 
-        response = "".join(chunks)
-        trace.record("model_called")
-        state_store.save_checkpoint("model_called", "running")
+                if not first_chunk_seen:
+                    if not text.strip():
+                        continue
 
-        if self.expects_json and buffered_for_json:
-            response = self._handle_json_response(trace, user_input, response)
-            yield response
+                    first_chunk_seen = True
 
-        writer.write_final_output(response)
-        verification = self.verification_gate.verify_final_output(response)
-        writer.write_verification(verification)
-        self._remember_turn(user_input, response)
-        trace.record("run_finished")
-        state_store.save_checkpoint(
-            "run_finished",
-            "finished" if verification["passed"] else "failed",
-            {"verification": verification},
-        )
-        trace.save()
+                    if not text.lstrip().startswith("{"):
+                        buffered_for_json = False
+                        yield text
+
+            response = "".join(chunks)
+            trace.record("model_called")
+            state_store.save_checkpoint("model_called", "running")
+
+            if self.expects_json and buffered_for_json:
+                response = self._handle_json_response(trace, user_input, response)
+                yield response
+
+            writer.write_final_output(response)
+            verification = self.verification_gate.verify_final_output(response)
+            writer.write_verification(verification)
+            self._remember_turn(user_input, response)
+            trace.record("run_finished")
+            state_store.save_checkpoint(
+                "run_finished",
+                "finished" if verification["passed"] else "failed",
+                {"verification": verification},
+            )
+            trace.save()
+        except Exception as exc:
+            self._record_run_failed(trace, state_store, exc)
+            raise
 
     def resume_from_state(self, state_path, redirect_instruction=None):
         state_store = StateStore(state_path)
@@ -212,6 +222,15 @@ class YCAgentRuntime:
             return final_response
 
         return final_data.get("content", "")
+
+    def _record_run_failed(self, trace, state_store, exc):
+        details = {
+            "error_type": exc.__class__.__name__,
+            "error": str(exc),
+        }
+        trace.record("run_failed", details)
+        state_store.save_checkpoint("run_failed", "failed", details)
+        trace.save()
 
 
 ResearchAgentHarness = YCAgentRuntime

@@ -7,9 +7,10 @@ def _now_iso():
 
 
 class TraceRecorder:
-    def __init__(self, context):
+    def __init__(self, context, event_callback=None):
         self.context = context
         self.events = []
+        self.event_callback = event_callback
 
     def record(self, event_type, payload=None):
         event = {
@@ -18,6 +19,11 @@ class TraceRecorder:
             "payload": payload or {},
         }
         self.events.append(event)
+        if self.event_callback is not None:
+            try:
+                self.event_callback(event)
+            except Exception:
+                pass
 
     def save(self):
         self.context.outputs_dir.mkdir(parents=True, exist_ok=True)

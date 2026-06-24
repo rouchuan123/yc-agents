@@ -10,9 +10,31 @@ class TestCommandSuggestionRegistry(unittest.TestCase):
         suggestions = registry.filter("/")
 
         commands = [suggestion.command for suggestion in suggestions]
-        self.assertIn("/session", commands)
-        self.assertIn("/workspace", commands)
-        self.assertIn("/clear", commands)
+        self.assertEqual(
+            commands,
+            [
+                "/session",
+                "/session new",
+                "/session new <title>",
+                "/session session_id",
+                "/session delete",
+                "/session delete session_id",
+                "/workspace",
+                "/workspace add <path>",
+                "/workspace workspace_id",
+                "/workspace current",
+                "/workspace delete",
+                "/workspace delete <path-or-id>",
+                "/status",
+                "/stop",
+                "/skills",
+                "/clear",
+                "/confirm",
+                "/cancel",
+                "/exit",
+                "/quit",
+            ],
+        )
 
     def test_filter_matches_partial_command(self):
         registry = CommandSuggestionRegistry()
@@ -29,6 +51,14 @@ class TestCommandSuggestionRegistry(unittest.TestCase):
 
         self.assertEqual(suggestions[0].command, "/workspace delete")
         self.assertIn("删除", suggestions[0].description)
+
+    def test_parameterized_suggestions_have_editable_completion_text(self):
+        registry = CommandSuggestionRegistry()
+
+        suggestions = registry.filter("/workspace add")
+
+        self.assertEqual(suggestions[0].command, "/workspace add <path>")
+        self.assertEqual(suggestions[0].completion, "/workspace add ")
 
 
 if __name__ == "__main__":

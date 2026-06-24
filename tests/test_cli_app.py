@@ -4,7 +4,7 @@ from pathlib import Path
 
 from rich.console import Group
 from rich.markdown import Markdown
-from textual.widgets import TextArea
+from textual.widgets import RichLog
 
 from yc_agents.cli.app import YCAgentsTUIApp
 from yc_agents.cli.status import CLIStatus
@@ -37,6 +37,76 @@ class StreamingRuntime:
     def run(self, user_input):
         self.run_calls.append(user_input)
         return "should not be used"
+
+
+class SlowStreamingRuntime:
+    def __init__(self, started_event=None, release_event=None):
+        self.calls = []
+        self.started_event = started_event
+        self.release_event = release_event
+
+    async def stream(self, user_input):
+        self.calls.append(user_input)
+        if self.started_event is not None:
+            self.started_event.set()
+        if self.release_event is not None:
+            await self.release_event.wait()
+        yield "done"
+
+
+class ToolEventRuntime:
+    def __init__(self):
+        self.tool_event_callback = None
+
+    def stream(self, user_input):
+        self.tool_event_callback({"event_type": "tool_call_requested", "payload": {"tool_name": "file_reader"}})
+        self.tool_event_callback({"event_type": "tool_called", "payload": {"tool_name": "file_reader"}})
+        yield "read complete"
+
+
+class CancellableRuntime:
+    def __init__(self, started_event=None):
+        self.started_event = started_event
+
+    async def stream(self, user_input):
+        if self.started_event is not None:
+            self.started_event.set()
+        await asyncio.sleep(3600)
+        yield "never"
+
+
+class FakeSkill:
+    def __init__(self, name, description=""):
+        self.name = name
+        self.description = description
+        self.allowed_tools = []
+
+
+class FakeSkillRegistry:
+    def __init__(self):
+        self.skills = {
+            "literature-review": FakeSkill("literature-review", "Review papers"),
+            "opening-report": FakeSkill("opening-report", "Prepare opening report"),
+        }
+
+    def list_skills(self):
+        return [
+            {"name": skill.name, "description": skill.description, "allowed_tools": []}
+            for skill in self.skills.values()
+        ]
+
+
+class SkillListingAgent:
+    def _load_registry(self):
+        return FakeSkillRegistry()
+
+
+class SkillListingRuntime:
+    def __init__(self):
+        self.agent = SkillListingAgent()
+
+    def run(self, user_input):
+        return "unused"
 
 
 class FakeTranscript:
@@ -252,21 +322,24 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         widgets = list(app.compose())
 
-        self.assertIsInstance(app.transcript, TextArea)
+        self.assertIsInstance(app.transcript, RichLog)
         self.assertTrue(app.transcript.allow_select)
-        self.assertTrue(app.transcript.read_only)
         self.assertIn("#processing-elapsed", app.CSS)
         self.assertIn("#chat-box", app.CSS)
 
-    def test_redraw_transcript_updates_plain_selectable_text_area(self):
+    def test_redraw_transcript_renders_assistant_markdown_in_rich_log(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         list(app.compose())
 
-        app.append_turn("You", "你好")
-        app.append_turn("Assistant", "回答")
+        writes = []
+        app.transcript.write = writes.append
 
-        self.assertIn("You\n你好", app.transcript.text)
-        self.assertIn("Assistant\n回答", app.transcript.text)
+        app.append_turn("Assistant", "**bold**\n\n- item")
+
+        self.assertIsInstance(writes[-1], Group)
+        self.assertTrue(
+            any(isinstance(renderable, Markdown) for renderable in writes[-1].renderables)
+        )
 
     def test_running_app_streams_elapsed_status_and_keeps_transcript_selectable(self):
         async def run_app():
@@ -320,6 +393,114 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         self.assertEqual(app.transcript_entries[0][0], "Status")
         self.assertIn("Workspace", app.transcript_entries[0][1])
+
+    def test_status_command_reports_running_task(self):
+        async def run_app():
+            started = asyncio.Event()
+            release = asyncio.Event()
+            app = YCAgentsTUIApp(
+                SlowStreamingRuntime(started, release),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("read pdf"))
+            task = app.current_run_task
+            await asyncio.wait_for(started.wait(), timeout=1)
+
+            await app.handle_cli_input("/status")
+
+            self.assertEqual(app.transcript_entries[-1][0], "Status")
+            self.assertIn("Running: yes", app.transcript_entries[-1][1])
+
+            release.set()
+            await task
+
+        asyncio.run(run_app())
+
+    def test_message_submission_returns_while_runtime_continues(self):
+        async def run_app():
+            started = asyncio.Event()
+            release = asyncio.Event()
+            app = YCAgentsTUIApp(
+                SlowStreamingRuntime(started, release),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await asyncio.wait_for(app.on_input_submitted(FakeInputEvent("read pdf")), timeout=1)
+            await asyncio.wait_for(started.wait(), timeout=1)
+            self.assertTrue(app.is_running)
+            self.assertEqual(app.transcript_entries[0], ("You", "read pdf"))
+
+            release.set()
+            await asyncio.wait_for(app.current_run_task, timeout=1)
+            self.assertFalse(app.is_running)
+
+        asyncio.run(run_app())
+
+    def test_stop_command_cancels_running_task(self):
+        async def run_app():
+            started = asyncio.Event()
+            app = YCAgentsTUIApp(
+                CancellableRuntime(started),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("long task"))
+            try:
+                await asyncio.wait_for(started.wait(), timeout=1)
+
+                await app.handle_cli_input("/stop")
+                await asyncio.wait_for(app.current_run_task, timeout=1)
+
+                self.assertFalse(app.is_running)
+                self.assertEqual(app.transcript_entries[-1], ("Status", "Stopped current run."))
+            finally:
+                if app.current_run_task is not None and not app.current_run_task.done():
+                    app.current_run_task.cancel()
+                    with self.assertRaises(asyncio.CancelledError):
+                        await app.current_run_task
+
+        asyncio.run(run_app())
+
+    def test_skills_command_lists_available_skill_names(self):
+        app = YCAgentsTUIApp(SkillListingRuntime(), status_collector=FakeStatusCollector())
+
+        asyncio.run(app.handle_cli_input("/skills"))
+
+        self.assertEqual(app.transcript_entries[0][0], "Skills")
+        self.assertIn("literature-review", app.transcript_entries[0][1])
+        self.assertIn("opening-report", app.transcript_entries[0][1])
+
+    def test_tool_events_are_recorded_during_streaming_run(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                ToolEventRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("read pdf"))
+            await asyncio.wait_for(app.current_run_task, timeout=1)
+
+            tool_entries = [
+                entry for entry in app.transcript_entries if entry[0] == "Tool"
+            ]
+            self.assertEqual(
+                tool_entries,
+                [
+                    ("Tool", "Calling file_reader..."),
+                    ("Tool", "Finished file_reader."),
+                ],
+            )
+
+        asyncio.run(run_app())
 
     def test_clear_command_removes_visible_transcript_entries(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
@@ -488,6 +669,38 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertTrue(app.command_suggestions_visible)
         self.assertEqual(app.filtered_suggestions[0].command, "/session")
 
+    def test_command_suggestions_include_runtime_commands(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+        app.update_command_suggestions("/")
+
+        commands = [suggestion.command for suggestion in app.filtered_suggestions]
+        self.assertEqual(
+            commands,
+            [
+                "/session",
+                "/session new",
+                "/session new <title>",
+                "/session session_id",
+                "/session delete",
+                "/session delete session_id",
+                "/workspace",
+                "/workspace add <path>",
+                "/workspace workspace_id",
+                "/workspace current",
+                "/workspace delete",
+                "/workspace delete <path-or-id>",
+                "/status",
+                "/stop",
+                "/skills",
+                "/clear",
+                "/confirm",
+                "/cancel",
+                "/exit",
+                "/quit",
+            ],
+        )
+
     def test_tab_completion_uses_selected_suggestion(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         app.prompt = type("Prompt", (), {"value": "/se"})()
@@ -496,6 +709,16 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app.complete_selected_suggestion()
 
         self.assertEqual(app.prompt.value, "/session")
+        self.assertFalse(app.command_suggestions_visible)
+
+    def test_tab_completion_uses_editable_parameterized_completion(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.prompt = type("Prompt", (), {"value": "/workspace add"})()
+        app.update_command_suggestions("/workspace add")
+
+        app.complete_selected_suggestion()
+
+        self.assertEqual(app.prompt.value, "/workspace add ")
         self.assertFalse(app.command_suggestions_visible)
 
     def test_escape_hides_command_suggestions(self):

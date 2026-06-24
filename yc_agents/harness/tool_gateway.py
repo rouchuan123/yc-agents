@@ -17,12 +17,14 @@ class ToolGateway:
         trace=None,
         approval_gate=None,
         policy=None,
+        event_callback=None,
     ):
         self.tool_registry = tool_registry
         self.allowed_tools = set(allowed_tools or [])
         self.trace = trace
         self.approval_gate = approval_gate
         self.policy = policy or ToolExecutionPolicy()
+        self.event_callback = event_callback
 
     def run_tool(self, name, *args, **kwargs):
         if name not in self.allowed_tools:
@@ -164,7 +166,21 @@ class ToolGateway:
         return arguments
 
     def _record(self, event_type, payload):
+        event = {
+            "event_type": event_type,
+            "payload": payload or {},
+        }
         if self.trace is None:
+            if self.event_callback is not None:
+                try:
+                    self.event_callback(event)
+                except Exception:
+                    pass
             return
 
         self.trace.record(event_type, payload)
+        if self.event_callback is not None:
+            try:
+                self.event_callback(event)
+            except Exception:
+                pass

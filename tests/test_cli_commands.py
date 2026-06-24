@@ -26,6 +26,18 @@ class TestCLICommands(unittest.TestCase):
         self.assertEqual(command.action, "status")
         self.assertEqual(command.content, "")
 
+    def test_stop_command(self):
+        command = parse_cli_input("/stop")
+
+        self.assertEqual(command.action, "stop")
+        self.assertEqual(command.content, "")
+
+    def test_skills_command(self):
+        command = parse_cli_input("/skills")
+
+        self.assertEqual(command.action, "skills")
+        self.assertEqual(command.content, "")
+
     def test_clear_command(self):
         command = parse_cli_input("/clear")
 

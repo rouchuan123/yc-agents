@@ -122,11 +122,13 @@ class TestToolGateway(unittest.TestCase):
         registry = ToolRegistry()
         registry.register(FakeTool())
         trace = FakeTrace()
+        events = []
 
         gateway = ToolGateway(
             tool_registry=registry,
             allowed_tools=["fake_tool"],
             trace=trace,
+            event_callback=events.append,
         )
 
         gateway.run_tool("fake_tool", "hello")
@@ -137,6 +139,7 @@ class TestToolGateway(unittest.TestCase):
         ]
 
         self.assertIn("tool_called", event_types)
+        self.assertIn("tool_called", [event["event_type"] for event in events])
 
     def test_records_tool_denied(self):
         registry = ToolRegistry()
