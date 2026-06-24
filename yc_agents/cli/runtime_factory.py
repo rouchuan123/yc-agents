@@ -10,6 +10,7 @@ from yc_agents.rag.embeddings import DeterministicEmbeddingProvider
 from yc_agents.rag.hybrid_retriever import HybridRetriever
 from yc_agents.rag.keyword_index import KeywordIndex
 from yc_agents.rag.vector_store import VectorStore
+from yc_agents.tools.docx_format_normalizer import DocxFormatNormalizerTool
 from yc_agents.tools.docx_reader import DocxReaderTool
 from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
@@ -46,7 +47,11 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
             "name": session.workspace.name,
             "path": str(session.workspace.path),
             "ycore_dir": str(session.workspace.ycore_dir),
-            "available_tools": ["workspace_files", "file_reader"],
+            "available_tools": [
+                "workspace_files",
+                "file_reader",
+                "docx_format_normalizer",
+            ],
         },
     )
     tool_registry = ToolRegistry()
@@ -54,6 +59,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     tool_registry.register(DocxReaderTool())
     tool_registry.register(WorkspaceFilesTool(session.workspace.path))
     tool_registry.register(FileReaderTool(session.workspace.path))
+    tool_registry.register(DocxFormatNormalizerTool(session.workspace.path))
     tool_registry.register(rag_search_tool)
 
     return YCAgentRuntime(
@@ -63,6 +69,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         allowed_tools=[
             "markdown_writer",
             "docx_reader",
+            "docx_format_normalizer",
             "file_reader",
             "workspace_files",
             "rag_search",

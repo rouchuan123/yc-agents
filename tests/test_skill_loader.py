@@ -44,6 +44,32 @@ class TestSkillLoader(unittest.TestCase):
         self.assertIsInstance(opening_report.assets, list)
         self.assertIsInstance(opening_report.references, list)
 
+    def test_load_all_reads_document_format_normalizer_skill(self):
+        loader = SkillLoader("skills")
+
+        skills = loader.load_all()
+
+        skill = next(
+            skill for skill in skills if skill.name == "document-format-normalizer"
+        )
+        self.assertIn("docx_format_normalizer", skill.allowed_tools)
+        self.assertIn("Word", skill.description)
+        self.assertTrue(
+            any(path.endswith("references/template-schema.md") for path in skill.references)
+        )
+        self.assertTrue(
+            any(
+                path.endswith("references/builtin-templates/report-standard.md")
+                for path in skill.references
+            )
+        )
+        self.assertTrue(
+            any(
+                path.endswith("scripts/docx_format/cli.py")
+                for path in [script["path"] for script in skill.scripts]
+            )
+        )
+
     def test_load_one_reads_expanded_metadata(self):
         with TemporaryDirectory() as tmpdir:
             skill_dir = Path(tmpdir) / "literature-review"
