@@ -89,7 +89,7 @@ class SkillLoader:
 
         return [
             str(path).replace("\\", "/")
-            for path in sorted(directory.iterdir())
+            for path in sorted(directory.rglob("*"))
             if path.is_file()
         ]
 
