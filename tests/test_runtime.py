@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from yc_agents.harness.runtime import ResearchAgentHarness, YCAgentRuntime
+from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.tools.base import BaseTool
 from yc_agents.tools.registry import ToolRegistry
 
@@ -53,6 +54,61 @@ class FakeToolCallAgent:
             {
                 "type": "final_answer",
                 "content": "tool handled",
+            }
+        )
+
+
+class FakeMultiToolCallAgent:
+    def __init__(self):
+        self.observations = []
+
+    def run(self, user_input):
+        return json.dumps(
+            {
+                "type": "tool_call",
+                "tool_name": "fake_tool",
+                "arguments": {"text": "list files"},
+                "reason": "first tool call",
+            }
+        )
+
+    def run_with_observation(self, user_input, observation):
+        self.observations.append(observation)
+        if len(self.observations) == 1:
+            return json.dumps(
+                {
+                    "type": "tool_call",
+                    "tool_name": "fake_tool",
+                    "arguments": {"text": "normalize docx"},
+                    "reason": "second tool call",
+                }
+            )
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "docx normalized",
+            }
+        )
+
+
+class FakeLoopingToolCallAgent:
+    def __init__(self):
+        self.observations = []
+
+    def run(self, user_input):
+        return self._tool_call()
+
+    def run_with_observation(self, user_input, observation):
+        self.observations.append(observation)
+        return self._tool_call()
+
+    def _tool_call(self):
+        return json.dumps(
+            {
+                "type": "tool_call",
+                "tool_name": "fake_tool",
+                "arguments": {"text": "repeat"},
+                "reason": "loop",
             }
         )
 
@@ -155,6 +211,51 @@ class TestYCAgentRuntime(unittest.TestCase):
         response = runtime.run("trigger tool")
 
         self.assertEqual(response, "tool handled")
+
+    def test_runtime_handles_multiple_json_tool_calls_before_final_answer(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            registry = ToolRegistry()
+            registry.register(FakeTool())
+            agent = FakeMultiToolCallAgent()
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["fake_tool"],
+                output_root=Path(tmp_dir),
+            )
+
+            response = runtime.run("trigger multiple tools")
+
+            run_dir = next(Path(tmp_dir).iterdir())
+            trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
+            event_types = [event["event_type"] for event in trace["events"]]
+            self.assertEqual(response, "docx normalized")
+            self.assertEqual(len(agent.observations), 2)
+            self.assertEqual(
+                [item["tool_result"]["echo"] for item in agent.observations],
+                ["list files", "normalize docx"],
+            )
+            self.assertEqual(event_types.count("tool_call_requested"), 2)
+            self.assertEqual(event_types.count("tool_called"), 2)
+
+    def test_runtime_returns_user_visible_message_when_tool_loop_limit_stops(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakeLoopingToolCallAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            tool_policy=ToolExecutionPolicy(max_calls=1, max_repeated_calls=1),
+        )
+
+        response = runtime.run("trigger loop limit")
+
+        self.assertIn("工具调用次数过多", response)
+        self.assertIn("已停止", response)
+        self.assertEqual(len(agent.observations), 1)
 
     def test_runtime_passes_approval_gate_to_tool_gateway(self):
         registry = ToolRegistry()

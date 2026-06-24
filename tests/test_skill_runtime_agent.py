@@ -237,6 +237,37 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(len(llm.messages), 3)
             self.assertIn("tool_result", llm.messages[2][1]["content"])
 
+    def test_observation_prompt_allows_follow_up_tool_call_or_final_answer(self):
+        llm = FakeLLM(
+            [
+                json.dumps(
+                    {
+                        "type": "final_answer",
+                        "content": "done",
+                    }
+                )
+            ]
+        )
+        agent = SkillRuntimeAgent(llm)
+
+        agent.run_with_observation(
+            "调整 Word 格式",
+            {
+                "tool_call": {
+                    "type": "tool_call",
+                    "tool_name": "workspace_files",
+                    "arguments": {},
+                },
+                "tool_result": {"files": [{"path": "draft.docx"}]},
+            },
+        )
+
+        system_prompt = llm.messages[0][0]["content"]
+        self.assertIn("tool_call", system_prompt)
+        self.assertIn("final_answer", system_prompt)
+        self.assertIn("If another tool is needed", system_prompt)
+        self.assertNotIn("Return only valid final_answer JSON", system_prompt)
+
     def test_run_retries_when_skill_execution_repeats_skill_selection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"

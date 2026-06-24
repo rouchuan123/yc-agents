@@ -352,9 +352,13 @@ class SkillRuntimeAgent:
                     "You are the YCore Skill-driven Agent. "
                     "You have received one tool execution observation. "
                     "The active workspace is provided in the user message workspace field. "
-                    "Return only valid final_answer JSON. "
+                    "Return only valid JSON. "
+                    "If another tool is needed to complete the user's request, return a tool_call JSON. "
+                    "If the task is complete, return a final_answer JSON. "
                     "Do not return Markdown or extra explanation. "
-                    'Format: {"type":"final_answer","content":"final answer for the user"}'
+                    'tool_call format: {"type":"tool_call","tool_name":"workspace_files",'
+                    '"arguments":{},"reason":"why this tool is needed"} '
+                    'final_answer format: {"type":"final_answer","content":"final answer for the user"}'
                 ),
             },
             {

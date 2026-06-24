@@ -1,9 +1,12 @@
+from dataclasses import replace
+
 from yc_agents.harness.context import RunContext
 from yc_agents.harness.trace import TraceRecorder
 from yc_agents.harness.run_outputs import RunOutputWriter
 from yc_agents.harness.json_protocol import InvalidModelJSONError, parse_model_json
 from yc_agents.harness.state import StateStore
 from yc_agents.harness.tool_gateway import ToolGateway
+from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.harness.verification import VerificationGate
 
 
@@ -18,6 +21,7 @@ class YCAgentRuntime:
         verification_gate=None,
         output_root=None,
         event_callback=None,
+        tool_policy=None,
     ):
         self.agent = agent
         self.expects_json = expects_json
@@ -27,6 +31,7 @@ class YCAgentRuntime:
         self.verification_gate = verification_gate or VerificationGate()
         self.output_root = output_root
         self.event_callback = event_callback
+        self.tool_policy = tool_policy
 
     def run(self, user_input):
         context = RunContext(user_input=user_input, output_root=self.output_root)
@@ -172,6 +177,20 @@ class YCAgentRuntime:
         return remember_turn(user_input, response)
 
     def _handle_json_response(self, trace, user_input, response):
+        policy = self._new_tool_policy()
+
+        while True:
+            response = self._handle_json_response_once(
+                trace,
+                user_input,
+                response,
+                policy,
+            )
+
+            if not self._is_tool_call_json(response):
+                return response
+
+    def _handle_json_response_once(self, trace, user_input, response, policy):
         try:
             data = parse_model_json(response)
         except InvalidModelJSONError as exc:
@@ -179,7 +198,7 @@ class YCAgentRuntime:
             return response
 
         if data["type"] == "tool_call":
-            return self._handle_tool_call(trace, user_input, data)
+            return self._handle_tool_call(trace, user_input, data, policy)
 
         if data["type"] == "final_answer":
             return data.get("content", "")
@@ -193,7 +212,7 @@ class YCAgentRuntime:
 
         return response
 
-    def _handle_tool_call(self, trace, user_input, data):
+    def _handle_tool_call(self, trace, user_input, data, policy):
         trace.record("tool_call_requested", data)
 
         gateway = ToolGateway(
@@ -201,6 +220,7 @@ class YCAgentRuntime:
             allowed_tools=self.allowed_tools,
             trace=trace,
             approval_gate=self.approval_gate,
+            policy=policy,
         )
 
         tool_result = gateway.run_tool(
@@ -213,15 +233,47 @@ class YCAgentRuntime:
             "tool_result": tool_result,
         }
 
+        if self._tool_loop_was_stopped(tool_result):
+            return self._tool_loop_stopped_message(tool_result)
+
         final_response = self.agent.run_with_observation(user_input, observation)
         trace.record("model_called")
 
-        final_data = parse_model_json(final_response)
+        try:
+            final_data = parse_model_json(final_response)
+        except InvalidModelJSONError as exc:
+            trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
+            return final_response
 
         if final_data["type"] != "final_answer":
             return final_response
 
         return final_data.get("content", "")
+
+    def _is_tool_call_json(self, text):
+        try:
+            data = parse_model_json(text)
+        except InvalidModelJSONError:
+            return False
+
+        return data.get("type") == "tool_call"
+
+    def _tool_loop_was_stopped(self, tool_result):
+        return (
+            isinstance(tool_result, dict)
+            and tool_result.get("ok") is False
+            and tool_result.get("error_type") == "loop_stopped"
+        )
+
+    def _tool_loop_stopped_message(self, tool_result):
+        error = tool_result.get("error") or "工具调用循环已停止。"
+        return f"工具调用次数过多，已停止继续执行。原因：{error}"
+
+    def _new_tool_policy(self):
+        if self.tool_policy is None:
+            return ToolExecutionPolicy()
+
+        return replace(self.tool_policy, call_count=0, repeated_calls={})
 
     def _record_run_failed(self, trace, state_store, exc):
         details = {
