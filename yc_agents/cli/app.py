@@ -3,13 +3,14 @@ import subprocess
 import time
 from contextlib import suppress
 from pathlib import Path
+from queue import Empty, SimpleQueue
 
 from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.containers import Vertical
-from textual.widgets import Footer, Input, Static, TextArea
+from textual.widgets import Footer, Input, RichLog, Static
 
 from yc_agents.cli.commands import parse_cli_input
 from yc_agents.cli.runtime_factory import build_cli_runtime
@@ -123,20 +124,24 @@ class YCAgentsTUIApp(App):
         self.selection_list_kind = None
         self.selection_list_items = []
         self.selected_list_index = 0
+        self.current_run_task = None
+        self.current_run_started_at = None
+        self.current_run_input = ""
+        self._direct_run_active = False
+        self.runtime_event_queue = SimpleQueue()
+        self.attach_runtime_event_callback()
 
     def compose(self) -> ComposeResult:
         self.status_widget = Static(self.render_status(), id="status")
-        self.transcript = TextArea(
-            "",
-            read_only=True,
-            show_cursor=False,
-            soft_wrap=True,
+        self.transcript = RichLog(
+            wrap=True,
+            auto_scroll=True,
             id="transcript",
         )
         self.elapsed_status = Static("", id="processing-elapsed")
         self.selection_list = Static("", id="selection-list")
         self.command_suggestions = Static("", id="command-suggestions")
-        self.prompt = Input(placeholder="输入消息，或使用 /status /clear /exit", id="prompt")
+        self.prompt = Input(placeholder="输入消息，或使用 /status /stop /skills /clear /exit", id="prompt")
 
         yield self.status_widget
         yield Vertical(self.transcript, self.elapsed_status, id="chat-box")
@@ -159,6 +164,11 @@ class YCAgentsTUIApp(App):
 
         self.hide_command_suggestions()
         self.hide_selection_list()
+        command = parse_cli_input(event.value)
+        if command.action == "message":
+            self.start_background_run(command.content)
+            return
+
         await self.handle_cli_input(event.value)
 
     def on_input_changed(self, event: Input.Changed):
@@ -166,6 +176,70 @@ class YCAgentsTUIApp(App):
 
     def render_status(self, width=100):
         return self.status_collector.collect().summary(width=width)
+
+    def attach_runtime_event_callback(self):
+        for attribute in ("event_callback", "tool_event_callback"):
+            with suppress(Exception):
+                setattr(self.runtime, attribute, self.handle_runtime_event)
+
+    def handle_runtime_event(self, event):
+        self.runtime_event_queue.put(event)
+
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            call_from_thread = getattr(self, "call_from_thread", None)
+            if callable(call_from_thread):
+                with suppress(Exception):
+                    call_from_thread(self.flush_runtime_events)
+            return
+
+        self.flush_runtime_events()
+
+    def flush_runtime_events(self):
+        while True:
+            try:
+                event = self.runtime_event_queue.get_nowait()
+            except Empty:
+                return
+
+            message = self.format_runtime_event(event)
+            if message:
+                self.append_turn("Tool", message)
+
+    def format_runtime_event(self, event):
+        event_type = event.get("event_type", "")
+        payload = event.get("payload", {}) or {}
+        tool_name = payload.get("tool_name") or payload.get("name") or "tool"
+
+        if event_type == "tool_call_requested":
+            return f"Calling {tool_name}..."
+
+        if event_type == "tool_called":
+            return f"Finished {tool_name}."
+
+        if event_type == "tool_failed":
+            error_type = payload.get("error_type", "error")
+            return f"Failed {tool_name}: {error_type}."
+
+        if event_type == "tool_denied":
+            return f"Denied {tool_name}."
+
+        if event_type == "tool_needs_approval":
+            return f"{tool_name} needs approval."
+
+        if event_type == "tool_validation_failed":
+            return f"Invalid arguments for {tool_name}."
+
+        if event_type == "tool_retry":
+            attempt = payload.get("attempt", "")
+            suffix = f" attempt {attempt}" if attempt else ""
+            return f"Retrying {tool_name}{suffix}."
+
+        if event_type == "tool_loop_stopped":
+            return f"Stopped repeated {tool_name} calls."
+
+        return ""
 
     def _active_workspace_path(self):
         if self.workspace is None:
@@ -221,7 +295,15 @@ class YCAgentsTUIApp(App):
             return
 
         if command.action == "status":
-            self.append_turn("Status", self.render_status())
+            self.append_turn("Status", self.render_runtime_status())
+            return
+
+        if command.action == "stop":
+            await self.stop_current_run()
+            return
+
+        if command.action == "skills":
+            self.append_turn("Skills", self.render_skills())
             return
 
         if command.action == "clear":
@@ -286,26 +368,107 @@ class YCAgentsTUIApp(App):
             return
 
         self.append_turn("You", command.content)
+        await self._run_user_message(command.content)
 
-        started_at = time.monotonic()
+        self.refresh_status()
+
+    @property
+    def is_running(self):
+        if self._direct_run_active:
+            return True
+
+        return self.current_run_task is not None and not self.current_run_task.done()
+
+    def start_background_run(self, user_input):
+        if self.is_running:
+            self.append_turn("Status", "A run is already in progress. Use /stop to cancel it.")
+            return
+
+        self.append_turn("You", user_input)
+        self.current_run_task = asyncio.create_task(self._run_user_message(user_input))
+
+    async def _run_user_message(self, user_input):
+        self._direct_run_active = True
+        self.current_run_started_at = time.monotonic()
+        self.current_run_input = user_input
+        started_at = self.current_run_started_at
         timer_task = asyncio.create_task(self._run_elapsed_timer(started_at))
+        stopped = False
 
         try:
-            await self.stream_assistant_response(command.content)
+            await self.stream_assistant_response(user_input)
+        except asyncio.CancelledError:
+            stopped = True
+            self._remove_empty_assistant_placeholder()
+            self.append_turn("Status", "Stopped current run.")
         except Exception as exc:
             self._remove_empty_assistant_placeholder()
             self.append_turn("Error", f"Runtime error: {exc}")
-            self.refresh_status()
-            return
         finally:
             timer_task.cancel()
 
             with suppress(asyncio.CancelledError):
                 await timer_task
 
-            self.update_elapsed_status(time.monotonic() - started_at, completed=True)
+            self.flush_runtime_events()
+            self._direct_run_active = False
+            self.current_run_started_at = None
+            if not stopped:
+                self.update_elapsed_status(time.monotonic() - started_at, completed=True)
+            self.refresh_status()
 
-        self.refresh_status()
+    async def stop_current_run(self):
+        if not self.is_running:
+            self.append_turn("Status", "No run is currently running.")
+            return
+
+        if self.current_run_task is None or self.current_run_task.done():
+            self.append_turn("Status", "No background run can be stopped.")
+            return
+
+        self.current_run_task.cancel()
+        with suppress(asyncio.CancelledError):
+            await self.current_run_task
+
+    def render_runtime_status(self):
+        lines = [self.render_status()]
+        lines.append(f"Running: {'yes' if self.is_running else 'no'}")
+
+        if self.is_running and self.current_run_started_at is not None:
+            lines.append(f"Elapsed: {format_elapsed(time.monotonic() - self.current_run_started_at)}")
+            if self.current_run_input:
+                lines.append(f"Task: {self.current_run_input}")
+
+        return "\n".join(lines)
+
+    def render_skills(self):
+        registry = self._load_skill_registry()
+
+        if registry is None:
+            return "No skill registry is available."
+
+        skills = registry.list_skills()
+        if not skills:
+            return "No skills found."
+
+        lines = []
+        for skill in skills:
+            name = skill.get("name", "")
+            description = skill.get("description", "")
+            if description:
+                lines.append(f"- {name}: {description}")
+            else:
+                lines.append(f"- {name}")
+        return "\n".join(lines)
+
+    def _load_skill_registry(self):
+        agent = getattr(self.runtime, "agent", None)
+        load_registry = getattr(agent, "_load_registry", None)
+
+        if callable(load_registry):
+            return load_registry()
+
+        return None
 
     async def stream_assistant_response(self, user_input):
         self.append_turn("Assistant", "")
@@ -313,6 +476,8 @@ class YCAgentsTUIApp(App):
         content = ""
 
         async for chunk in self.iter_response_chunks(user_input):
+            self.flush_runtime_events()
+
             if chunk is None:
                 continue
 
@@ -324,9 +489,12 @@ class YCAgentsTUIApp(App):
             content += text
             self.transcript_entries[assistant_index] = ("Assistant", content)
             self.redraw_transcript()
+            self.flush_runtime_events()
 
             if self.stream_delay:
                 await asyncio.sleep(self.stream_delay)
+
+        self.flush_runtime_events()
 
     async def iter_response_chunks(self, user_input):
         stream = getattr(self.runtime, "stream", None)
@@ -335,34 +503,42 @@ class YCAgentsTUIApp(App):
             stream_result = stream(user_input)
 
             async for chunk in self._iter_stream_result(stream_result):
+                self.flush_runtime_events()
                 yield chunk
 
             return
 
         response = await asyncio.to_thread(self.runtime.run, user_input)
+        self.flush_runtime_events()
 
         for chunk in self._chunk_text(str(response)):
             yield chunk
 
     async def _iter_stream_result(self, stream_result):
         if isinstance(stream_result, str):
+            self.flush_runtime_events()
             yield stream_result
             return
 
         if hasattr(stream_result, "__aiter__"):
             async for chunk in stream_result:
+                self.flush_runtime_events()
                 yield chunk
+            self.flush_runtime_events()
             return
 
         iterator = iter(stream_result)
 
         while True:
             has_chunk, chunk = await asyncio.to_thread(_next_or_done, iterator)
+            self.flush_runtime_events()
 
             if not has_chunk:
                 break
 
             yield chunk
+
+        self.flush_runtime_events()
 
     def _chunk_text(self, text):
         chunk_size = max(1, int(self.stream_chunk_size))
@@ -388,20 +564,15 @@ class YCAgentsTUIApp(App):
         if self.transcript is None:
             return
 
-        text = self._transcript_text()
-        load_text = getattr(self.transcript, "load_text", None)
-        if callable(load_text):
-            cursor_location = getattr(self.transcript, "cursor_location", None)
-            self.transcript.load_text(text)
-            if cursor_location is not None:
-                with suppress(Exception):
-                    self.transcript.cursor_location = cursor_location
-            return
-
+        scroll_y = getattr(self.transcript, "scroll_y", None)
         self.transcript.clear()
 
         for speaker, content in self.transcript_entries:
             self.transcript.write(self.render_turn(speaker, content))
+
+        if scroll_y is not None:
+            with suppress(Exception):
+                self.transcript.scroll_y = scroll_y
 
     def _transcript_text(self):
         blocks = []
@@ -425,11 +596,7 @@ class YCAgentsTUIApp(App):
         self.transcript_entries.clear()
 
         if self.transcript is not None:
-            load_text = getattr(self.transcript, "load_text", None)
-            if callable(load_text):
-                self.transcript.load_text("")
-            else:
-                self.transcript.clear()
+            self.transcript.clear()
 
         if self.elapsed_status is not None:
             self.elapsed_status.update("")
@@ -551,6 +718,7 @@ class YCAgentsTUIApp(App):
             return
 
         self.runtime = self.runtime_builder(self.session)
+        self.attach_runtime_event_callback()
 
     def reload_transcript(self):
         if self.session_store is None:
@@ -590,7 +758,7 @@ class YCAgentsTUIApp(App):
 
         suggestion = self.filtered_suggestions[self.selected_suggestion_index]
         if self.prompt is not None:
-            self.prompt.value = suggestion.command
+            self.prompt.value = suggestion.completion or suggestion.command
         self.hide_command_suggestions()
 
     def redraw_command_suggestions(self):

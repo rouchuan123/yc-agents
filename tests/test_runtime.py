@@ -1,5 +1,6 @@
 import unittest
 import json
+import tempfile
 
 from pathlib import Path
 
@@ -11,6 +12,11 @@ from yc_agents.tools.registry import ToolRegistry
 class FakeAgent:
     def run(self, user_input):
         return f"echo: {user_input}"
+
+
+class FailingAgent:
+    def run(self, user_input):
+        raise RuntimeError("agent exploded")
 
 
 class FakeStreamingAgent:
@@ -30,6 +36,12 @@ class FakeStreamingAgent:
 
     def remember_turn(self, user_input, response):
         self.remembered_turns.append((user_input, response))
+
+
+class FailingStreamingAgent:
+    def stream(self, user_input):
+        yield "before failure"
+        raise RuntimeError("stream exploded")
 
 
 class FakeStreamingToolCallAgent:
@@ -201,6 +213,25 @@ class TestYCAgentRuntime(unittest.TestCase):
         self.assertEqual(runtime.agent.stream_calls, ["trigger tool"])
         self.assertEqual(runtime.agent.run_calls, [])
 
+    def test_runtime_emits_tool_events_to_callback(self):
+        events = []
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeStreamingToolCallAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            event_callback=events.append,
+        )
+
+        chunks = list(runtime.stream("trigger tool"))
+
+        self.assertEqual(chunks, ["approval handled"])
+        event_types = [event["event_type"] for event in events]
+        self.assertIn("tool_call_requested", event_types)
+        self.assertIn("tool_called", event_types)
+
     def test_runtime_stream_buffers_whitespace_prefixed_json_tool_calls(self):
         registry = ToolRegistry()
         registry.register(FakeTool())
@@ -299,6 +330,38 @@ class TestYCAgentRuntime(unittest.TestCase):
             agent.observation["tool_result"]["error_type"],
             "validation_error",
         )
+
+    def test_runtime_records_failed_state_and_trace_when_agent_raises(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime = YCAgentRuntime(FailingAgent(), output_root=Path(tmp_dir))
+
+            with self.assertRaises(RuntimeError):
+                runtime.run("fail")
+
+            run_dirs = list(Path(tmp_dir).iterdir())
+            self.assertEqual(len(run_dirs), 1)
+            state = json.loads((run_dirs[0] / "state.json").read_text(encoding="utf-8"))
+            trace = json.loads((run_dirs[0] / "trace.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["current_step"], "run_failed")
+            self.assertEqual(trace["events"][-1]["event_type"], "run_failed")
+
+    def test_runtime_stream_records_failed_state_and_trace_when_stream_raises(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime = YCAgentRuntime(FailingStreamingAgent(), output_root=Path(tmp_dir))
+
+            with self.assertRaises(RuntimeError):
+                list(runtime.stream("fail"))
+
+            run_dirs = list(Path(tmp_dir).iterdir())
+            self.assertEqual(len(run_dirs), 1)
+            state = json.loads((run_dirs[0] / "state.json").read_text(encoding="utf-8"))
+            trace = json.loads((run_dirs[0] / "trace.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["current_step"], "run_failed")
+            self.assertEqual(trace["events"][-1]["event_type"], "run_failed")
 
 
 class FakeJSONAgent:
