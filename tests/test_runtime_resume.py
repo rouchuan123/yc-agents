@@ -14,20 +14,20 @@ class FakeAgent:
         return f"echo: {user_input}"
 
 
-def test_resume_point_serializes_document_format_skill():
+def test_resume_point_serializes_selected_skill():
     point = ResumePoint(
         run_id="run-1",
         status="failed",
         last_step="tool_call",
-        user_input="调整 draft.docx 格式",
-        selected_skill="document-format-normalizer",
-        redirect_instruction="改用 report-standard",
+        user_input="review this project",
+        selected_skill="code-review",
+        redirect_instruction="focus on testing gaps",
     )
 
     data = point.to_dict()
 
-    assert data["selected_skill"] == "document-format-normalizer"
-    assert data["redirect_instruction"] == "改用 report-standard"
+    assert data["selected_skill"] == "code-review"
+    assert data["redirect_instruction"] == "focus on testing gaps"
 
 
 def test_resume_from_state_returns_clear_message_without_checkpoint(tmp_path):
@@ -44,15 +44,15 @@ def test_resume_from_state_replays_user_input_with_redirect(tmp_path):
     store.save_checkpoint(
         "model_called",
         "failed",
-        {"user_input": "调整 draft.docx 格式"},
+        {"user_input": "review this project"},
     )
     agent = FakeAgent()
     runtime = YCAgentRuntime(agent)
 
     response = runtime.resume_from_state(
         state_path,
-        redirect_instruction="改用 report-standard",
+        redirect_instruction="focus on testing gaps",
     )
 
-    assert response.startswith("echo: 调整 draft.docx 格式")
-    assert "改用 report-standard" in agent.inputs[0]
+    assert response.startswith("echo: review this project")
+    assert "focus on testing gaps" in agent.inputs[0]

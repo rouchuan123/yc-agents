@@ -2,49 +2,63 @@
 
 ## 演示目标
 
-展示 YCore 作为 CLI Agent 运行时，如何把“Word 文档格式调整”拆成技能选择、工具调用、状态追踪和结果审计，而不是只生成一段口头建议。
+展示 YCore 作为 CLI Agent runtime，如何把中文用户请求拆成 Skill 选择、工具调用、状态追踪和结果复核，而不是只生成一段口头回复。
 
 ## 演示前准备
 
 - 执行 `pip install -r requirements.txt` 安装依赖。
 - 执行 `python -m pytest -q` 确认测试通过。
-- 准备一份格式混乱的 `messy-demo.docx`，放在当前 workspace。
+- 准备一个普通项目目录作为 workspace。
 
-## 场景：Word 文档格式调整
+## 场景一：项目审查
 
 用户输入：
 
 ```text
-使用 document-format-normalizer 处理 messy-demo.docx，按 report-standard 模板调整格式，输出名为 demo-normalized。
+请用 code-review 审查这个项目，重点总结架构、风险和测试缺口。
 ```
 
 演示重点：
 
-1. CLI 接收用户请求。
-2. `SkillRuntimeAgent` 选择 `document-format-normalizer`。
-3. 模型发起 `docx_format_normalizer` 工具调用。
-4. 工具在 workspace 内读取源 `.docx`。
-5. DOCX pipeline 生成 `.ycore/docx-format/demo-normalized.docx`。
-6. 同时生成 `.ycore/docx-format/demo-normalized.audit.md` 和 `.audit.json`。
-7. 最终回复说明输出路径，并标出需要人工复核的 warning。
+1. CLI 接收中文请求。
+2. `SkillRuntimeAgent` 根据技能摘要选择 `code-review`。
+3. `PromptBuilder` 注入 workspace、记忆、项目指令和选中 Skill。
+4. 模型按 allowed tools 发起 `workspace_files` 和 `file_reader` 调用。
+5. `ToolGateway` 校验工具权限和参数。
+6. runtime 写入 `.ycore/runs/<session_id>/<run_id>/trace.json`、`state.json` 和 `final_output.md`。
+
+## 场景二：Eval 方案
+
+用户输入：
+
+```text
+请用 eval-writer 为这个 Agent 设计一组 eval case、指标和测试数据。
+```
+
+演示重点：
+
+1. Skill 把模糊评估需求拆成目标、维度、用例、指标和执行流程。
+2. 输出保持中文，方便中文用户直接阅读和二次修改。
+3. 如果用户要求保存，使用 `markdown_writer` 生成 Markdown 文件。
 
 ## 可以展示的文件
 
-- `.ycore/docx-format/demo-normalized.docx`
-- `.ycore/docx-format/demo-normalized.audit.md`
-- `.ycore/docx-format/demo-normalized.audit.json`
+- `.ycore/runs/<session_id>/<run_id>/input.md`
+- `.ycore/runs/<session_id>/<run_id>/context.json`
 - `.ycore/runs/<session_id>/<run_id>/trace.json`
 - `.ycore/runs/<session_id>/<run_id>/state.json`
 - `.ycore/runs/<session_id>/<run_id>/final_output.md`
 
 ## 五分钟讲解稿
 
-YCore 当前的首个落地点是 Word 文档格式调整。用户把一份格式混乱的 `.docx` 草稿交给 CLI，Agent 先根据技能说明选择 `document-format-normalizer`，再通过 `ToolGateway` 调用确定性的 DOCX 工具。工具负责分析文档结构、套用内置模板、生成新 Word 文件，并输出审计报告。这样可以展示 Agent 不只是聊天，而是在一个可追踪、可验证、可恢复的运行时里完成真实文件处理任务。
+YCore 是一个面向中文用户的本地 CLI Agent runtime。它不把某个业务场景写进全局 prompt，而是把通用运行边界做扎实：Skill 选择、工作区上下文、项目指令、工具权限、trace、state 和输出复核。
+
+具体能力由 Skill 提供。当前默认发布 `code-review` 和 `eval-writer` 两个示例业务 Skill，用来展示项目审查和评估方案生成这两类常见中文用户需求。
 
 ## 常见追问
 
-- 为什么不用模型直接输出排版建议？
-- 工具如何保证不覆盖源文件？
-- 上传模板能支持到什么程度？
-- 复杂 Word 对象无法重建时怎么处理？
-- 如何通过 trace 和 audit report 复核一次运行？
+- Skill 如何声明 allowed tools？
+- 项目根 `YCORE.md` 和本地 `.ycore/YCORE.md` 谁优先？
+- 工具调用失败时 runtime 如何记录和恢复？
+- 没有合适 Skill 时 Agent 如何普通回答？
+- trace 和 state 如何复核一次运行？

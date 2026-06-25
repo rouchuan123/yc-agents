@@ -6,12 +6,12 @@ from yc_agents.memory.compressor import MemoryCompressor
 from yc_agents.memory.profile import ResearchProfileMemory
 from yc_agents.memory.session import SessionMemory
 from yc_agents.memory.summary import SummaryMemory
+from yc_agents.prompts.builder import PromptBuilder
+from yc_agents.prompts.project_instructions import ProjectInstructionLoader
 from yc_agents.rag.embeddings import DeterministicEmbeddingProvider
 from yc_agents.rag.hybrid_retriever import HybridRetriever
 from yc_agents.rag.keyword_index import KeywordIndex
 from yc_agents.rag.vector_store import VectorStore
-from yc_agents.tools.docx_format_normalizer import DocxFormatNormalizerTool
-from yc_agents.tools.docx_reader import DocxReaderTool
 from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.rag_search import RAGSearchTool
@@ -35,6 +35,8 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         vector_store=vector_store,
     )
     rag_search_tool = RAGSearchTool(rag_retriever)
+    project_instructions = ProjectInstructionLoader(session.workspace.path).load()
+    prompt_builder = PromptBuilder(project_instructions=project_instructions)
     agent = SkillRuntimeAgent(
         llm,
         skills_dir=skills_dir,
@@ -44,6 +46,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         memory_compressor=memory_compressor,
         compression_threshold=12,
         rag_search_tool=rag_search_tool,
+        prompt_builder=prompt_builder,
         workspace_context={
             "name": session.workspace.name,
             "path": str(session.workspace.path),
@@ -51,17 +54,16 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
             "available_tools": [
                 "workspace_files",
                 "file_reader",
-                "docx_format_normalizer",
+                "markdown_writer",
+                "rag_search",
                 "web_search",
             ],
         },
     )
     tool_registry = ToolRegistry()
     tool_registry.register(MarkdownWriterTool())
-    tool_registry.register(DocxReaderTool())
     tool_registry.register(WorkspaceFilesTool(session.workspace.path))
     tool_registry.register(FileReaderTool(session.workspace.path))
-    tool_registry.register(DocxFormatNormalizerTool(session.workspace.path))
     tool_registry.register(WebSearchTool())
     tool_registry.register(rag_search_tool)
 
@@ -71,8 +73,6 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         tool_registry=tool_registry,
         allowed_tools=[
             "markdown_writer",
-            "docx_reader",
-            "docx_format_normalizer",
             "file_reader",
             "workspace_files",
             "rag_search",

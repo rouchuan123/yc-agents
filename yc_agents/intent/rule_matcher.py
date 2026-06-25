@@ -1,16 +1,12 @@
 DEFAULT_KEYWORDS = {
-    "document-format-normalizer": [
-        "word",
-        "docx",
-        "格式",
-        "排版",
-        "模板",
-        "文档",
-        "报告格式",
-        "格式调整",
-        "格式规范",
-        "normalize",
-        "format",
+    "code-review": [
+        "review",
+        "architecture",
+        "risk",
+        "risks",
+        "test gap",
+        "code review",
+        "project review",
     ],
 }
 
@@ -33,7 +29,7 @@ class RuleIntentMatcher:
                 {
                     "skill_name": skill.name,
                     "confidence": min(1.0, len(matched_keywords) / 3),
-                    "reason": f"规则关键词命中：{', '.join(matched_keywords)}",
+                    "reason": f"Rule keywords matched: {', '.join(matched_keywords)}",
                     "matched_keywords": matched_keywords,
                 }
             )

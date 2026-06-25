@@ -2,38 +2,34 @@
 
 ## 60 秒项目介绍
 
-YCore 是一个 CLI 优先的本地 Agent 运行时。它的首个落地点是 Word 文档格式调整：用户提供 `.docx` 草稿和目标模板，Agent 选择 `document-format-normalizer` 技能，调用确定性的 DOCX 工具生成规范化文档，并输出格式审计报告。项目重点不是写长提示词，而是展示技能选择、工具权限、状态追踪和结果验证这些 Agent 工程边界。
+YCore 是一个面向中文用户的本地 CLI Agent runtime。项目重点不是把某个垂直场景写进长 prompt，而是展示 Agent 工程的关键边界：Skill 选择、项目指令注入、工具权限、工作区隔离、状态追踪和结果验证。
 
-## 为什么它不是普通 Chatbot
+具体能力由 `skills/` 下的 Skill 承载。当前默认发布两个中文示例 Skill：`code-review` 用于项目审查，`eval-writer` 用于设计评估方案。
 
-普通 chatbot 往往只把用户请求映射成一段模型回复。YCore 会把请求送入运行时控制层：选择技能、注入上下文、通过 gateway 调用工具、记录 trace、持久化 state，并输出可复核的文件产物。
+## 为什么强调 Skill 层
 
-## 首个落地点为什么选文档格式调整
+Skill 让具体工作流成为可维护资产：
 
-Word 文档格式调整有明确输入、明确输出和可验证标准：
-
-- 输入是 `.docx` 草稿和模板。
-- 输出是新的 `.docx` 和审计报告。
-- 验证可以检查页边距、正文样式、标题样式、目录、页码和 warning。
-
-这比单纯文本生成更能体现 Agent 调用工具完成真实任务的价值。
+- 触发条件和示例输入写在 `SKILL.md`。
+- allowed tools 明确声明。
+- 参考资料、脚本和资产跟随 Skill 管理。
+- 全局 prompt 不需要为某个场景持续膨胀。
 
 ## 最难的技术点
 
-最难的是把模型的自由度控制在工程边界内。模型负责判断何时使用技能、如何解释结果；确定性工具负责解析 Word、应用模板、生成文件和审计。复杂对象无法稳定处理时，不让模型过度承诺，而是进入审计报告 warning。
+最难的是把模型自由度控制在工程边界内。模型负责判断何时使用技能、如何解释结果；runtime 负责 JSON 协议、工具权限、工作区边界、trace 和 state。项目指令可以影响偏好和协作方式，但不能覆盖硬运行规则。
 
 ## 工具调用失败处理
 
-`ToolGateway` 会校验工具名、参数 schema、权限和审批策略。工具失败时返回结构化错误，运行 trace 中会记录失败事件，模型可以据此解释原因或要求用户补充文件路径。
+`ToolGateway` 会校验工具名、参数 schema、权限和审批策略。工具失败时返回结构化错误，运行 trace 中会记录失败事件，模型可以据此解释原因或要求用户补充信息。
 
 ## 当前发布范围
 
 - 只保留 CLI 端。
-- 只发布 `document-format-normalizer` 一个技能。
-- 第一版稳定支持内置 `report-standard` 模板。
-- 上传模板只做有限规则提取。
-- 复杂 Word 对象只提示人工复核。
+- 默认发布 `code-review` 和 `eval-writer` 两个中文示例业务 Skill。
+- 支持根 `YCORE.md` 与本地 `.ycore/YCORE.md` 两层项目指令。
+- 默认工具集保持通用：工作区文件、文件读取、Markdown 写入、RAG 检索和 web search。
 
 ## 工程可信度
 
-项目有单元测试覆盖 CLI runtime、技能加载、工具网关、DOCX analyzer/formatter/auditor/pipeline 和文档格式调整工具。`scripts/test.ps1` 只运行 Python 测试，和当前 CLI-only 范围保持一致。
+项目有单元测试覆盖 CLI runtime、技能加载、技能发现、prompt builder、项目指令加载、工具网关、RAG、记忆和运行输出。`scripts/test.ps1` 只运行 Python 测试，和当前 CLI-only 范围保持一致。

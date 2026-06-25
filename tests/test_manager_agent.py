@@ -7,7 +7,7 @@ class TestManagerAgent(unittest.TestCase):
     def test_routes_skill_tasks_to_skill_agent(self):
         manager = ManagerAgent()
 
-        decision = manager.route("帮我准备开题报告")
+        decision = manager.route("please review this project architecture")
 
         self.assertEqual(decision["type"], "agent_route")
         self.assertEqual(decision["target_agent"], "skill_agent")
@@ -16,7 +16,7 @@ class TestManagerAgent(unittest.TestCase):
     def test_routes_general_chat_to_simple_agent(self):
         manager = ManagerAgent()
 
-        decision = manager.route("你好，今天聊两句")
+        decision = manager.route("hello, let's chat")
 
         self.assertEqual(decision["target_agent"], "simple_agent")
 

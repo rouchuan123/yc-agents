@@ -11,9 +11,9 @@ class FakeLLM:
         self.messages = messages
         return (
             '{"type":"skill_selection",'
-            '"selected_skill":"document-format-normalizer",'
+            '"selected_skill":"code-review",'
             '"confidence":0.9,'
-            '"reason":"用户需要调整 Word 文档格式"}'
+            '"reason":"The user asked for a project review"}'
         )
 
 
@@ -24,12 +24,12 @@ class TestSkillAgent(unittest.TestCase):
 
         context = {
             "task": "skill_selection",
-            "user_input": "帮我调整 draft.docx 的格式",
+            "user_input": "review this project",
             "skills": [
                 {
-                    "name": "document-format-normalizer",
-                    "description": "Word 文档格式调整",
-                    "allowed_tools": ["docx_format_normalizer"],
+                    "name": "code-review",
+                    "description": "Summarize project architecture and risks",
+                    "allowed_tools": ["workspace_files", "file_reader"],
                 }
             ],
         }
@@ -37,7 +37,7 @@ class TestSkillAgent(unittest.TestCase):
         result = agent.select_skill(context)
 
         self.assertIn('"type":"skill_selection"', result)
-        self.assertIn('"selected_skill":"document-format-normalizer"', result)
+        self.assertIn('"selected_skill":"code-review"', result)
 
     def test_select_skill_sends_context_to_llm(self):
         llm = FakeLLM()
@@ -45,11 +45,11 @@ class TestSkillAgent(unittest.TestCase):
 
         context = {
             "task": "skill_selection",
-            "user_input": "帮我调整 Word 格式",
+            "user_input": "review this project",
             "skills": [
                 {
-                    "name": "document-format-normalizer",
-                    "description": "Word 文档格式调整",
+                    "name": "code-review",
+                    "description": "Summarize project architecture and risks",
                     "allowed_tools": [],
                 }
             ],
@@ -59,8 +59,10 @@ class TestSkillAgent(unittest.TestCase):
 
         self.assertEqual(llm.messages[0]["role"], "system")
         self.assertEqual(llm.messages[1]["role"], "user")
-        self.assertIn("JSON", llm.messages[0]["content"])
-        self.assertIn("document-format-normalizer", llm.messages[1]["content"])
+        self.assertIn("Skill selection protocol", llm.messages[0]["content"])
+        self.assertIn("code-review", llm.messages[1]["content"])
+        self.assertNotIn("Word", llm.messages[0]["content"])
+        self.assertNotIn("docx_format_normalizer", llm.messages[0]["content"])
 
 
 if __name__ == "__main__":

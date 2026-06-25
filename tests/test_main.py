@@ -12,7 +12,7 @@ from yc_agents.memory.compressor import MemoryCompressor
 from yc_agents.memory.profile import ResearchProfileMemory
 from yc_agents.memory.session import SessionMemory
 from yc_agents.memory.summary import SummaryMemory
-from yc_agents.tools.docx_reader import DocxReaderTool
+from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.mcp_adapter import MCPToolAdapter
 from yc_agents.tools.rag_search import RAGSearchTool
@@ -55,11 +55,11 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_build_runtime_registers_reader_and_rag_tools(self, _mock_llm_class):
         runtime = self.build_runtime_in_temp_workspace()
 
-        self.assertIn("docx_reader", runtime.allowed_tools)
+        self.assertIn("file_reader", runtime.allowed_tools)
         self.assertIn("rag_search", runtime.allowed_tools)
         self.assertIsInstance(
-            runtime.tool_registry.get_tool("docx_reader"),
-            DocxReaderTool,
+            runtime.tool_registry.get_tool("file_reader"),
+            FileReaderTool,
         )
         self.assertIsInstance(
             runtime.tool_registry.get_tool("rag_search"),

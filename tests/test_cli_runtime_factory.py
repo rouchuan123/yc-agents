@@ -48,17 +48,44 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                 workspace.path,
             )
 
-    def test_runtime_factory_registers_docx_format_normalizer(self):
+    def test_runtime_factory_loads_ycore_instruction_layers(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
-            session = CLISessionStore(workspace).create_session("docx")
+            (workspace.path / "YCORE.md").write_text(
+                "Root project instruction",
+                encoding="utf-8",
+            )
+            (workspace.path / ".ycore").mkdir(exist_ok=True)
+            (workspace.path / ".ycore" / "YCORE.md").write_text(
+                "Local workspace instruction",
+                encoding="utf-8",
+            )
+            session = CLISessionStore(workspace).create_session("generic")
 
             runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
 
-            self.assertIn("docx_format_normalizer", runtime.allowed_tools)
-            tool = runtime.tool_registry.get_tool("docx_format_normalizer")
-            self.assertEqual(tool.workspace_root, workspace.path.resolve())
+            instructions = runtime.agent.prompt_builder.project_instructions
+            self.assertEqual(
+                [instruction.source for instruction in instructions],
+                ["YCORE.md", ".ycore/YCORE.md"],
+            )
+            self.assertEqual(instructions[0].content, "Root project instruction")
+            self.assertEqual(instructions[1].content, "Local workspace instruction")
+
+    def test_runtime_factory_does_not_expose_word_formatting_as_default_tool(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("generic")
+
+            runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
+
+            self.assertNotIn("docx_format_normalizer", runtime.allowed_tools)
+            self.assertNotIn(
+                "docx_format_normalizer",
+                runtime.agent.workspace_context["available_tools"],
+            )
 
     def test_runtime_factory_registers_generic_web_search_tool(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

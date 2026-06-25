@@ -1,9 +1,8 @@
-import json
-
 from yc_agents.agents.skill_agent import SkillAgent
 from yc_agents.harness.context_manager import ContextManager
 from yc_agents.harness.json_protocol import InvalidModelJSONError, parse_model_json
 from yc_agents.memory.session import SessionMemory
+from yc_agents.prompts.builder import PromptBuilder
 from yc_agents.skills.loader import SkillLoader
 from yc_agents.skills.registry import SkillRegistry
 
@@ -21,10 +20,12 @@ class SkillRuntimeAgent:
         rag_search_tool=None,
         rag_top_k=3,
         workspace_context=None,
+        prompt_builder=None,
     ):
         self.llm = llm
         self.skills_dir = skills_dir
-        self.skill_agent = SkillAgent(llm)
+        self.prompt_builder = prompt_builder or PromptBuilder()
+        self.skill_agent = SkillAgent(llm, prompt_builder=self.prompt_builder)
         self.context_manager = ContextManager()
         self.session_memory = session_memory or SessionMemory()
         self.summary_memory = summary_memory
@@ -39,7 +40,6 @@ class SkillRuntimeAgent:
         registry = self._load_registry()
         skills = self._discover_candidate_skills(registry, user_input)
         memory_context = self._load_memory_context()
-        memory_messages = memory_context["session"]
 
         selection_context = self.context_manager.build_skill_selection_context(
             user_input,
@@ -130,45 +130,11 @@ class SkillRuntimeAgent:
 
     def _build_plain_answer_messages(self, user_input, memory_context=None):
         memory = memory_context or self.context_manager.build_memory_context()
-
-        return [
-            {
-                "role": "system",
-                "content": (
-                    "你是一个运行在用户本机 YCore CLI 中的论文和编程助手。"
-                    "当前 active workspace 会在用户消息的 workspace 字段中给出。"
-                    "当用户询问工作区文件、资料目录、能读取什么文件时，"
-                    "应请求使用 workspace_files 列出当前工作区可读文件。"
-                    "当用户要求读取 .docx、.pdf、.md 或 .txt 文件内容时，"
-                    "应请求使用 file_reader，不要声称无法访问 active workspace。"
-                    "When the user asks for current, recent, latest, external, or web information, "
-                    "request the web_search tool with a focused query. "
-                    "工具调用必须只输出合法 JSON，例如："
-                    '{"type":"tool_call","tool_name":"workspace_files",'
-                    '"arguments":{"pattern":"*"},"reason":"列出当前工作区文件"}'
-                    "或"
-                    '{"type":"tool_call","tool_name":"file_reader",'
-                    '"arguments":{"file_path":"paper.pdf"},"reason":"读取文件正文"}'
-                    "或"
-                    '{"type":"tool_call","tool_name":"web_search",'
-                    '"arguments":{"query":"latest Word document automation tools",'
-                    '"max_results":5},"reason":"Search current web information"}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "user_input": user_input,
-                        "memory": memory,
-                        "recent_messages": memory["session"],
-                        "workspace": self.workspace_context,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            },
-        ]
+        return self.prompt_builder.plain_answer_messages(
+            user_input=user_input,
+            memory=memory,
+            workspace_context=self.workspace_context,
+        )
 
     def _answer_with_skill(self, user_input, selected_skill, selection, memory_context=None):
         memory = memory_context or self.context_manager.build_memory_context()
@@ -181,48 +147,7 @@ class SkillRuntimeAgent:
             rag_results=rag_results,
             workspace_context=self.workspace_context,
         )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你是 YCore 的 Skill-driven Agent。"
-                    "你必须根据给定 Skill 的操作说明来回答用户。"
-                    "当前 active workspace 会在用户消息的 workspace 字段中给出。"
-                    "当用户询问工作区文件、资料目录、能读取什么文件时，"
-                    "应请求使用 workspace_files 列出当前工作区可读文件。"
-                    "当用户要求读取 .docx、.pdf、.md 或 .txt 文件内容时，"
-                    "应请求使用 file_reader，不要声称无法访问 active workspace。"
-                    "When the user asks for current, recent, latest, external, or web information, "
-                    "request the web_search tool with a focused query. "
-                    "工具调用必须只输出合法 JSON，例如："
-                    '{"type":"tool_call","tool_name":"workspace_files",'
-                    '"arguments":{"pattern":"*"},"reason":"列出当前工作区文件"}'
-                    "或"
-                    '{"type":"tool_call","tool_name":"file_reader",'
-                    '"arguments":{"file_path":"paper.pdf"},"reason":"读取文件正文"}'
-                    "或"
-                    '{"type":"tool_call","tool_name":"web_search",'
-                    '"arguments":{"query":"latest Word document automation tools",'
-                    '"max_results":5},"reason":"Search current web information"}'
-                    "不要编造资料、文献、导师意见或文件路径。"
-                    "如果用户明确要求保存、导出或生成 Markdown 文件，"
-                    "你必须只输出合法 tool_call JSON，不要输出 Markdown 或解释。"
-                    "tool_call 格式为："
-                    '{"type":"tool_call","tool_name":"markdown_writer",'
-                    '"arguments":{"file_name":"draft.md","content":"# Draft"},'
-                    '"reason":"保存 Markdown 草稿"}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    context,
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            },
-        ]
-
+        messages = self.prompt_builder.skill_execution_messages(context)
         response = self.llm.think(messages)
 
         if self._is_repeated_skill_selection(response):
@@ -253,39 +178,7 @@ class SkillRuntimeAgent:
             rag_results=rag_results,
             workspace_context=self.workspace_context,
         )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the YCore Skill-driven Agent. "
-                    "Follow the selected Skill instructions when answering the user. "
-                    "The current active workspace is provided in the workspace field. "
-                    "Use workspace_files when the user asks what files are available, "
-                    "and use file_reader to read .docx, .pdf, .md, or .txt files. "
-                    "When the user asks for current, recent, latest, external, or web information, "
-                    "request the web_search tool with a focused query. "
-                    "Do not claim you cannot access the active workspace. "
-                    "Do not invent sources, papers, supervisor feedback, or file paths. "
-                    "If the user explicitly asks to save, export, or generate a Markdown file, "
-                    "return only valid tool_call JSON and do not return Markdown prose. "
-                    "tool_call format: "
-                    '{"type":"tool_call","tool_name":"markdown_writer",'
-                    '"arguments":{"file_name":"draft.md","content":"# Draft"},'
-                    '"reason":"Save Markdown draft"} '
-                    'web_search example: {"type":"tool_call","tool_name":"web_search",'
-                    '"arguments":{"query":"latest Word document automation tools",'
-                    '"max_results":5},"reason":"Search current web information"}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    context,
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            },
-        ]
+        messages = self.prompt_builder.skill_execution_messages(context)
 
         yield from stream_think(messages)
 
@@ -308,29 +201,10 @@ class SkillRuntimeAgent:
         return data.get("type") == "skill_selection"
 
     def _retry_skill_execution(self, user_input, context):
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "你已经完成 Skill 选择，现在必须执行 selected_skill。"
-                    "不要再输出 skill_selection JSON。"
-                    "如果用户没有要求保存文件，就直接用自然语言回答用户。"
-                    "如果用户明确要求保存文件，只输出 tool_call JSON。"
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "user_input": user_input,
-                        "execution_context": context,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            },
-        ]
-
+        messages = self.prompt_builder.retry_skill_execution_messages(
+            user_input=user_input,
+            context=context,
+        )
         return self.llm.think(messages)
 
     def _load_memory_context(self):
@@ -362,38 +236,12 @@ class SkillRuntimeAgent:
 
     def run_with_observation(self, user_input, observation):
         memory = self._load_memory_context()
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are the YCore Skill-driven Agent. "
-                    "You have received one tool execution observation. "
-                    "The active workspace is provided in the user message workspace field. "
-                    "Return only valid JSON. "
-                    "If another tool is needed to complete the user's request, return a tool_call JSON. "
-                    "If the task is complete, return a final_answer JSON. "
-                    "Do not return Markdown or extra explanation. "
-                    'tool_call format: {"type":"tool_call","tool_name":"workspace_files",'
-                    '"arguments":{},"reason":"why this tool is needed"} '
-                    'final_answer format: {"type":"final_answer","content":"final answer for the user"}'
-                ),
-            },
-            {
-                "role": "user",
-                "content": json.dumps(
-                    {
-                        "user_input": user_input,
-                        "memory": memory,
-                        "recent_messages": memory["session"],
-                        "workspace": self.workspace_context,
-                        "observation": observation,
-                    },
-                    ensure_ascii=False,
-                    indent=2,
-                ),
-            },
-        ]
-
+        messages = self.prompt_builder.observation_messages(
+            user_input=user_input,
+            memory=memory,
+            workspace_context=self.workspace_context,
+            observation=observation,
+        )
         return self.llm.think(messages)
 
     def _load_rag_results(self, user_input, selected_skill):

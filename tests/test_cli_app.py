@@ -85,9 +85,9 @@ class FakeSkill:
 class FakeSkillRegistry:
     def __init__(self):
         self.skills = {
-            "document-format-normalizer": FakeSkill(
-                "document-format-normalizer",
-                "Normalize Word documents",
+            "code-review": FakeSkill(
+                "code-review",
+                "Review project architecture and risks",
             ),
         }
 
@@ -504,7 +504,7 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         asyncio.run(app.handle_cli_input("/skills"))
 
         self.assertEqual(app.transcript_entries[0][0], "Skills")
-        self.assertIn("document-format-normalizer", app.transcript_entries[0][1])
+        self.assertIn("code-review", app.transcript_entries[0][1])
 
     def test_tool_events_are_recorded_during_streaming_run(self):
         async def run_app():
