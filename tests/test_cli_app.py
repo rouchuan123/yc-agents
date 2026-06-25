@@ -4,7 +4,9 @@ from pathlib import Path
 
 from rich.console import Group
 from rich.markdown import Markdown
-from textual.widgets import RichLog
+from rich.text import Text
+from textual.containers import VerticalScroll
+from textual.widgets import Collapsible, Markdown as TextualMarkdown, RichLog
 
 from yc_agents.cli.app import YCAgentsTUIApp
 from yc_agents.cli.status import CLIStatus
@@ -62,6 +64,37 @@ class ToolEventRuntime:
         self.tool_event_callback({"event_type": "tool_call_requested", "payload": {"tool_name": "file_reader"}})
         self.tool_event_callback({"event_type": "tool_called", "payload": {"tool_name": "file_reader"}})
         yield "read complete"
+
+
+class ProcessEventRuntime:
+    def __init__(self):
+        self.event_callback = None
+
+    def stream(self, user_input):
+        self.event_callback(
+            {
+                "event_type": "assistant_process",
+                "payload": {
+                    "entry": {
+                        "type": "assistant_step",
+                        "content": "我先查看工作区文件。",
+                    }
+                },
+            }
+        )
+        self.event_callback(
+            {
+                "event_type": "assistant_process",
+                "payload": {
+                    "entry": {
+                        "type": "tool_result",
+                        "tool_name": "workspace_files",
+                        "summary": "找到 7 个文件。",
+                    }
+                },
+            }
+        )
+        yield "最终分析"
 
 
 class CancellableRuntime:
@@ -294,6 +327,48 @@ class TestYCAgentsTUIApp(unittest.TestCase):
             any(isinstance(renderable, Markdown) for renderable in assistant_render.renderables)
         )
 
+    def test_render_structured_assistant_turn_shows_process_before_final_answer(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        content = {
+            "content": "最终分析",
+            "process_entries": [
+                {"type": "assistant_step", "content": "我先查看工作区文件。"},
+                {
+                    "type": "tool_result",
+                    "tool_name": "workspace_files",
+                    "summary": "找到 7 个文件。",
+                },
+            ],
+            "process_collapsed": True,
+        }
+
+        renderable = app.render_turn("Assistant", content)
+
+        self.assertIsInstance(renderable, Group)
+        renderables = list(renderable.renderables)
+        self.assertIsInstance(renderables[0], Text)
+        self.assertEqual(str(renderables[0]), "Assistant")
+        self.assertIsInstance(renderables[1], Markdown)
+        self.assertIn("执行过程：2 条记录，点击展开", str(renderables[1].markup))
+        self.assertTrue(any(isinstance(item, Markdown) for item in renderables[2:]))
+
+    def test_render_running_structured_assistant_process_is_expanded(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        content = {
+            "content": "",
+            "process_entries": [
+                {"type": "assistant_step", "content": "我先查看工作区文件。"},
+            ],
+            "process_collapsed": False,
+            "process_running": True,
+        }
+
+        renderable = app.render_turn("Assistant", content)
+        collapsible = list(renderable.renderables)[1]
+
+        self.assertIsInstance(collapsible, Markdown)
+        self.assertIn("执行过程：实时展开中", str(collapsible.markup))
+
     def test_runtime_stream_is_used_when_available(self):
         runtime = StreamingRuntime()
         app = CapturingApp(
@@ -308,7 +383,9 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertEqual(runtime.calls, ["hello"])
         self.assertEqual(runtime.run_calls, [])
         self.assertEqual(app.transcript_entries[1], ("Assistant", "**hello**\n\n- streamed"))
-        self.assertIn(("Assistant", "**hello**"), app.snapshots[2])
+        self.assertTrue(
+            any(("Assistant", "**hello**") in snapshot for snapshot in app.snapshots)
+        )
 
     def test_non_streaming_runtime_is_displayed_progressively(self):
         runtime = FakeRuntime()
@@ -344,8 +421,8 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         widgets = list(app.compose())
 
-        self.assertIsInstance(app.transcript, RichLog)
-        self.assertTrue(app.transcript.allow_select)
+        self.assertIsInstance(app.transcript, VerticalScroll)
+        self.assertTrue(app.ALLOW_SELECT)
         self.assertIn("#processing-elapsed", app.CSS)
         self.assertIn("#chat-box", app.CSS)
 
@@ -357,19 +434,17 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertIn("#prompt > .input--cursor", app.CSS)
         self.assertIn("text-style: underline", app.CSS)
 
-    def test_redraw_transcript_renders_assistant_markdown_in_rich_log(self):
-        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
-        list(app.compose())
+    def test_redraw_transcript_renders_assistant_markdown_in_scroll_container(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 
-        writes = []
-        app.transcript.write = writes.append
+            async with app.run_test():
+                app.append_turn("Assistant", "**bold**\n\n- item")
+                await asyncio.sleep(0)
 
-        app.append_turn("Assistant", "**bold**\n\n- item")
+                self.assertTrue(list(app.query(TextualMarkdown)))
 
-        self.assertIsInstance(writes[-1], Group)
-        self.assertTrue(
-            any(isinstance(renderable, Markdown) for renderable in writes[-1].renderables)
-        )
+        asyncio.run(run_app())
 
     def test_running_app_streams_elapsed_status_and_keeps_transcript_selectable(self):
         async def run_app():
@@ -383,7 +458,8 @@ class TestYCAgentsTUIApp(unittest.TestCase):
             async with app.run_test() as pilot:
                 await app.handle_cli_input("hello")
 
-                self.assertTrue(app.transcript.allow_select)
+                collapsibles = list(app.query(Collapsible))
+                self.assertEqual(collapsibles, [])
                 self.assertEqual(
                     app.transcript_entries[-1],
                     ("Assistant", "**hello**\n\n- streamed"),
@@ -404,6 +480,42 @@ class TestYCAgentsTUIApp(unittest.TestCase):
                 app.action_copy_selection()
 
             self.assertEqual(copied, ["selected markdown"])
+
+        asyncio.run(run_app())
+
+    def test_ctrl_c_copies_selected_text_before_quitting(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+            copied = []
+            exited = []
+
+            async with app.run_test():
+                app.screen.get_selected_text = lambda: "selected markdown"
+                app.copy_to_clipboard = copied.append
+                app.exit = lambda *args, **kwargs: exited.append(True)
+
+                app.action_copy_selection_or_quit()
+
+            self.assertEqual(copied, ["selected markdown"])
+            self.assertEqual(exited, [])
+
+        asyncio.run(run_app())
+
+    def test_ctrl_c_quits_when_no_text_is_selected(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+            copied = []
+            exited = []
+
+            async with app.run_test():
+                app.screen.get_selected_text = lambda: ""
+                app.copy_to_clipboard = copied.append
+                app.exit = lambda *args, **kwargs: exited.append(True)
+
+                app.action_copy_selection_or_quit()
+
+            self.assertEqual(copied, [])
+            self.assertEqual(exited, [True])
 
         asyncio.run(run_app())
 
@@ -518,16 +630,101 @@ class TestYCAgentsTUIApp(unittest.TestCase):
             await app.on_input_submitted(FakeInputEvent("read pdf"))
             await asyncio.wait_for(app.current_run_task, timeout=1)
 
-            tool_entries = [
-                entry for entry in app.transcript_entries if entry[0] == "Tool"
-            ]
             self.assertEqual(
-                tool_entries,
+                app.transcript_entries,
                 [
+                    ("You", "read pdf"),
                     ("Tool", "Calling file_reader..."),
                     ("Tool", "Finished file_reader."),
+                    ("Assistant", "read complete"),
                 ],
             )
+
+        asyncio.run(run_app())
+
+    def test_process_events_are_grouped_into_active_assistant_turn_and_collapsed_after_finish(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                ProcessEventRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("分析项目"))
+            await asyncio.wait_for(app.current_run_task, timeout=1)
+
+            self.assertEqual(app.transcript_entries[0], ("You", "分析项目"))
+            speaker, content = app.transcript_entries[1]
+            self.assertEqual(speaker, "Assistant")
+            self.assertEqual(content["content"], "最终分析")
+            self.assertEqual(len(content["process_entries"]), 2)
+            self.assertTrue(content["process_collapsed"])
+            self.assertFalse(content["process_running"])
+
+        asyncio.run(run_app())
+
+    def test_running_app_renders_process_events_without_runtime_error(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                ProcessEventRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test():
+                await app.handle_cli_input("分析项目")
+
+                self.assertEqual(app.transcript_entries[0], ("You", "分析项目"))
+                self.assertEqual(app.transcript_entries[1][0], "Assistant")
+                self.assertEqual(app.transcript_entries[1][1]["content"], "最终分析")
+                self.assertEqual(len(list(app.query(Collapsible))), 1)
+                self.assertFalse(
+                    any(speaker == "Error" for speaker, _content in app.transcript_entries)
+                )
+
+        asyncio.run(run_app())
+
+    def test_tool_events_are_not_duplicated_when_process_events_exist(self):
+        async def run_app():
+            class Runtime:
+                def __init__(self):
+                    self.event_callback = None
+                    self.tool_event_callback = None
+
+                def stream(self, user_input):
+                    event = {
+                        "event_type": "assistant_process",
+                        "payload": {
+                            "entry": {
+                                "type": "tool_call",
+                                "tool_name": "workspace_files",
+                                "summary": "Calling workspace_files...",
+                            }
+                        },
+                    }
+                    self.event_callback(event)
+                    self.tool_event_callback(
+                        {
+                            "event_type": "tool_call_requested",
+                            "payload": {"tool_name": "workspace_files"},
+                        }
+                    )
+                    yield "最终分析"
+
+            app = YCAgentsTUIApp(
+                Runtime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("分析项目"))
+            await asyncio.wait_for(app.current_run_task, timeout=1)
+
+            speakers = [speaker for speaker, _content in app.transcript_entries]
+            self.assertEqual(speakers, ["You", "Assistant"])
 
         asyncio.run(run_app())
 
@@ -556,6 +753,34 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertEqual(session_store.switched_ids, ["session-next"])
         self.assertIs(app.runtime, rebuilt)
         self.assertEqual(app.transcript_entries, [("You", "old"), ("Assistant", "answer")])
+
+    def test_session_switch_reloads_structured_assistant_process_collapsed(self):
+        session_store = FakeSessionStore()
+        runtime = FakeRuntime()
+        rebuilt = FakeRuntime()
+        structured = {
+            "content": "最终分析",
+            "process_entries": [
+                {"type": "assistant_step", "content": "我先查看工作区文件。"},
+            ],
+            "process_collapsed": True,
+        }
+        session_store.transcripts["session-next"] = [
+            ("You", "old"),
+            ("Assistant", structured),
+        ]
+        app = YCAgentsTUIApp(
+            runtime,
+            status_collector=FakeStatusCollector(),
+            session_store=session_store,
+            session=session_store.current,
+            runtime_builder=lambda session: rebuilt,
+        )
+
+        asyncio.run(app.handle_cli_input("/session session-next"))
+
+        self.assertEqual(app.transcript_entries[1][0], "Assistant")
+        self.assertTrue(app.transcript_entries[1][1]["process_collapsed"])
 
     def test_session_new_creates_session_and_clears_transcript(self):
         session_store = FakeSessionStore()

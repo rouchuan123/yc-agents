@@ -125,6 +125,51 @@ class TestCLISessionStore(unittest.TestCase):
                 [("You", "new"), ("Assistant", "newer")],
             )
 
+    def test_load_transcript_preserves_assistant_process_entries(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            context = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            store = CLISessionStore(context)
+            session = store.create_session("History")
+            messages = [
+                {"role": "user", "content": "分析项目"},
+                {
+                    "role": "assistant",
+                    "content": "最终分析",
+                    "process_entries": [
+                        {"type": "assistant_step", "content": "我先看文件。"},
+                        {
+                            "type": "tool_result",
+                            "tool_name": "workspace_files",
+                            "summary": "找到 7 个文件。",
+                        },
+                    ],
+                },
+            ]
+            session.messages_path.write_text(json.dumps(messages), encoding="utf-8")
+
+            self.assertEqual(
+                store.load_transcript(),
+                [
+                    ("You", "分析项目"),
+                    (
+                        "Assistant",
+                        {
+                            "content": "最终分析",
+                            "process_entries": [
+                                {"type": "assistant_step", "content": "我先看文件。"},
+                                {
+                                    "type": "tool_result",
+                                    "tool_name": "workspace_files",
+                                    "summary": "找到 7 个文件。",
+                                },
+                            ],
+                            "process_collapsed": True,
+                        },
+                    ),
+                ],
+            )
+
 
 if __name__ == "__main__":
     unittest.main()

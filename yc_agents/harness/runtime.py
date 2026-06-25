@@ -3,7 +3,16 @@ from dataclasses import replace
 from yc_agents.harness.context import RunContext
 from yc_agents.harness.trace import TraceRecorder
 from yc_agents.harness.run_outputs import RunOutputWriter
-from yc_agents.harness.json_protocol import InvalidModelJSONError, parse_model_json
+from yc_agents.harness.json_protocol import (
+    InvalidModelJSONError,
+    extract_model_json,
+    parse_model_json,
+)
+from yc_agents.harness.process_events import (
+    assistant_step_entry,
+    tool_call_entry,
+    tool_result_entry,
+)
 from yc_agents.harness.state import StateStore
 from yc_agents.harness.tool_gateway import ToolGateway
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
@@ -44,18 +53,24 @@ class YCAgentRuntime:
             state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
             writer.write_input()
             writer.write_context(self._build_context_snapshot(context))
+            process_entries = []
 
             response = self.agent.run(user_input)
             trace.record("model_called")
             state_store.save_checkpoint("model_called", "running")
 
             if self.expects_json:
-                response = self._handle_json_response(trace, user_input, response)
+                response = self._handle_json_response(
+                    trace,
+                    user_input,
+                    response,
+                    process_entries,
+                )
 
             writer.write_final_output(response)
             verification = self.verification_gate.verify_final_output(response)
             writer.write_verification(verification)
-            self._remember_turn(user_input, response)
+            self._remember_completed_turn(user_input, response, process_entries)
             trace.record("run_finished")
             state_store.save_checkpoint(
                 "run_finished",
@@ -86,10 +101,10 @@ class YCAgentRuntime:
             state_store.save_checkpoint("run_started", "running", {"user_input": user_input})
             writer.write_input()
             writer.write_context(self._build_context_snapshot(context))
+            process_entries = []
 
             chunks = []
             buffered_for_json = self.expects_json
-            first_chunk_seen = False
 
             for chunk in stream_agent(user_input):
                 if chunk is None:
@@ -104,30 +119,24 @@ class YCAgentRuntime:
 
                 if not buffered_for_json:
                     yield text
-                    continue
-
-                if not first_chunk_seen:
-                    if not text.strip():
-                        continue
-
-                    first_chunk_seen = True
-
-                    if not text.lstrip().startswith("{"):
-                        buffered_for_json = False
-                        yield text
 
             response = "".join(chunks)
             trace.record("model_called")
             state_store.save_checkpoint("model_called", "running")
 
             if self.expects_json and buffered_for_json:
-                response = self._handle_json_response(trace, user_input, response)
+                response = self._handle_json_response(
+                    trace,
+                    user_input,
+                    response,
+                    process_entries,
+                )
                 yield response
 
             writer.write_final_output(response)
             verification = self.verification_gate.verify_final_output(response)
             writer.write_verification(verification)
-            self._remember_turn(user_input, response)
+            self._remember_completed_turn(user_input, response, process_entries)
             trace.record("run_finished")
             state_store.save_checkpoint(
                 "run_finished",
@@ -176,7 +185,19 @@ class YCAgentRuntime:
 
         return remember_turn(user_input, response)
 
-    def _handle_json_response(self, trace, user_input, response):
+    def _emit_process_entry(self, trace, process_entries, entry):
+        if not entry:
+            return
+        process_entries.append(entry)
+        trace.record("assistant_process", {"entry": entry})
+
+    def _remember_completed_turn(self, user_input, response, process_entries):
+        remember_structured = getattr(self.agent, "remember_structured_turn", None)
+        if callable(remember_structured):
+            return remember_structured(user_input, response, process_entries)
+        return self._remember_turn(user_input, response)
+
+    def _handle_json_response(self, trace, user_input, response, process_entries):
         policy = self._new_tool_policy()
 
         while True:
@@ -185,20 +206,33 @@ class YCAgentRuntime:
                 user_input,
                 response,
                 policy,
+                process_entries,
             )
 
             if not self._is_tool_call_json(response):
                 return response
 
-    def _handle_json_response_once(self, trace, user_input, response, policy):
+    def _handle_json_response_once(self, trace, user_input, response, policy, process_entries):
         try:
-            data = parse_model_json(response)
+            preface, data = extract_model_json(response)
         except InvalidModelJSONError as exc:
             trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
             return response
 
+        self._emit_process_entry(
+            trace,
+            process_entries,
+            assistant_step_entry(preface),
+        )
+
         if data["type"] == "tool_call":
-            return self._handle_tool_call(trace, user_input, data, policy)
+            return self._handle_tool_call(
+                trace,
+                user_input,
+                data,
+                policy,
+                process_entries,
+            )
 
         if data["type"] == "final_answer":
             return data.get("content", "")
@@ -212,7 +246,17 @@ class YCAgentRuntime:
 
         return response
 
-    def _handle_tool_call(self, trace, user_input, data, policy):
+    def _handle_tool_call(self, trace, user_input, data, policy, process_entries):
+        self._emit_process_entry(
+            trace,
+            process_entries,
+            assistant_step_entry(data.get("message")),
+        )
+        self._emit_process_entry(
+            trace,
+            process_entries,
+            tool_call_entry(data.get("tool_name")),
+        )
         trace.record("tool_call_requested", data)
 
         gateway = ToolGateway(
@@ -227,6 +271,11 @@ class YCAgentRuntime:
             data["tool_name"],
             **data["arguments"],
         )
+        self._emit_process_entry(
+            trace,
+            process_entries,
+            tool_result_entry(data.get("tool_name"), tool_result),
+        )
 
         observation = {
             "tool_call": data,
@@ -240,10 +289,16 @@ class YCAgentRuntime:
         trace.record("model_called")
 
         try:
-            final_data = parse_model_json(final_response)
+            preface, final_data = extract_model_json(final_response)
         except InvalidModelJSONError as exc:
             trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
             return final_response
+
+        self._emit_process_entry(
+            trace,
+            process_entries,
+            assistant_step_entry(preface),
+        )
 
         if final_data["type"] != "final_answer":
             return final_response
@@ -252,7 +307,7 @@ class YCAgentRuntime:
 
     def _is_tool_call_json(self, text):
         try:
-            data = parse_model_json(text)
+            _preface, data = extract_model_json(text)
         except InvalidModelJSONError:
             return False
 

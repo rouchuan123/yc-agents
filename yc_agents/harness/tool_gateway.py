@@ -53,11 +53,13 @@ class ToolGateway:
                         "error": str(exc),
                     },
                 )
-                return ToolExecutionResult.failure(
+                failure_result = ToolExecutionResult.failure(
                     name,
                     "validation_error",
                     str(exc),
                 ).to_dict()
+                self._record_tool_result(name, failure_result)
+                return failure_result
 
         try:
             self.policy.record_call(name, arguments)
@@ -69,16 +71,19 @@ class ToolGateway:
                     "error": str(exc),
                 },
             )
-            return ToolExecutionResult.failure(
+            failure_result = ToolExecutionResult.failure(
                 name,
                 "loop_stopped",
                 str(exc),
             ).to_dict()
+            self._record_tool_result(name, failure_result)
+            return failure_result
 
         approval = self._check_approval(name, args, kwargs)
 
         if approval is not None and approval.get("needs_approval"):
             self._record("tool_needs_approval", approval)
+            self._record_tool_result(name, approval)
             return approval
 
         result, attempts, failure = self._run_with_policy(tool, args, kwargs)
@@ -94,12 +99,14 @@ class ToolGateway:
                     "attempts": attempts,
                 },
             )
-            return ToolExecutionResult.failure(
+            failure_result = ToolExecutionResult.failure(
                 name,
                 error_type,
                 error_message,
                 attempts=attempts,
             ).to_dict()
+            self._record_tool_result(name, failure_result)
+            return failure_result
 
         self._record(
             "tool_called",
@@ -108,6 +115,7 @@ class ToolGateway:
                 "result": result,
             },
         )
+        self._record_tool_result(name, result)
         return result
 
     def _run_with_policy(self, tool, args, kwargs):
@@ -184,3 +192,12 @@ class ToolGateway:
                 self.event_callback(event)
             except Exception:
                 pass
+
+    def _record_tool_result(self, name, result):
+        self._record(
+            "tool_result",
+            {
+                "tool_name": name,
+                "result": result,
+            },
+        )

@@ -31,6 +31,30 @@ def parse_model_json(text):
     return data
 
 
+def extract_model_json(text):
+    raw_text = str(text or "")
+    stripped = raw_text.strip()
+    if not stripped:
+        raise InvalidModelJSONError("Model output is empty", raw_text=raw_text)
+
+    try:
+        return "", parse_model_json(stripped)
+    except InvalidModelJSONError:
+        pass
+
+    start = stripped.find("{")
+    if start < 0:
+        raise InvalidModelJSONError(
+            "Model output does not contain JSON",
+            raw_text=raw_text,
+        )
+
+    candidate = stripped[start:]
+    preface = stripped[:start].strip()
+    data = parse_model_json(candidate)
+    return preface, data
+
+
 def _validate_base_message(data, raw_text):
     if not isinstance(data, dict):
         raise InvalidModelJSONError("Model JSON must be an object", raw_text=raw_text)
