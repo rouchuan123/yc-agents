@@ -38,6 +38,42 @@ class FakeStreamingAgent:
         self.remembered_turns.append((user_input, response))
 
 
+class FakeStreamingPrefaceToolCallAgent:
+    def __init__(self):
+        self.observations = []
+        self.remembered_structured_turns = []
+
+    def stream(self, user_input):
+        yield "我先查看项目文件。\n\n"
+        yield json.dumps(
+            {
+                "type": "tool_call",
+                "message": "先扫描工作区文件。",
+                "tool_name": "fake_tool",
+                "arguments": {"text": "list files"},
+                "reason": "inspect files",
+            }
+        )
+
+    def run_with_observation(self, user_input, observation):
+        self.observations.append(observation)
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "项目分析完成。",
+            }
+        )
+
+    def remember_structured_turn(self, user_input, response, process_entries):
+        self.remembered_structured_turns.append(
+            {
+                "user_input": user_input,
+                "response": response,
+                "process_entries": process_entries,
+            }
+        )
+
+
 class FakeToolCallAgent:
     def run(self, user_input):
         return json.dumps(
@@ -54,6 +90,81 @@ class FakeToolCallAgent:
             {
                 "type": "final_answer",
                 "content": "tool handled",
+            }
+        )
+
+
+class FakeProgressToolCallAgent:
+    def __init__(self):
+        self.remembered_structured_turns = []
+
+    def run(self, user_input):
+        return json.dumps(
+            {
+                "type": "tool_call",
+                "message": "我先查看项目文件。",
+                "tool_name": "fake_tool",
+                "arguments": {"text": "list files"},
+                "reason": "inspect files",
+            }
+        )
+
+    def run_with_observation(self, user_input, observation):
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "项目分析完成。",
+            }
+        )
+
+    def remember_structured_turn(self, user_input, response, process_entries):
+        self.remembered_structured_turns.append(
+            {
+                "user_input": user_input,
+                "response": response,
+                "process_entries": process_entries,
+            }
+        )
+
+
+class FakePrefaceToolCallAgent(FakeProgressToolCallAgent):
+    def run(self, user_input):
+        return (
+            "我先查看项目文件。\n\n"
+            + json.dumps(
+                {
+                    "type": "tool_call",
+                    "tool_name": "fake_tool",
+                    "arguments": {"text": "list files"},
+                    "reason": "inspect files",
+                }
+            )
+        )
+
+
+class FakeFollowUpPrefaceToolCallAgent(FakeProgressToolCallAgent):
+    def __init__(self):
+        super().__init__()
+        self.observations = []
+
+    def run_with_observation(self, user_input, observation):
+        self.observations.append(observation)
+        if len(self.observations) == 1:
+            return (
+                "我接着读取关键文件。\n\n"
+                + json.dumps(
+                    {
+                        "type": "tool_call",
+                        "tool_name": "fake_tool",
+                        "arguments": {"text": "read README"},
+                        "reason": "inspect readme",
+                    }
+                )
+            )
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "项目分析完成。",
             }
         )
 
@@ -175,6 +286,26 @@ class TestYCAgentRuntime(unittest.TestCase):
 
         self.assertEqual(chunks, ["echo: hello"])
 
+    def test_streaming_json_runtime_executes_prefixed_tool_call(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakeStreamingPrefaceToolCallAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+        )
+
+        chunks = list(runtime.stream("analyze project"))
+
+        self.assertEqual(chunks, ["项目分析完成。"])
+        self.assertEqual(len(agent.observations), 1)
+        self.assertEqual(agent.observations[0]["tool_result"], {"echo": "list files"})
+        process_entries = agent.remembered_structured_turns[0]["process_entries"]
+        self.assertEqual(process_entries[0]["content"], "我先查看项目文件。")
+        self.assertEqual(process_entries[1]["content"], "先扫描工作区文件。")
+
     def test_old_research_harness_name_still_works(self):
         runtime = ResearchAgentHarness(FakeAgent())
 
@@ -211,6 +342,76 @@ class TestYCAgentRuntime(unittest.TestCase):
         response = runtime.run("trigger tool")
 
         self.assertEqual(response, "tool handled")
+
+    def test_runtime_collects_progress_message_and_tool_summary(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakeProgressToolCallAgent()
+        events = []
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            event_callback=events.append,
+        )
+
+        response = runtime.run("analyze project")
+
+        self.assertEqual(response, "项目分析完成。")
+        process_entries = agent.remembered_structured_turns[0]["process_entries"]
+        self.assertEqual(
+            process_entries[0],
+            {"type": "assistant_step", "content": "我先查看项目文件。"},
+        )
+        self.assertEqual(process_entries[1]["type"], "tool_call")
+        self.assertEqual(process_entries[1]["tool_name"], "fake_tool")
+        self.assertEqual(process_entries[2]["type"], "tool_result")
+        self.assertEqual(process_entries[2]["summary"], "工具执行完成。")
+        self.assertIn("assistant_process", [event["event_type"] for event in events])
+
+    def test_runtime_extracts_preface_before_tool_json_as_progress_message(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakePrefaceToolCallAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+        )
+
+        response = runtime.run("analyze project")
+
+        self.assertEqual(response, "项目分析完成。")
+        self.assertEqual(
+            agent.remembered_structured_turns[0]["process_entries"][0],
+            {"type": "assistant_step", "content": "我先查看项目文件。"},
+        )
+
+    def test_runtime_continues_after_prefixed_follow_up_tool_call(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakeFollowUpPrefaceToolCallAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+        )
+
+        response = runtime.run("analyze project")
+
+        self.assertEqual(response, "项目分析完成。")
+        self.assertEqual(len(agent.observations), 2)
+        self.assertEqual(
+            [item["tool_result"]["echo"] for item in agent.observations],
+            ["list files", "read README"],
+        )
+        self.assertIn(
+            {"type": "assistant_step", "content": "我接着读取关键文件。"},
+            agent.remembered_structured_turns[0]["process_entries"],
+        )
 
     def test_runtime_handles_multiple_json_tool_calls_before_final_answer(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

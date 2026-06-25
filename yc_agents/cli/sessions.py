@@ -135,7 +135,14 @@ class CLISessionStore:
                 speaker = "Assistant"
             else:
                 speaker = role or "Message"
-            turns.append((speaker, message.get("content", "")))
+            content = message.get("content", "")
+            if role == "assistant" and message.get("process_entries"):
+                content = {
+                    "content": content,
+                    "process_entries": list(message.get("process_entries") or []),
+                    "process_collapsed": True,
+                }
+            turns.append((speaker, content))
 
         return turns
 

@@ -184,6 +184,44 @@ class TestToolGateway(unittest.TestCase):
         self.assertEqual(result["error_type"], "execution_error")
         self.assertIn("tool_failed", event_types)
 
+    def test_emits_tool_result_event_for_successful_tool(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        events = []
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            event_callback=events.append,
+        )
+
+        gateway.run_tool("fake_tool", "hello")
+
+        tool_result_events = [
+            event for event in events if event["event_type"] == "tool_result"
+        ]
+        self.assertEqual(len(tool_result_events), 1)
+        self.assertEqual(tool_result_events[0]["payload"]["tool_name"], "fake_tool")
+        self.assertEqual(tool_result_events[0]["payload"]["result"], {"echo": "hello"})
+
+    def test_emits_tool_result_event_for_failed_tool(self):
+        registry = ToolRegistry()
+        registry.register(FakeFailingTool())
+        events = []
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["failing_tool"],
+            event_callback=events.append,
+        )
+
+        gateway.run_tool("failing_tool")
+
+        tool_result_events = [
+            event for event in events if event["event_type"] == "tool_result"
+        ]
+        self.assertEqual(len(tool_result_events), 1)
+        self.assertEqual(tool_result_events[0]["payload"]["tool_name"], "failing_tool")
+        self.assertEqual(tool_result_events[0]["payload"]["result"]["ok"], False)
+
     def test_returns_needs_approval_without_calling_tool(self):
         registry = ToolRegistry()
         registry.register(FakeTool())

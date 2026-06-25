@@ -9,8 +9,8 @@ from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical
-from textual.widgets import Footer, Input, RichLog, Static
+from textual.containers import Vertical, VerticalScroll
+from textual.widgets import Collapsible, Footer, Input, Markdown as TextualMarkdown, RichLog, Static
 
 from yc_agents.cli.commands import parse_cli_input
 from yc_agents.cli.runtime_factory import build_cli_runtime
@@ -79,7 +79,7 @@ class YCAgentsTUIApp(App):
     """
 
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
+        ("ctrl+c", "copy_selection_or_quit", "Copy/Quit"),
         ("ctrl+shift+c", "copy_selection", "Copy"),
     ]
 
@@ -137,15 +137,14 @@ class YCAgentsTUIApp(App):
         self.current_run_input = ""
         self._direct_run_active = False
         self.runtime_event_queue = SimpleQueue()
+        self.active_assistant_index = None
+        self.active_process_entries = []
+        self.current_run_has_process_events = False
         self.attach_runtime_event_callback()
 
     def compose(self) -> ComposeResult:
         self.status_widget = Static(self.render_status(), id="status")
-        self.transcript = RichLog(
-            wrap=True,
-            auto_scroll=True,
-            id="transcript",
-        )
+        self.transcript = VerticalScroll(id="transcript")
         self.elapsed_status = Static("", id="processing-elapsed")
         self.selection_list = Static("", id="selection-list")
         self.command_suggestions = Static("", id="command-suggestions")
@@ -215,6 +214,20 @@ class YCAgentsTUIApp(App):
             except Empty:
                 return
 
+            if event.get("event_type") == "assistant_process":
+                entry = (event.get("payload") or {}).get("entry")
+                if entry:
+                    self.current_run_has_process_events = True
+                    self.active_process_entries.append(entry)
+                    self._update_active_assistant_content()
+                continue
+
+            if (
+                self.current_run_has_process_events
+                and event.get("event_type", "").startswith("tool_")
+            ):
+                continue
+
             message = self.format_runtime_event(event)
             if message:
                 self.append_turn("Tool", message)
@@ -267,10 +280,22 @@ class YCAgentsTUIApp(App):
         return self.session.id
 
     def action_copy_selection(self):
+        self._copy_selected_text()
+
+    def action_copy_selection_or_quit(self):
+        if self._copy_selected_text():
+            return
+
+        self.exit()
+
+    def _copy_selected_text(self):
         selected_text = self.screen.get_selected_text()
 
         if selected_text:
             self.copy_to_clipboard(selected_text)
+            return True
+
+        return False
 
     def action_focus_next(self):
         if self.command_suggestions_visible:
@@ -401,6 +426,7 @@ class YCAgentsTUIApp(App):
 
     async def _run_user_message(self, user_input):
         self._direct_run_active = True
+        self.current_run_has_process_events = False
         self.current_run_started_at = time.monotonic()
         self.current_run_input = user_input
         started_at = self.current_run_started_at
@@ -423,6 +449,8 @@ class YCAgentsTUIApp(App):
                 await timer_task
 
             self.flush_runtime_events()
+            self._finish_active_assistant_turn()
+            self.current_run_has_process_events = False
             self._direct_run_active = False
             self.current_run_started_at = None
             if not stopped:
@@ -483,8 +511,7 @@ class YCAgentsTUIApp(App):
         return None
 
     async def stream_assistant_response(self, user_input):
-        self.append_turn("Assistant", "")
-        assistant_index = len(self.transcript_entries) - 1
+        assistant_index = None
         content = ""
 
         async for chunk in self.iter_response_chunks(user_input):
@@ -499,6 +526,26 @@ class YCAgentsTUIApp(App):
                 continue
 
             content += text
+            if self.active_process_entries:
+                self._update_active_assistant_content(content)
+                assistant_index = self.active_assistant_index
+                self.flush_runtime_events()
+
+                if self.stream_delay:
+                    await asyncio.sleep(self.stream_delay)
+
+                continue
+
+            if assistant_index is None:
+                self.append_turn("Assistant", content)
+                assistant_index = len(self.transcript_entries) - 1
+                self.flush_runtime_events()
+
+                if self.stream_delay:
+                    await asyncio.sleep(self.stream_delay)
+
+                continue
+
             self.transcript_entries[assistant_index] = ("Assistant", content)
             self.redraw_transcript()
             self.flush_runtime_events()
@@ -507,6 +554,7 @@ class YCAgentsTUIApp(App):
                 await asyncio.sleep(self.stream_delay)
 
         self.flush_runtime_events()
+        self._finish_active_assistant_turn()
 
     async def iter_response_chunks(self, user_input):
         stream = getattr(self.runtime, "stream", None)
@@ -562,6 +610,48 @@ class YCAgentsTUIApp(App):
         self.transcript_entries.append((speaker, content))
         self.redraw_transcript()
 
+    def _ensure_active_assistant_turn(self):
+        if self.active_assistant_index is not None:
+            return self.active_assistant_index
+        content = {
+            "content": "",
+            "process_entries": self.active_process_entries,
+            "process_collapsed": False,
+            "process_running": True,
+        }
+        self.append_turn("Assistant", content)
+        self.active_assistant_index = len(self.transcript_entries) - 1
+        return self.active_assistant_index
+
+    def _update_active_assistant_content(self, final_content=None):
+        if self.active_assistant_index is None:
+            self._ensure_active_assistant_turn()
+        speaker, content = self.transcript_entries[self.active_assistant_index]
+        if not self._is_structured_assistant_content(content):
+            content = {
+                "content": str(content or ""),
+                "process_entries": self.active_process_entries,
+                "process_collapsed": False,
+                "process_running": True,
+            }
+        if final_content is not None:
+            content["content"] = final_content
+        content["process_entries"] = self.active_process_entries
+        self.transcript_entries[self.active_assistant_index] = (speaker, content)
+        self.redraw_transcript()
+
+    def _finish_active_assistant_turn(self):
+        if self.active_assistant_index is None:
+            return
+        speaker, content = self.transcript_entries[self.active_assistant_index]
+        if self._is_structured_assistant_content(content):
+            content["process_running"] = False
+            content["process_collapsed"] = True
+            self.transcript_entries[self.active_assistant_index] = (speaker, content)
+            self.redraw_transcript()
+        self.active_assistant_index = None
+        self.active_process_entries = []
+
     def _remove_empty_assistant_placeholder(self):
         if not self.transcript_entries:
             return
@@ -576,6 +666,13 @@ class YCAgentsTUIApp(App):
         if self.transcript is None:
             return
 
+        if hasattr(self.transcript, "mount") and hasattr(self.transcript, "remove_children"):
+            if self._schedule_widget_transcript_redraw():
+                return
+
+        if not hasattr(self.transcript, "clear") or not hasattr(self.transcript, "write"):
+            return
+
         scroll_y = getattr(self.transcript, "scroll_y", None)
         self.transcript.clear()
 
@@ -586,6 +683,63 @@ class YCAgentsTUIApp(App):
             with suppress(Exception):
                 self.transcript.scroll_y = scroll_y
 
+    def _schedule_widget_transcript_redraw(self):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return False
+
+        async def redraw():
+            await self._redraw_widget_transcript()
+
+        self.call_later(redraw)
+        return True
+
+    async def _redraw_widget_transcript(self):
+        if self.transcript is None:
+            return
+
+        scroll_y = getattr(self.transcript, "scroll_y", None)
+        await self.transcript.remove_children()
+
+        widgets = []
+        for speaker, content in self.transcript_entries:
+            widgets.extend(self.build_turn_widgets(speaker, content))
+
+        if widgets:
+            await self.transcript.mount(*widgets)
+
+        if scroll_y is not None:
+            with suppress(Exception):
+                self.transcript.scroll_y = scroll_y
+        with suppress(Exception):
+            self.transcript.scroll_end(animate=False)
+
+    def build_turn_widgets(self, speaker, content):
+        speaker_widget = Static(Text(str(speaker), style="bold"))
+
+        if speaker == "Assistant" and self._is_structured_assistant_content(content):
+            process_entries = list(content.get("process_entries") or [])
+            final_content = self._assistant_final_content(content)
+            collapsed = bool(content.get("process_collapsed", True))
+            process = Collapsible(
+                TextualMarkdown(self._render_process_entries_text(process_entries)),
+                title=self._process_title(content),
+                collapsed=collapsed,
+            )
+            widgets = [speaker_widget, process]
+            if final_content:
+                widgets.append(TextualMarkdown(final_content))
+            widgets.append(Static(""))
+            return widgets
+
+        if speaker == "Assistant":
+            body = TextualMarkdown(str(content))
+        else:
+            body = Static(str(content))
+
+        return [speaker_widget, body, Static("")]
+
     def _transcript_text(self):
         blocks = []
         for speaker, content in self.transcript_entries:
@@ -594,8 +748,47 @@ class YCAgentsTUIApp(App):
             return ""
         return "\n\n".join(blocks) + "\n"
 
+    def _is_structured_assistant_content(self, content):
+        return isinstance(content, dict) and "process_entries" in content
+
+    def _assistant_final_content(self, content):
+        if self._is_structured_assistant_content(content):
+            return str(content.get("content", ""))
+        return str(content)
+
+    def _process_title(self, content):
+        entries = list(content.get("process_entries") or [])
+        if content.get("process_running"):
+            return "执行过程：实时展开中"
+        return f"执行过程：{len(entries)} 条记录，点击展开"
+
+    def _render_process_entries_text(self, entries):
+        lines = []
+        for entry in entries:
+            entry_type = entry.get("type")
+            if entry_type == "assistant_step":
+                lines.append(str(entry.get("content", "")))
+            elif entry_type == "tool_call":
+                lines.append(f"Tool: {entry.get('summary', '')}")
+            elif entry_type == "tool_result":
+                tool_name = entry.get("tool_name", "tool")
+                lines.append(f"Tool: Finished {tool_name}. {entry.get('summary', '')}")
+            else:
+                lines.append(str(entry.get("summary") or entry.get("content") or entry))
+        return "\n\n".join(line for line in lines if line)
+
     def render_turn(self, speaker, content):
         speaker_line = Text(str(speaker), style="bold")
+
+        if speaker == "Assistant" and self._is_structured_assistant_content(content):
+            process_entries = list(content.get("process_entries") or [])
+            final_content = self._assistant_final_content(content)
+            process = Markdown(
+                f"**{self._process_title(content)}**\n\n"
+                f"{self._render_process_entries_text(process_entries)}"
+            )
+            body = Markdown(final_content) if final_content else Text("")
+            return Group(speaker_line, process, Text(""), body, Text(""))
 
         if speaker == "Assistant":
             body = Markdown(str(content))

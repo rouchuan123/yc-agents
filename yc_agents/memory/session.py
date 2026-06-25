@@ -16,6 +16,17 @@ class SessionMemory:
         self.messages.append(message)
         self.messages = self.messages[-self.max_messages:]
 
+    def add_structured_message(self, role, content, **metadata):
+        message = {
+            "role": role,
+            "content": content,
+        }
+        for key, value in metadata.items():
+            if value is not None:
+                message[key] = value
+        self.messages.append(message)
+        self.messages = self.messages[-self.max_messages:]
+
     def get_messages(self):
         return list(self.messages)
 

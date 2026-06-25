@@ -234,6 +234,20 @@ class SkillRuntimeAgent:
         self.session_memory.add_message("assistant", response)
         return self.session_memory.save()
 
+    def remember_structured_turn(self, user_input, response, process_entries=None):
+        self.session_memory.load()
+        self.session_memory.add_message("user", user_input)
+        add_structured_message = getattr(self.session_memory, "add_structured_message", None)
+        if callable(add_structured_message):
+            add_structured_message(
+                "assistant",
+                response,
+                process_entries=list(process_entries or []),
+            )
+        else:
+            self.session_memory.add_message("assistant", response)
+        return self.session_memory.save()
+
     def run_with_observation(self, user_input, observation):
         memory = self._load_memory_context()
         messages = self.prompt_builder.observation_messages(

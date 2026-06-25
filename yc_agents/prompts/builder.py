@@ -152,11 +152,12 @@ class PromptBuilder:
         return (
             "Tool protocol:\n"
             "- When a tool is needed, return only valid tool_call JSON.\n"
+            '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
             "- For current, recent, latest, external, or web information, request web_search with a focused query.\n"
             "- If the user explicitly asks to save, export, or generate a Markdown file, return only valid markdown_writer tool_call JSON.\n"
-            '- tool_call example: {"type":"tool_call","tool_name":"workspace_files","arguments":{"pattern":"*"},"reason":"List workspace files"}\n'
-            '- markdown_writer example: {"type":"tool_call","tool_name":"markdown_writer","arguments":{"file_name":"draft.md","content":"# Draft"},"reason":"Save Markdown file"}\n'
-            '- web_search example: {"type":"tool_call","tool_name":"web_search","arguments":{"query":"latest Python packaging changes","max_results":5},"reason":"Search current web information"}'
+            '- tool_call example: {"type":"tool_call","message":"我先查看工作区文件，了解项目结构。","tool_name":"workspace_files","arguments":{"pattern":"*"},"reason":"List workspace files"}\n'
+            '- markdown_writer example: {"type":"tool_call","message":"我将保存 Markdown 文件。","tool_name":"markdown_writer","arguments":{"file_name":"draft.md","content":"# Draft"},"reason":"Save Markdown file"}\n'
+            '- web_search example: {"type":"tool_call","message":"我先搜索最新资料。","tool_name":"web_search","arguments":{"query":"latest Python packaging changes","max_results":5},"reason":"Search current web information"}'
         )
 
     def _truthfulness_protocol(self):
@@ -213,8 +214,9 @@ class PromptBuilder:
             "- You have received one tool execution observation.\n"
             "- Return only valid JSON.\n"
             "- If another tool is needed to complete the user's request, return a tool_call JSON.\n"
+            '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
             "- If the task is complete, return a final_answer JSON.\n"
             "- Do not return Markdown or extra explanation.\n"
-            '- tool_call format: {"type":"tool_call","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
+            '- tool_call format: {"type":"tool_call","message":"我接下来读取 README 判断项目定位。","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
             '- final_answer format: {"type":"final_answer","content":"final answer for the user"}'
         )

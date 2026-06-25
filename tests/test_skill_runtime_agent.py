@@ -177,6 +177,31 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(response, "Plain answer")
             self.assertEqual(saved_messages[-1]["content"], "Plain answer")
 
+    def test_runtime_agent_saves_structured_process_entries_to_session_memory(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            memory_file = Path(tmp_dir) / "session.json"
+            memory = SessionMemory(file_path=memory_file)
+            agent = SkillRuntimeAgent(FakeLLM([]), session_memory=memory)
+
+            agent.remember_structured_turn(
+                "分析项目",
+                "最终分析",
+                [
+                    {"type": "assistant_step", "content": "我先看文件。"},
+                    {
+                        "type": "tool_result",
+                        "tool_name": "workspace_files",
+                        "summary": "找到 7 个文件。",
+                    },
+                ],
+            )
+
+            saved = json.loads(memory_file.read_text(encoding="utf-8"))
+            self.assertEqual(saved[-2], {"role": "user", "content": "分析项目"})
+            self.assertEqual(saved[-1]["role"], "assistant")
+            self.assertEqual(saved[-1]["content"], "最终分析")
+            self.assertEqual(saved[-1]["process_entries"][0]["content"], "我先看文件。")
+
     def test_run_includes_rag_results_when_selected_skill_allows_rag_search(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"
@@ -264,6 +289,70 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(len(llm.messages), 3)
             self.assertIn("tool_result", llm.messages[2][1]["content"])
 
+    def test_project_analysis_flow_saves_process_entries_and_final_answer(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            skills_dir = root / "skills"
+            memory_file = root / "session.json"
+            output_dir = root / "outputs"
+            write_skill(skills_dir, allowed_tools=["markdown_writer"])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "message": "我先保存一份分析笔记。",
+                            "tool_name": "markdown_writer",
+                            "arguments": {
+                                "file_name": "analysis",
+                                "content": "# Analysis",
+                            },
+                            "reason": "save note",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "final_answer",
+                            "content": "项目分析完成。",
+                        }
+                    ),
+                ]
+            )
+            memory = SessionMemory(file_path=memory_file)
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir, session_memory=memory)
+            registry = ToolRegistry()
+            registry.register(MarkdownWriterTool(output_dir=output_dir))
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["markdown_writer"],
+            )
+
+            response = runtime.run("分析项目")
+
+            saved = json.loads(memory_file.read_text(encoding="utf-8"))
+            assistant_message = saved[-1]
+            self.assertEqual(response, "项目分析完成。")
+            self.assertEqual(assistant_message["content"], "项目分析完成。")
+            self.assertEqual(
+                assistant_message["process_entries"][0]["content"],
+                "我先保存一份分析笔记。",
+            )
+            self.assertEqual(
+                assistant_message["process_entries"][1]["tool_name"],
+                "markdown_writer",
+            )
+            self.assertEqual(assistant_message["process_entries"][2]["type"], "tool_result")
+
     def test_observation_prompt_allows_follow_up_tool_call_or_final_answer(self):
         llm = FakeLLM(
             [
@@ -294,6 +383,31 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         self.assertIn("final_answer", system_prompt)
         self.assertIn("If another tool is needed", system_prompt)
         self.assertNotIn("Return only valid final_answer JSON", system_prompt)
+
+    def test_tool_protocol_tells_model_to_put_progress_in_message_field(self):
+        builder = PromptBuilder()
+        prompt = builder.plain_answer_messages(
+            user_input="分析项目",
+            memory={"session": []},
+            workspace_context={"available_tools": ["workspace_files"]},
+        )[0]["content"]
+
+        self.assertIn('"message"', prompt)
+        self.assertIn("visible progress", prompt)
+        self.assertIn("return only valid tool_call JSON", prompt)
+
+    def test_observation_protocol_allows_progress_message_on_follow_up_tool_call(self):
+        builder = PromptBuilder()
+        prompt = builder.observation_messages(
+            user_input="分析项目",
+            memory={"session": []},
+            workspace_context={"available_tools": ["workspace_files"]},
+            observation={"tool_result": {"files": []}},
+        )[0]["content"]
+
+        self.assertIn('"message"', prompt)
+        self.assertIn("visible progress", prompt)
+        self.assertIn("final_answer", prompt)
 
     def test_run_retries_when_skill_execution_repeats_skill_selection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

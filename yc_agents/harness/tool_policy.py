@@ -8,8 +8,8 @@ class ToolLoopError(RuntimeError):
 
 @dataclass
 class ToolExecutionPolicy:
-    max_calls: int = 8
-    max_repeated_calls: int = 2
+    max_calls: int = 100
+    max_repeated_calls: int = 5
     timeout_seconds: float = 30
     max_retries: int = 1
     call_count: int = 0

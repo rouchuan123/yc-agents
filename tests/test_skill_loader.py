@@ -16,6 +16,25 @@ class TestSkillLoader(unittest.TestCase):
         self.assertTrue(all("workspace_files" in skill.allowed_tools for skill in skills))
         self.assertTrue(all("file_reader" in skill.allowed_tools for skill in skills))
 
+    def test_code_review_skill_requires_deep_evidence_based_review(self):
+        loader = SkillLoader("skills")
+
+        skill = loader.load_one(Path("skills") / "code-review")
+
+        required_markers = [
+            "已读取文件清单",
+            "项目地图",
+            "关键链路",
+            "证据",
+            "风险分级",
+            "测试缺口",
+            "未确认事项",
+            "不要提前总结",
+        ]
+        for marker in required_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, skill.body)
+
     def test_load_one_reads_expanded_metadata(self):
         with TemporaryDirectory() as tmpdir:
             skill_dir = Path(tmpdir) / "code-review"
