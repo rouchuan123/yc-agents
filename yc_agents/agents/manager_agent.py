@@ -1,12 +1,11 @@
 SKILL_TASK_KEYWORDS = {
-    "开题",
-    "论文",
-    "文献",
-    "综述",
-    "系统设计",
     "skill",
+    "review",
+    "architecture",
+    "evaluate",
+    "summary",
+    "project",
     "proposal",
-    "literature",
 }
 
 
@@ -27,12 +26,12 @@ class ManagerAgent:
                 "type": "agent_route",
                 "target_agent": "skill_agent",
                 "confidence": min(1.0, len(matched_keywords) / 3),
-                "reason": f"任务关键词命中：{', '.join(matched_keywords)}",
+                "reason": f"Task keywords matched: {', '.join(matched_keywords)}",
             }
 
         return {
             "type": "agent_route",
             "target_agent": "simple_agent",
             "confidence": 0.5,
-            "reason": "未命中专业任务关键词，走基础对话 Agent",
+            "reason": "No specialist task keywords matched; using simple agent",
         }

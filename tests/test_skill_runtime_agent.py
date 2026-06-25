@@ -6,6 +6,8 @@ from pathlib import Path
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.memory.session import SessionMemory
+from yc_agents.prompts.builder import PromptBuilder
+from yc_agents.prompts.project_instructions import ProjectInstruction
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.registry import ToolRegistry
 
@@ -34,15 +36,15 @@ class FakeRAGSearchTool:
         return [{"source": "template.md", "text": "report-standard"}]
 
 
-def write_skill(skills_dir, allowed_tools=None):
+def write_skill(skills_dir, name="code-review", allowed_tools=None):
     allowed_tools = allowed_tools or ["markdown_writer"]
-    skill_dir = skills_dir / "document-format-normalizer"
+    skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"
     lines = [
         "---",
-        "name: document-format-normalizer",
-        "description: Use when the user wants to normalize Word document format.",
+        f"name: {name}",
+        "description: Use when the user wants a project code review.",
         "allowed_tools:",
     ]
     lines.extend(f"  - {tool}" for tool in allowed_tools)
@@ -50,9 +52,9 @@ def write_skill(skills_dir, allowed_tools=None):
         [
             "---",
             "",
-            "# Word 文档格式调整 Skill",
+            "# Code Review Skill",
             "",
-            "请根据用户提供的 .docx 路径调用工具并说明输出文件。",
+            "Summarize the project structure, architecture, risks, and test gaps.",
         ]
     )
     skill_file.write_text("\n".join(lines), encoding="utf-8")
@@ -76,7 +78,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                             "reason": "plain answer",
                         }
                     ),
-                    "可以读取当前工作区。",
+                    "Workspace is available.",
                 ]
             )
             agent = SkillRuntimeAgent(
@@ -89,9 +91,9 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                 },
             )
 
-            response = agent.run("当前工作区是什么？")
+            response = agent.run("what is the current workspace?")
 
-            self.assertEqual(response, "可以读取当前工作区。")
+            self.assertEqual(response, "Workspace is available.")
             selection_context = json.loads(llm.messages[0][1]["content"])
             answer_context = json.loads(llm.messages[1][1]["content"])
             self.assertEqual(selection_context["workspace"]["path"], str(workspace))
@@ -116,7 +118,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             workspace_context={"available_tools": ["web_search"]},
         )
 
-        agent.run("查一下今天的新闻")
+        agent.run("look up today's news")
 
         plain_prompt = llm.messages[1][0]["content"]
         self.assertIn("web_search", plain_prompt)
@@ -131,19 +133,19 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "document-format-normalizer",
+                            "selected_skill": "code-review",
                             "confidence": 0.9,
                             "reason": "selected",
                         }
                     ),
-                    ["# 输出", "\n\n已处理"],
+                    ["# Output", "\n\nDone"],
                 ]
             )
             agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
 
-            chunks = list(agent.stream("调整 draft.docx"))
+            chunks = list(agent.stream("review this project"))
 
-            self.assertEqual(chunks, ["# 输出", "\n\n已处理"])
+            self.assertEqual(chunks, ["# Output", "\n\nDone"])
             self.assertEqual(len(llm.stream_messages), 1)
 
     def test_runtime_saves_final_response_to_session_memory(self):
@@ -162,18 +164,18 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                             "reason": "no skill",
                         }
                     ),
-                    "普通回答",
+                    "Plain answer",
                 ]
             )
             memory = SessionMemory(file_path=memory_file)
             agent = SkillRuntimeAgent(llm, skills_dir=skills_dir, session_memory=memory)
             runtime = YCAgentRuntime(agent)
 
-            response = runtime.run("你好")
+            response = runtime.run("hello")
 
             saved_messages = json.loads(memory_file.read_text(encoding="utf-8"))
-            self.assertEqual(response, "普通回答")
-            self.assertEqual(saved_messages[-1]["content"], "普通回答")
+            self.assertEqual(response, "Plain answer")
+            self.assertEqual(saved_messages[-1]["content"], "Plain answer")
 
     def test_run_includes_rag_results_when_selected_skill_allows_rag_search(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -185,12 +187,12 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "document-format-normalizer",
+                            "selected_skill": "code-review",
                             "confidence": 0.9,
                             "reason": "selected",
                         }
                     ),
-                    "基于 RAG 的回答",
+                    "RAG-backed answer",
                 ]
             )
             agent = SkillRuntimeAgent(
@@ -199,13 +201,13 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                 rag_search_tool=rag_tool,
             )
 
-            response = agent.run("按 report-standard 调整格式")
+            response = agent.run("summarize architecture and risks")
 
             answer_context = llm.messages[1][1]["content"]
-            self.assertEqual(response, "基于 RAG 的回答")
+            self.assertEqual(response, "RAG-backed answer")
             self.assertEqual(
                 rag_tool.calls,
-                [{"query": "按 report-standard 调整格式", "top_k": 3}],
+                [{"query": "summarize architecture and risks", "top_k": 3}],
             )
             self.assertIn("rag_results", answer_context)
             self.assertIn("report-standard", answer_context)
@@ -221,7 +223,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "document-format-normalizer",
+                            "selected_skill": "code-review",
                             "confidence": 0.9,
                             "reason": "selected",
                         }
@@ -255,7 +257,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                 allowed_tools=["markdown_writer"],
             )
 
-            response = runtime.run("保存审计说明")
+            response = runtime.run("save the review note")
 
             self.assertEqual(response, "Audit note saved.")
             self.assertTrue((output_dir / "audit_note.md").exists())
@@ -276,14 +278,14 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         agent = SkillRuntimeAgent(llm)
 
         agent.run_with_observation(
-            "调整 Word 格式",
+            "review this project",
             {
                 "tool_call": {
                     "type": "tool_call",
                     "tool_name": "workspace_files",
                     "arguments": {},
                 },
-                "tool_result": {"files": [{"path": "draft.docx"}]},
+                "tool_result": {"files": [{"path": "app.py"}]},
             },
         )
 
@@ -302,7 +304,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "document-format-normalizer",
+                            "selected_skill": "code-review",
                             "confidence": 0.95,
                             "reason": "selected",
                         }
@@ -310,21 +312,76 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "document-format-normalizer",
+                            "selected_skill": "code-review",
                             "confidence": 0.95,
                             "reason": "repeated by mistake",
                         }
                     ),
-                    "请提供 draft.docx 路径。",
+                    "Please share the project review scope.",
                 ]
             )
             agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
 
-            response = agent.run("帮我调整 Word 格式")
+            response = agent.run("review this project")
 
-            self.assertEqual(response, "请提供 draft.docx 路径。")
+            self.assertEqual(response, "Please share the project review scope.")
             self.assertEqual(len(llm.messages), 3)
             self.assertIn("skill_selection", llm.messages[2][0]["content"])
+
+    def test_runtime_agent_includes_project_instructions_in_plain_answer_prompt(self):
+        llm = FakeLLM(
+            [
+                json.dumps(
+                    {
+                        "type": "skill_selection",
+                        "selected_skill": None,
+                        "confidence": 0.1,
+                        "reason": "plain answer",
+                    }
+                ),
+                "plain",
+            ]
+        )
+        prompt_builder = PromptBuilder(
+            [
+                ProjectInstruction("YCORE.md", None, "Root project rule"),
+                ProjectInstruction(".ycore/YCORE.md", None, "Local project rule"),
+            ]
+        )
+        agent = SkillRuntimeAgent(llm, prompt_builder=prompt_builder)
+
+        agent.run("hello")
+
+        plain_prompt = llm.messages[1][0]["content"]
+        self.assertIn("Root project rule", plain_prompt)
+        self.assertIn("Local project rule", plain_prompt)
+        self.assertLess(
+            plain_prompt.index("Root project rule"),
+            plain_prompt.index("Local project rule"),
+        )
+
+    def test_runtime_agent_core_prompt_is_not_word_or_paper_specific(self):
+        llm = FakeLLM(
+            [
+                json.dumps(
+                    {
+                        "type": "skill_selection",
+                        "selected_skill": None,
+                        "confidence": 0.1,
+                        "reason": "plain answer",
+                    }
+                ),
+                "plain",
+            ]
+        )
+        agent = SkillRuntimeAgent(llm)
+
+        agent.run("hello")
+
+        plain_prompt = llm.messages[1][0]["content"]
+        self.assertNotIn("docx_format_normalizer", plain_prompt)
+        self.assertNotIn("Word document automation", plain_prompt)
+        self.assertNotIn("论文", plain_prompt)
 
 
 if __name__ == "__main__":

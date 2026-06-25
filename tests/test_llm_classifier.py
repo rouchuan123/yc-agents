@@ -22,37 +22,37 @@ class TestLLMIntentClassifier(unittest.TestCase):
             json.dumps(
                 {
                     "type": "skill_selection",
-                    "selected_skill": "document-format-normalizer",
+                    "selected_skill": "code-review",
                     "confidence": 0.9,
-                    "reason": "用户正在处理 Word 文档格式调整",
+                    "reason": "User asked for a project review",
                 },
                 ensure_ascii=False,
             )
         )
         skills = [
             SkillDefinition(
-                name="document-format-normalizer",
-                description="Help normalize Word documents.",
+                name="code-review",
+                description="Review project architecture and risks.",
                 allowed_tools=[],
                 body="",
-                path="skills/document-format-normalizer",
+                path="skills/code-review",
             )
         ]
 
-        result = LLMIntentClassifier(llm).classify("帮我调整 Word 格式", skills)
+        result = LLMIntentClassifier(llm).classify("review this project", skills)
 
-        self.assertEqual(result["selected_skill"], "document-format-normalizer")
+        self.assertEqual(result["selected_skill"], "code-review")
         self.assertEqual(result["confidence"], 0.9)
         self.assertEqual(len(llm.messages), 1)
         prompt = llm.messages[0][1]["content"]
-        self.assertIn("帮我调整 Word 格式", prompt)
-        self.assertIn("document-format-normalizer", prompt)
+        self.assertIn("review this project", prompt)
+        self.assertIn("code-review", prompt)
 
     def test_classify_rejects_invalid_json(self):
-        llm = FakeLLM("这不是 JSON")
+        llm = FakeLLM("not JSON")
 
         with self.assertRaises(InvalidModelJSONError):
-            LLMIntentClassifier(llm).classify("你好", [])
+            LLMIntentClassifier(llm).classify("hello", [])
 
 
 if __name__ == "__main__":

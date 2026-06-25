@@ -8,9 +8,9 @@ class FakeRuleMatcher:
     def match(self, user_input, skills):
         return [
             {
-                "skill_name": "document-format-normalizer",
+                "skill_name": "code-review",
                 "confidence": 1.0,
-                "reason": "规则命中文档格式调整",
+                "reason": "rule matched project review",
             }
         ]
 
@@ -19,14 +19,14 @@ class FakeSemanticMatcher:
     def match(self, user_input, skills):
         return [
             {
-                "skill_name": "document-format-normalizer",
+                "skill_name": "code-review",
                 "confidence": 0.7,
-                "reason": "语义更像 Word 格式调整",
+                "reason": "semantic match for architecture review",
             },
             {
                 "skill_name": "other-skill",
                 "confidence": 0.1,
-                "reason": "语义少量命中",
+                "reason": "weak semantic match",
             },
         ]
 
@@ -35,9 +35,9 @@ class FakeLLMClassifier:
     def classify(self, user_input, skills):
         return {
             "type": "skill_selection",
-            "selected_skill": "document-format-normalizer",
+            "selected_skill": "code-review",
             "confidence": 0.9,
-            "reason": "LLM 判断用户要调整 Word 文档格式",
+            "reason": "LLM selected project review",
         }
 
 
@@ -45,15 +45,15 @@ class TestIntentRouter(unittest.TestCase):
     def test_route_selects_highest_weighted_skill(self):
         skills = [
             SkillDefinition(
-                name="document-format-normalizer",
-                description="Word 文档格式调整",
+                name="code-review",
+                description="Project architecture review",
                 allowed_tools=[],
                 body="",
-                path="skills/document-format-normalizer",
+                path="skills/code-review",
             ),
             SkillDefinition(
                 name="other-skill",
-                description="其他能力",
+                description="Other capability",
                 allowed_tools=[],
                 body="",
                 path="skills/other-skill",
@@ -64,14 +64,14 @@ class TestIntentRouter(unittest.TestCase):
             rule_matcher=FakeRuleMatcher(),
             semantic_matcher=FakeSemanticMatcher(),
             llm_classifier=FakeLLMClassifier(),
-        ).route("帮我调整 draft.docx 的格式", skills)
+        ).route("review this project", skills)
 
         self.assertEqual(result["type"], "intent_route")
-        self.assertEqual(result["selected_skill"], "document-format-normalizer")
+        self.assertEqual(result["selected_skill"], "code-review")
         self.assertAlmostEqual(result["confidence"], 0.855)
         self.assertEqual(
             result["candidates"][0]["skill_name"],
-            "document-format-normalizer",
+            "code-review",
         )
         self.assertEqual(
             result["candidates"][0]["components"],

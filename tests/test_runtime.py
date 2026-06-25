@@ -79,14 +79,14 @@ class FakeMultiToolCallAgent:
                 {
                     "type": "tool_call",
                     "tool_name": "fake_tool",
-                    "arguments": {"text": "normalize docx"},
+                    "arguments": {"text": "summarize risks"},
                     "reason": "second tool call",
                 }
             )
         return json.dumps(
             {
                 "type": "final_answer",
-                "content": "docx normalized",
+                "content": "review complete",
             }
         )
 
@@ -118,16 +118,16 @@ class FakeSkillSelectionAgent:
         return json.dumps(
             {
                 "type": "skill_selection",
-                "selected_skill": "document-format-normalizer",
+                "selected_skill": "code-review",
                 "confidence": 0.9,
-                "reason": "document formatting",
+                "reason": "project review",
             }
         )
 
 
 class FakeInvalidJSONAgent:
     def run(self, user_input):
-        return "我觉得应该用 document-format-normalizer"
+        return "I think code-review is useful"
 
 
 class FakeTool(BaseTool):
@@ -230,11 +230,11 @@ class TestYCAgentRuntime(unittest.TestCase):
             run_dir = next(Path(tmp_dir).iterdir())
             trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
             event_types = [event["event_type"] for event in trace["events"]]
-            self.assertEqual(response, "docx normalized")
+            self.assertEqual(response, "review complete")
             self.assertEqual(len(agent.observations), 2)
             self.assertEqual(
                 [item["tool_result"]["echo"] for item in agent.observations],
-                ["list files", "normalize docx"],
+                ["list files", "summarize risks"],
             )
             self.assertEqual(event_types.count("tool_call_requested"), 2)
             self.assertEqual(event_types.count("tool_called"), 2)
@@ -296,7 +296,7 @@ class TestYCAgentRuntime(unittest.TestCase):
                 output_root=Path(tmp_dir),
             )
 
-            runtime.run("调整 Word 格式")
+            runtime.run("review this project")
 
             run_dir = next(Path(tmp_dir).iterdir())
             trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
@@ -311,7 +311,7 @@ class TestYCAgentRuntime(unittest.TestCase):
                 output_root=Path(tmp_dir),
             )
 
-            runtime.run("调整 Word 格式")
+            runtime.run("review this project")
 
             run_dir = next(Path(tmp_dir).iterdir())
             trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))

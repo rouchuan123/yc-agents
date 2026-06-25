@@ -5,36 +5,39 @@ from yc_agents.skills.definition import SkillDefinition
 
 
 class TestRuleIntentMatcher(unittest.TestCase):
-    def test_match_document_format_normalizer_by_keywords(self):
+    def test_match_code_review_by_keywords(self):
         skills = [
             SkillDefinition(
-                name="document-format-normalizer",
-                description="用于 Word 文档格式调整",
+                name="code-review",
+                description="Project architecture and risk review",
                 allowed_tools=[],
                 body="",
-                path="skills/document-format-normalizer",
+                path="skills/code-review",
             )
         ]
 
-        matches = RuleIntentMatcher().match("帮我把 draft.docx 按模板调整格式", skills)
+        matches = RuleIntentMatcher().match(
+            "please review this project architecture and risks",
+            skills,
+        )
 
-        self.assertEqual(matches[0]["skill_name"], "document-format-normalizer")
+        self.assertEqual(matches[0]["skill_name"], "code-review")
         self.assertGreater(matches[0]["confidence"], 0)
-        self.assertIn("docx", matches[0]["matched_keywords"])
-        self.assertIn("格式", matches[0]["matched_keywords"])
+        self.assertIn("review", matches[0]["matched_keywords"])
+        self.assertIn("architecture", matches[0]["matched_keywords"])
 
     def test_match_returns_empty_list_when_no_keywords_match(self):
         skills = [
             SkillDefinition(
-                name="document-format-normalizer",
-                description="用于 Word 文档格式调整",
+                name="code-review",
+                description="Project architecture and risk review",
                 allowed_tools=[],
                 body="",
-                path="skills/document-format-normalizer",
+                path="skills/code-review",
             )
         ]
 
-        matches = RuleIntentMatcher().match("今天天气怎么样", skills)
+        matches = RuleIntentMatcher().match("how is the weather today?", skills)
 
         self.assertEqual(matches, [])
 

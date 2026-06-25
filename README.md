@@ -1,22 +1,8 @@
 # YCore
 
-`YCore` 是一个本地运行的 CLI Agent 工程原型。它的首个落地点：Word 文档格式调整。
+`YCore` 是一个面向中文用户的本地 CLI Agent 工程原型。它的核心目标是把用户请求路由到合适的 Skill，并在受控的工具、工作区、记忆和运行记录边界内完成任务。
 
-项目当前只保留 CLI 端和一个内置技能 `document-format-normalizer`。用户可以把格式混乱的 `.docx` 草稿交给 YCore，让它调用确定性的 DOCX 工具完成分析、格式重建和审计报告输出，而不是只依赖模型口头说明。
-
-## 首个落地点：Word 文档格式调整
-
-第一版围绕一个清晰场景展开：
-
-> 我有一份 Word 草稿，需要按指定模板或内置报告标准统一格式，并生成一份可以复核的格式审计报告。
-
-这个落地点覆盖：
-
-- 读取 `.docx` 草稿。
-- 识别标题、正文、表格、题注和可提取图片。
-- 加载内置 `report-standard` 模板，或读取上传模板中的部分规则。
-- 生成规范化后的 `.docx` 文件。
-- 输出 Markdown/JSON 审计报告，标出通过项和需要人工复核的 warning。
+项目不把某个具体落地场景写死进全局角色设定。具体能力由 `skills/` 下的 Skill 决定；全局运行时只负责技能选择、上下文注入、工具调用协议、权限和可复核输出。
 
 ## CLI 主线
 
@@ -37,60 +23,38 @@ CLI 顶部会显示当前工作区、模型、估算上下文占用、Git 分支
 - `/skills`：查看当前可用技能。
 - `/clear`：清空当前屏幕内容，不删除 session 记忆。
 
-## 联网搜索
+## 默认 Skill
 
-YCore 提供通用工具 `web_search`，第一版底层使用 Tavily。将 API key 写入 `.env`：
+当前仓库默认发布两个示例业务 Skill：
+
+- `code-review`：审查项目结构、架构、风险和测试缺口。
+- `eval-writer`：为项目、Agent、工具或功能设计 eval case、指标、测试数据和评估流程。
+
+这两个 Skill 是示例业务能力，不是全局 prompt 的默认身份。后续可以继续添加新的 Skill，让具体工作流留在 Skill 层，而不是写进 YCore 的全局角色设定。
+
+## 通用工具
+
+默认 CLI runtime 暴露通用工具：
+
+- `workspace_files`：列出当前工作区可读文件。
+- `file_reader`：读取工作区内支持的文件内容。
+- `markdown_writer`：写入 Markdown 输出。
+- `rag_search`：检索已加载的本地知识片段。
+- `web_search`：检索需要当前或外部信息的问题。
+
+将 Tavily API key 写入 `.env` 后可使用联网搜索：
 
 ```env
 TAVILY_API_KEY=你的 Tavily key
 ```
 
-在 CLI 中可以直接询问需要最新信息的问题，Agent 会在需要时调用 `web_search`。
-
-## 可用 Skill
-
-当前项目只随仓库发布一个技能：
-
-- `document-format-normalizer`：Word 文档格式调整。
-
-技能文件位于：
-
-```text
-skills/document-format-normalizer/SKILL.md
-```
-
-相关参考资料和脚本位于：
-
-```text
-skills/document-format-normalizer/references/
-skills/document-format-normalizer/scripts/
-skills/document-format-normalizer/assets/
-```
-
-## 示例请求
-
-```text
-使用 document-format-normalizer 处理 draft.docx，按 report-standard 模板调整格式，输出名为 normalized-report。
-```
-
-生成文件默认写入当前工作区：
-
-```text
-.ycore/docx-format/
-```
-
-典型输出包括：
-
-- `normalized-report.docx`
-- `normalized-report.audit.md`
-- `normalized-report.audit.json`
-
 ## 核心能力
 
 - 从 `SKILL.md` 加载技能，并把技能作为可维护的文件系统资产。
-- 通过 `SkillRuntimeAgent` 做运行时技能选择。
+- 通过 `SkillRuntimeAgent` 做运行时技能选择和执行。
+- 通过 `PromptBuilder` 集中组装全局运行时协议、项目指令和模式协议。
+- 支持工作区根目录 `YCORE.md` 与本地 `.ycore/YCORE.md` 两层项目指令。
 - 通过 `ToolGateway` 统一管理工具权限、参数校验、审批边界和追踪记录。
-- 通过 `docx_format_normalizer` 工具执行确定性的 Word 分析、生成和审计。
 - 在当前 workspace 的 `.ycore/runs/` 下写入输入、输出、trace 和 state checkpoint。
 - 支持 workspace 与 session 隔离。
 
@@ -101,10 +65,10 @@ flowchart LR
     User["用户请求"] --> CLI["YCore CLI"]
     CLI --> Runtime["YCAgentRuntime"]
     Runtime --> Agent["SkillRuntimeAgent"]
-    Agent --> Skill["document-format-normalizer"]
+    Agent --> Selector["Skill 选择"]
+    Selector --> Skill["选中的 Skill"]
     Runtime --> Gateway["ToolGateway"]
-    Gateway --> DocxTool["docx_format_normalizer"]
-    DocxTool --> Pipeline["DOCX analyze -> format -> audit"]
+    Gateway --> Tools["允许的工具"]
     Runtime --> Trace["Trace + State + Outputs"]
 ```
 
@@ -125,17 +89,17 @@ flowchart LR
 - `main.py`：CLI 入口和运行时装配。
 - `yc_agents/agents`：Agent 编排逻辑。
 - `yc_agents/cli`：终端交互界面、session 和 workspace 命令。
-- `yc_agents/docx_format`：Word 文档分析、模板规则、格式生成、审计和 pipeline。
 - `yc_agents/harness`：运行时、权限、追踪、状态和工具网关。
+- `yc_agents/prompts`：集中 prompt 组装和项目指令加载。
 - `yc_agents/skills`：技能定义、加载、发现和注册表。
 - `yc_agents/tools`：具体工具实现和工具注册表。
-- `skills/document-format-normalizer`：面向用户的 Word 文档格式调整技能。
+- `yc_agents/docx_format`：保留的底层 DOCX 处理包，可供未来可选 Skill 使用。
+- `skills`：面向用户发布的 Skill。
 - `tests`：Python 单元测试。
 
 ## 当前边界
 
 - 当前只保留 CLI 端。
-- 当前只发布 `document-format-normalizer` 一个技能。
-- 第一版重点保证 `report-standard` 内置模板稳定可演示。
-- 上传模板只提取可稳定读取的部分规则。
-- 复杂 Word 对象不会承诺完美重建，会进入审计报告 warning。
+- 默认发布 `code-review` 和 `eval-writer` 两个示例业务 Skill。
+- 具体工作流应放在 Skill 中，不写入全局 prompt。
+- 底层 DOCX 处理代码暂时保留，但不作为默认运行时工具暴露。

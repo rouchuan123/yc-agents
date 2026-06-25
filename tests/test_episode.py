@@ -17,7 +17,7 @@ class TestEpisodePackage(unittest.TestCase):
             context.outputs_dir = Path(tmpdir) / context.run_id
             writer = RunOutputWriter(context)
             writer.write_input()
-            writer.write_context({"selected_skill": "document-format-normalizer"})
+            writer.write_context({"selected_skill": "code-review"})
             writer.write_final_output("done")
             writer.write_retrieved_sources(
                 [

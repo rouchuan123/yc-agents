@@ -38,12 +38,12 @@ class TestMultiAgentOrchestrator(unittest.TestCase):
             },
         )
 
-        result = orchestrator.run("帮我准备开题")
+        result = orchestrator.run("review this project")
 
         self.assertEqual(result["type"], "orchestrator_result")
         self.assertEqual(result["route"]["target_agent"], "skill_agent")
-        self.assertEqual(result["content"], "skill: 帮我准备开题")
-        self.assertEqual(skill_agent.inputs, ["帮我准备开题"])
+        self.assertEqual(result["content"], "skill: review this project")
+        self.assertEqual(skill_agent.inputs, ["review this project"])
         self.assertEqual(simple_agent.inputs, [])
 
     def test_unknown_agent_returns_error_result(self):

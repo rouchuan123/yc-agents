@@ -1,7 +1,7 @@
 [project]
 name = "ycore"
 version = "0.1.0"
-description = "YCore is a skill-driven research Agent runtime for graduate research workflows."
+description = "YCore is a local skill-driven CLI agent runtime."
 requires-python = ">=3.11"
 dependencies = [
   "openai",
