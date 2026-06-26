@@ -102,6 +102,64 @@ class TestSkillLoader(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, skill.body)
 
+    def test_eval_writer_skill_defaults_to_chinese_plan_before_jsonl(self):
+        loader = SkillLoader("skills")
+
+        skill = loader.load_one(Path("skills") / "eval-writer")
+
+        required_markers = [
+            "默认先输出中文评估方案",
+            "只有用户明确要求时",
+            "JSONL",
+            "eval/cases",
+            "不要默认写文件",
+            "Skill 选择",
+            "ToolGateway",
+            "trace",
+            "state",
+            "RAG",
+            "自动化指标",
+            "人工复核",
+            "面试讲法",
+            "当前项目缺口",
+        ]
+        for marker in required_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, skill.body)
+
+    def test_eval_writer_skill_exposes_agent_eval_triggers_and_outputs(self):
+        loader = SkillLoader("skills")
+
+        skill = loader.load_one(Path("skills") / "eval-writer")
+
+        expected_triggers = {
+            "eval",
+            "评估",
+            "评测",
+            "Agent 评测",
+            "RAG 评估",
+            "工具调用评估",
+            "trace 评估",
+            "LLM-as-Judge",
+            "回归测试",
+        }
+        self.assertTrue(
+            expected_triggers.issubset(set(skill.triggers)),
+            f"Missing triggers: {sorted(expected_triggers - set(skill.triggers))}",
+        )
+
+        expected_outputs = {
+            "eval_plan",
+            "metric_mapping",
+            "manual_rubric",
+            "interview_talking_points",
+            "gap_analysis",
+        }
+        self.assertTrue(
+            expected_outputs.issubset(set(skill.outputs)),
+            f"Missing outputs: {sorted(expected_outputs - set(skill.outputs))}",
+        )
+
     def test_load_one_reads_expanded_metadata(self):
         with TemporaryDirectory() as tmpdir:
             skill_dir = Path(tmpdir) / "code-review"
