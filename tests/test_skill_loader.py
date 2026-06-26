@@ -35,6 +35,73 @@ class TestSkillLoader(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, skill.body)
 
+    def test_code_review_skill_exposes_project_audit_references(self):
+        loader = SkillLoader("skills")
+
+        skill = loader.load_one(Path("skills") / "code-review")
+
+        reference_names = {Path(path).name for path in skill.references}
+        expected_references = {
+            "architecture-review-guide.md",
+            "security-review-guide.md",
+            "performance-review-guide.md",
+            "code-quality-universal.md",
+            "common-bugs-checklist.md",
+            "python.md",
+            "typescript.md",
+            "react.md",
+            "go.md",
+            "rust.md",
+        }
+        self.assertTrue(
+            expected_references.issubset(reference_names),
+            f"Missing references: {sorted(expected_references - reference_names)}",
+        )
+
+        asset_names = {Path(path).name for path in skill.assets}
+        self.assertIn("project-audit-checklist.md", asset_names)
+        self.assertIn("project-audit-report-template.md", asset_names)
+        self.assertFalse(
+            any("pr-analyzer" in script["path"] for script in skill.scripts),
+            "Project audit skill should not migrate the PR diff analyzer script.",
+        )
+
+        required_markers = [
+            "本地项目体检",
+            "不是 PR diff 审查",
+            "按需读取参考资料",
+            "横向审查指南",
+            "语言与框架指南",
+            "已确认事实",
+            "基于代码的推断",
+            "未确认事项",
+        ]
+        for marker in required_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, skill.body)
+
+    def test_code_review_skill_allows_review_evidence_tools(self):
+        loader = SkillLoader("skills")
+
+        skill = loader.load_one(Path("skills") / "code-review")
+
+        for tool_name in ["git_inspector", "code_search", "verification_runner"]:
+            with self.subTest(tool_name=tool_name):
+                self.assertIn(tool_name, skill.allowed_tools)
+
+        required_markers = [
+            "项目体检模式",
+            "变更/PR 审查模式",
+            "git_inspector",
+            "code_search",
+            "verification_runner",
+            "不自动 fetch",
+            "重型验证",
+        ]
+        for marker in required_markers:
+            with self.subTest(marker=marker):
+                self.assertIn(marker, skill.body)
+
     def test_load_one_reads_expanded_metadata(self):
         with TemporaryDirectory() as tmpdir:
             skill_dir = Path(tmpdir) / "code-review"
