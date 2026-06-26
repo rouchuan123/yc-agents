@@ -13,9 +13,12 @@ from yc_agents.rag.hybrid_retriever import HybridRetriever
 from yc_agents.rag.keyword_index import KeywordIndex
 from yc_agents.rag.vector_store import VectorStore
 from yc_agents.tools.file_reader import FileReaderTool
+from yc_agents.tools.code_search import CodeSearchTool
+from yc_agents.tools.git_inspector import GitInspectorTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.rag_search import RAGSearchTool
 from yc_agents.tools.registry import ToolRegistry
+from yc_agents.tools.verification_runner import VerificationRunnerTool
 from yc_agents.tools.web_search import WebSearchTool
 from yc_agents.tools.workspace_files import WorkspaceFilesTool
 
@@ -57,6 +60,9 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
                 "markdown_writer",
                 "rag_search",
                 "web_search",
+                "git_inspector",
+                "code_search",
+                "verification_runner",
             ],
         },
     )
@@ -64,6 +70,9 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     tool_registry.register(MarkdownWriterTool())
     tool_registry.register(WorkspaceFilesTool(session.workspace.path))
     tool_registry.register(FileReaderTool(session.workspace.path))
+    tool_registry.register(GitInspectorTool(session.workspace.path))
+    tool_registry.register(CodeSearchTool(session.workspace.path))
+    tool_registry.register(VerificationRunnerTool(session.workspace.path))
     tool_registry.register(WebSearchTool())
     tool_registry.register(rag_search_tool)
 
@@ -77,6 +86,9 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
             "workspace_files",
             "rag_search",
             "web_search",
+            "git_inspector",
+            "code_search",
+            "verification_runner",
         ],
         approval_gate=HumanApprovalGate(),
         output_root=session.runs_path,

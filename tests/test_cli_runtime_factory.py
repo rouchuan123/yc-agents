@@ -99,6 +99,20 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             self.assertEqual(runtime.tool_registry.get_tool("web_search").name, "web_search")
             self.assertIn("web_search", runtime.agent.workspace_context["available_tools"])
 
+    def test_runtime_factory_registers_review_evidence_tools(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("review")
+
+            runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
+
+            for tool_name in ["git_inspector", "code_search", "verification_runner"]:
+                with self.subTest(tool_name=tool_name):
+                    self.assertIn(tool_name, runtime.allowed_tools)
+                    self.assertEqual(runtime.tool_registry.get_tool(tool_name).name, tool_name)
+                    self.assertIn(tool_name, runtime.agent.workspace_context["available_tools"])
+
     def test_env_example_documents_tavily_api_key(self):
         env_example = Path(".env.example").read_text(encoding="utf-8")
 
