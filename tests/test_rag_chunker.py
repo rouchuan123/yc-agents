@@ -6,7 +6,7 @@ def test_chunk_text_with_metadata():
     chunker = DocumentChunker(chunk_size=10, overlap=2)
 
     chunks = chunker.chunk_text(
-        "研究背景和技术路线需要被切片",
+        "接口说明和技术路线需要被切片",
         source="demo.md",
         metadata={"section": "背景"},
     )
@@ -21,6 +21,6 @@ def test_chunk_text_with_metadata():
 def test_chunk_text_without_metadata_keeps_string_chunks():
     chunker = DocumentChunker(chunk_size=10, overlap=2)
 
-    chunks = chunker.chunk_text("研究背景和技术路线")
+    chunks = chunker.chunk_text("接口说明和技术路线")
 
     assert isinstance(chunks[0], str)

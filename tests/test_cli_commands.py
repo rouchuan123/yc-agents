@@ -59,10 +59,10 @@ class TestCLICommands(unittest.TestCase):
         self.assertEqual(command.content, "")
 
     def test_session_new_with_title(self):
-        command = parse_cli_input("/session new 开题报告")
+        command = parse_cli_input("/session new 代码审查")
 
         self.assertEqual(command.action, "session_new")
-        self.assertEqual(command.content, "开题报告")
+        self.assertEqual(command.content, "代码审查")
 
     def test_session_delete_command(self):
         command = parse_cli_input("/session delete session_abc")
@@ -82,10 +82,10 @@ class TestCLICommands(unittest.TestCase):
         self.assertEqual(command.action, "workspace_list")
 
     def test_workspace_add_command(self):
-        command = parse_cli_input(r"/workspace add E:\paper-project")
+        command = parse_cli_input(r"/workspace add E:\code-project")
 
         self.assertEqual(command.action, "workspace_add")
-        self.assertEqual(command.content, r"E:\paper-project")
+        self.assertEqual(command.content, r"E:\code-project")
 
     def test_workspace_current_command(self):
         command = parse_cli_input("/workspace current")
@@ -93,10 +93,10 @@ class TestCLICommands(unittest.TestCase):
         self.assertEqual(command.action, "workspace_current")
 
     def test_workspace_delete_command(self):
-        command = parse_cli_input(r"/workspace delete E:\paper-project")
+        command = parse_cli_input(r"/workspace delete E:\code-project")
 
         self.assertEqual(command.action, "workspace_delete")
-        self.assertEqual(command.content, r"E:\paper-project")
+        self.assertEqual(command.content, r"E:\code-project")
 
     def test_workspace_switch_command(self):
         command = parse_cli_input("/workspace workspace_abc")

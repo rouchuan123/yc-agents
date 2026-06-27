@@ -8,9 +8,9 @@ from yc_agents.rag.vector_store import VectorStore
 def test_vector_store_search_returns_ranked_results():
     provider = DeterministicEmbeddingProvider(dimensions=8)
     store = VectorStore(embedding_provider=provider)
-    store.add_chunks("demo.md", ["研究背景", "完全不同的内容"])
+    store.add_chunks("demo.md", ["接口说明", "完全不同的内容"])
 
-    results = store.search("研究背景", top_k=1)
+    results = store.search("接口说明", top_k=1)
 
     assert len(results) == 1
     assert results[0]["source"] == "demo.md"
@@ -26,13 +26,13 @@ def test_keyword_index_accepts_metadata_chunks():
             DocumentChunk(
                 source="demo.md",
                 chunk_id=7,
-                text="研究背景",
+                text="接口说明",
                 metadata={"section": "背景"},
             )
         ],
     )
 
-    results = index.search("研究背景", top_k=1)
+    results = index.search("接口说明", top_k=1)
 
     assert results[0]["source"] == "demo.md"
     assert results[0]["chunk_id"] == 7
@@ -43,11 +43,11 @@ def test_hybrid_retriever_merges_keyword_and_vector_results():
     provider = DeterministicEmbeddingProvider(dimensions=8)
     keyword = KeywordIndex()
     vector = VectorStore(embedding_provider=provider)
-    keyword.add_chunks("demo.md", ["研究背景"])
-    vector.add_chunks("demo.md", ["研究背景"])
+    keyword.add_chunks("demo.md", ["接口说明"])
+    vector.add_chunks("demo.md", ["接口说明"])
     retriever = HybridRetriever(keyword_index=keyword, vector_store=vector)
 
-    results = retriever.search("研究背景", top_k=3)
+    results = retriever.search("接口说明", top_k=3)
 
     assert results
     assert results[0]["source"] == "demo.md"

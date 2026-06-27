@@ -2,8 +2,12 @@ from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.core.llm import YCAgentsLLM
 from yc_agents.harness.permissions import HumanApprovalGate
 from yc_agents.harness.runtime import YCAgentRuntime
+from yc_agents.intent.llm_classifier import LLMIntentClassifier
+from yc_agents.intent.router import IntentRouter
+from yc_agents.intent.rule_matcher import RuleIntentMatcher
+from yc_agents.intent.semantic_matcher import SemanticIntentMatcher
 from yc_agents.memory.compressor import MemoryCompressor
-from yc_agents.memory.profile import ResearchProfileMemory
+from yc_agents.memory.profile import CodeAgentProfileMemory
 from yc_agents.memory.session import SessionMemory
 from yc_agents.memory.summary import SummaryMemory
 from yc_agents.prompts.builder import PromptBuilder
@@ -27,7 +31,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     llm = llm or YCAgentsLLM()
     session_memory = SessionMemory(file_path=session.messages_path)
     summary_memory = SummaryMemory(file_path=session.summary_path)
-    profile_memory = ResearchProfileMemory(file_path=session.profile_path)
+    profile_memory = CodeAgentProfileMemory(file_path=session.profile_path)
     memory_compressor = MemoryCompressor(summary_memory=summary_memory)
     keyword_index = KeywordIndex()
     vector_store = VectorStore(
@@ -40,6 +44,11 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     rag_search_tool = RAGSearchTool(rag_retriever)
     project_instructions = ProjectInstructionLoader(session.workspace.path).load()
     prompt_builder = PromptBuilder(project_instructions=project_instructions)
+    intent_router = IntentRouter(
+        rule_matcher=RuleIntentMatcher(),
+        semantic_matcher=SemanticIntentMatcher(),
+        llm_classifier=LLMIntentClassifier(llm),
+    )
     agent = SkillRuntimeAgent(
         llm,
         skills_dir=skills_dir,
@@ -50,6 +59,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         compression_threshold=12,
         rag_search_tool=rag_search_tool,
         prompt_builder=prompt_builder,
+        intent_router=intent_router,
         workspace_context={
             "name": session.workspace.name,
             "path": str(session.workspace.path),

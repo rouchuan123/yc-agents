@@ -2,23 +2,72 @@
 
 ## 目的
 
-这份报告用于跟踪 Agent 在本地 CLI runtime 中是否真正完成任务，而不只是单元测试是否通过。
+这份报告用于跟踪 code agent 在本地 Agent Harness 中是否真正完成任务，而不只是单元测试是否通过或回答看起来顺眼。
 
 ## 用例集合
 
-- 总用例数：0
-- 建议类别：项目审查、Eval 方案生成、文件读取、RAG QA、工具使用、Markdown 输出、错误恢复
-- 额外 RAG 专项用例：`eval/cases/rag_cases.jsonl` 中的 10 条
+- Runtime 主线用例：`eval/cases/runtime_cases.jsonl`
+- ToolGateway 边界用例：`eval/cases/toolgateway_cases.jsonl`
+- code-review 用例：`eval/cases/code_review_cases.jsonl`
+- eval-writer 用例：`eval/cases/eval_writer_cases.jsonl`
+- 可选上下文用例：`eval/cases/context_cases.jsonl`
+
+当前覆盖项目体检、变更审查、测试缺口、Skill 选择、工具边界、trace/state、verification、输出质量和可选上下文检索。
+
+## Eval 是否需要大模型
+
+YCore 的默认 eval 不依赖大模型。deterministic eval 用固定 runtime、fake trace 或已有 trace 字段验证工程闭环：Skill 是否选对、工具是否被调用、禁止工具是否没用、trace 是否完整、verification 是否通过。
+
+真实模型 smoke eval 只作为手动验证和面试演示：少量 case 调真实模型，重点用人工 rubric 评估 code-review 是否读了证据、是否指出真实风险、建议是否可执行。关键词命中只能做弱基线，不能代表语义质量。
 
 ## 指标
 
-- 任务成功率：人工评分前先使用基于关键词的基线。
-- 工具成功率：计划在 `ToolGateway` 追踪指标扩展后统计。
-- 检索命中率：计划在 RAG 元数据和引用指标扩展后统计。
-- 引用精确率：计划在支持引用感知的 RAG 输出实现后统计。
-- 平均延迟：由评估运行器测量。
+- Skill 选择成功率：检查是否选中期望 Skill。
+- 工具成功率：检查必要工具是否真的出现在 trace 的 `tool_called` 事件中。
+- Trace 事件成功率：检查运行过程是否出现预期事件，例如 `tool_called` 或 `skill_selected`。
+- 禁止工具成功率：检查 `web_search` 等禁止工具没有被调用。
+- Verification 成功率：检查最小验证命令是否被选择、运行或诚实说明未运行原因。
+- 输出质量：人工 rubric 判断证据充分性、风险真实性、建议可执行性和中文结构清晰度。
+- 可选上下文命中率：仅在 case 明确依赖本地上下文时检查 retrieval hit。
 
-当有内容语料库和引用抽取层接入运行器输出后，RAG 专项指标可以使用 `retrieval_hit` 和 `citation_precision`。
+## ToolGateway 可观测性
+
+ToolGateway 评测不只看回答内容，也统计 trace 中的工具事件：
+
+- `tool_called`：工具成功执行。
+- `tool_denied`：策略拒绝，说明权限边界生效。
+- `tool_validation_failed`：参数 schema 校验失败。
+- `tool_retry`：重试触发。
+- `tool_failed`：工具执行异常或超时。
+- `tool_needs_approval`：需要人工审批。
+
+这些事件会汇总为 `tool_event_totals` 和 `tool_failure_labels`，用于解释一次 Agent 运行失败到底是策略、参数、工具实现还是外部环境问题。
+
+## Verification Gate
+
+VerificationGate 把“任务完成”拆成可检查证据：
+
+- final output 非空。
+- JSON message type 合法。
+- 目标文件存在。
+- 工具结果存在。
+- 必要关键词或 checklist 项已覆盖。
+- 命令结果 exit code 为 0。
+
+报告中只要有一个 check 失败，整体 verification report 就失败。这样可以避免 Agent 用自然语言声称完成，但没有证据。
+
+## 人工 Rubric
+
+真实模型 smoke eval 或复杂 code-review 输出用人工 rubric 判断：
+
+| 维度 | 观察点 |
+| --- | --- |
+| 证据 | 是否读取关键文件，是否给出路径或明确证据来源 |
+| 链路 | 是否追到入口、核心逻辑、工具/状态和测试 |
+| 风险 | 是否指出真实风险，而不是泛泛建议 |
+| 测试 | 是否识别已有覆盖和关键缺口 |
+| 诚实性 | 是否区分已确认事实、推断和未确认事项 |
+| 可执行性 | 建议是否能转成测试、修复或验证命令 |
 
 ## 当前基线
 
@@ -28,4 +77,10 @@
 python -m yc_agents.eval.runner --cases eval/cases/runtime_cases.jsonl --output outputs/eval/baseline.json
 ```
 
-第一次基线应使用有效的模型凭证生成，或使用确定性的运行时适配器进行本地验证。在基线输出经过人工检查之前，不要汇报聚合成功率数字。
+也可以运行离线 demo：
+
+```powershell
+python scripts/demo_eval_run.py
+```
+
+在基线输出经过人工检查之前，不要汇报聚合成功率数字。

@@ -2,21 +2,17 @@ import json
 from pathlib import Path
 
 
-class ResearchProfileMemory:
-    def __init__(self, file_path="data/memory/research_profile.json"):
+class CodeAgentProfileMemory:
+    def __init__(self, file_path="data/memory/code_agent_profile.json"):
         self.file_path = Path(file_path)
         self.profile = self.default_profile()
 
     def default_profile(self):
         return {
-            "major": "",
-            "research_direction": "",
-            "thesis_type": "",
-            "tech_stack": [],
-            "current_topic": "",
-            "advisor_feedback": [],
-            "literature_findings": [],
-            "system_ideas": [],
+            "preferred_language": "zh-CN",
+            "review_preferences": [],
+            "project_context": [],
+            "verification_preferences": [],
         }
 
     def load(self):

@@ -23,7 +23,6 @@ allowed_tools:
   - workspace_files
   - file_reader
   - markdown_writer
-  - rag_search
   - git_inspector
   - code_search
   - verification_runner
@@ -37,6 +36,10 @@ examples:
 # 代码审查 Skill
 
 这个 Skill 面向中文用户，用于做本地项目体检：阅读仓库、建立项目地图、追关键链路、识别架构/安全/性能/质量风险，并评估测试缺口。核心原则：先读项目，再追链路，最后下结论；所有重要判断都要有文件证据，不要提前总结。
+
+## Code Agent 定位
+
+这是 YCore 第一个具体落地的 code agent Skill。它不只是摘要仓库，而是用本地代码证据、工具 trace 和必要的 verification 输出，形成可复盘的项目审查结果。
 
 ## 模式边界
 

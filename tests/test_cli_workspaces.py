@@ -32,7 +32,7 @@ class TestWorkspaceStore(unittest.TestCase):
     def test_add_workspace_creates_ycore_and_switches_current(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            workspace = root / "paper"
+            workspace = root / "code"
             workspace.mkdir()
             store = WorkspaceStore(ycore_root=root, startup_dir=root)
             initial = store.ensure_active_workspace()
@@ -47,7 +47,7 @@ class TestWorkspaceStore(unittest.TestCase):
     def test_switch_workspace_updates_current(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
-            workspace = root / "paper"
+            workspace = root / "code"
             workspace.mkdir()
             store = WorkspaceStore(ycore_root=root, startup_dir=root)
             first = store.ensure_active_workspace()

@@ -13,6 +13,10 @@ class TokenBudget:
     def total_estimated_tokens(self):
         return sum(self.sections.values())
 
+    @property
+    def remaining_tokens(self):
+        return max(0, self.max_tokens - self.total_estimated_tokens)
+
     def is_over_budget(self):
         return self.total_estimated_tokens >= self.max_tokens
 

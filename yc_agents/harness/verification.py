@@ -69,14 +69,56 @@ class VerificationGate:
             "passed": all(check["passed"] for check in checks),
             "checks": checks,
         }
-    def _result(self, name, passed, message):
+
+    def verify_required_substrings(self, content, required_substrings):
+        text = content or ""
+        checks = []
+
+        for required in required_substrings:
+            passed = required in text
+            checks.append(
+                {
+                    "name": "required_substring",
+                    "passed": passed,
+                    "message": (
+                        f"Required substring covered: {required}"
+                        if passed
+                        else f"Required substring missing: {required}"
+                    ),
+                    "required": required,
+                }
+            )
+
+        return {
+            "passed": all(check["passed"] for check in checks),
+            "checks": checks,
+        }
+
+    def verify_command_result(self, command, exit_code, stdout="", stderr=""):
+        passed = exit_code == 0
+
+        return self._result(
+            "command_exit_code",
+            passed,
+            (
+                f"Command passed: {command}"
+                if passed
+                else f"Command failed: {command}"
+            ),
+            command=command,
+            exit_code=exit_code,
+            stdout=stdout,
+            stderr=stderr,
+        )
+
+    def _result(self, name, passed, message, **metadata):
+        check = {
+            "name": name,
+            "passed": passed,
+            "message": message,
+        }
+        check.update(metadata)
         return {
             "passed": passed,
-            "checks": [
-                {
-                    "name": name,
-                    "passed": passed,
-                    "message": message,
-                }
-            ],
+            "checks": [check],
         }

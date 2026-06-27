@@ -21,6 +21,7 @@ class SkillRuntimeAgent:
         rag_top_k=3,
         workspace_context=None,
         prompt_builder=None,
+        intent_router=None,
     ):
         self.llm = llm
         self.skills_dir = skills_dir
@@ -35,6 +36,7 @@ class SkillRuntimeAgent:
         self.rag_search_tool = rag_search_tool
         self.rag_top_k = rag_top_k
         self.workspace_context = workspace_context or {}
+        self.intent_router = intent_router
 
     def run(self, user_input):
         registry = self._load_registry()
@@ -183,9 +185,22 @@ class SkillRuntimeAgent:
         yield from stream_think(messages)
 
     def _discover_candidate_skills(self, registry, user_input):
+        skills = list(registry.skills.values())
+
+        if self.intent_router is not None:
+            route = self.intent_router.route(user_input, skills)
+            ordered_names = [
+                item["skill_name"]
+                for item in route.get("candidates", [])
+                if item.get("skill_name") in registry.skills
+            ]
+            ordered = [registry.skills[name] for name in ordered_names]
+            if ordered:
+                return ordered[:5]
+
         discovered = registry.discover(user_input, top_k=5)
         if not discovered:
-            return list(registry.skills.values())
+            return skills
 
         return [result.skill for result in discovered]
 

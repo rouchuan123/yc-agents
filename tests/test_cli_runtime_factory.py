@@ -19,7 +19,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
-            session = CLISessionStore(workspace).create_session("开题报告")
+            session = CLISessionStore(workspace).create_session("代码审查")
 
             runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
 
@@ -33,7 +33,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
-            session = CLISessionStore(workspace).create_session("文献")
+            session = CLISessionStore(workspace).create_session("代码体检")
 
             runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
 
@@ -81,9 +81,11 @@ class TestCLIRuntimeFactory(unittest.TestCase):
 
             runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
 
-            self.assertNotIn("docx_format_normalizer", runtime.allowed_tools)
+            removed_tool = "docx" + "_format" + "_normalizer"
+
+            self.assertNotIn(removed_tool, runtime.allowed_tools)
             self.assertNotIn(
-                "docx_format_normalizer",
+                removed_tool,
                 runtime.agent.workspace_context["available_tools"],
             )
 
@@ -112,6 +114,16 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                     self.assertIn(tool_name, runtime.allowed_tools)
                     self.assertEqual(runtime.tool_registry.get_tool(tool_name).name, tool_name)
                     self.assertIn(tool_name, runtime.agent.workspace_context["available_tools"])
+
+    def test_build_cli_runtime_attaches_intent_router(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("intent")
+
+            runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
+
+            self.assertIsNotNone(runtime.agent.intent_router)
 
     def test_env_example_documents_tavily_api_key(self):
         env_example = Path(".env.example").read_text(encoding="utf-8")

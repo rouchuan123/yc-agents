@@ -17,15 +17,27 @@ def build_mcp_tools(config_path="mcp_servers.json", client=None):
     tools = []
 
     for server_name, server in config.servers.items():
-        tools.append(
-            MCPToolAdapter(
-                name=f"mcp_{server_name}",
-                description=server.get("description", f"MCP server: {server_name}"),
-                server_name=server_name,
-                tool_name="call",
-                client=client,
+        declared_tools = server.get("tools") or [
+            {
+                "name": "call",
+                "description": server.get("description", f"MCP server: {server_name}"),
+            }
+        ]
+
+        for declared_tool in declared_tools:
+            tool_name = declared_tool["name"]
+            tools.append(
+                MCPToolAdapter(
+                    name=f"mcp_{server_name}_{tool_name}",
+                    description=declared_tool.get(
+                        "description",
+                        f"MCP tool {server_name}.{tool_name}",
+                    ),
+                    server_name=server_name,
+                    tool_name=tool_name,
+                    client=client,
+                )
             )
-        )
 
     return tools
 

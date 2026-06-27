@@ -27,6 +27,14 @@ class FakeFailingTool(BaseTool):
         raise RuntimeError("tool failed")
 
 
+class EventTool(BaseTool):
+    name = "event_tool"
+    description = "Returns a stable payload."
+
+    def run(self, value="ok"):
+        return {"value": value}
+
+
 class SchemaTool(BaseTool):
     name = "schema_tool"
     description = "A schema tool for tests."
@@ -70,6 +78,14 @@ class FakeTrace:
                 "payload": payload or {},
             }
         )
+
+
+class ToolRegistryStub:
+    def __init__(self, tools):
+        self.tools = {tool.name: tool for tool in tools}
+
+    def get_tool(self, name):
+        return self.tools[name]
 
 
 class FakeApprovalGate:
@@ -324,6 +340,60 @@ class TestToolGateway(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_type"], "timeout")
+
+    def test_tool_gateway_records_denied_event(self):
+        events = []
+        gateway = ToolGateway(
+            ToolRegistryStub([EventTool()]),
+            allowed_tools=[],
+            event_callback=events.append,
+        )
+
+        try:
+            gateway.run_tool("event_tool")
+        except ToolNotAllowedError:
+            pass
+
+        self.assertEqual(events[0]["event_type"], "tool_denied")
+        self.assertEqual(events[0]["payload"]["tool_name"], "event_tool")
+
+    def test_tool_gateway_records_validation_failure_result(self):
+        events = []
+        gateway = ToolGateway(
+            ToolRegistryStub([SchemaTool()]),
+            allowed_tools=["schema_tool"],
+            event_callback=events.append,
+        )
+
+        result = gateway.run_tool("schema_tool")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "validation_error")
+        self.assertEqual(
+            [event["event_type"] for event in events],
+            [
+                "tool_validation_failed",
+                "tool_result",
+            ],
+        )
+
+    def test_tool_gateway_records_retry_and_failure_events(self):
+        events = []
+        gateway = ToolGateway(
+            ToolRegistryStub([FakeFailingTool()]),
+            allowed_tools=["failing_tool"],
+            policy=ToolExecutionPolicy(max_retries=1),
+            event_callback=events.append,
+        )
+
+        result = gateway.run_tool("failing_tool")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["attempts"], 2)
+        event_types = [event["event_type"] for event in events]
+        self.assertIn("tool_retry", event_types)
+        self.assertIn("tool_failed", event_types)
+        self.assertEqual(event_types[-1], "tool_result")
 
 
 if __name__ == "__main__":

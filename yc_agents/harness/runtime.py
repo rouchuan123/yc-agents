@@ -41,6 +41,7 @@ class YCAgentRuntime:
         self.output_root = output_root
         self.event_callback = event_callback
         self.tool_policy = tool_policy
+        self.last_trace_events = []
 
     def run(self, user_input):
         context = RunContext(user_input=user_input, output_root=self.output_root)
@@ -78,6 +79,7 @@ class YCAgentRuntime:
                 {"verification": verification},
             )
             trace.save()
+            self.last_trace_events = list(trace.events)
 
             return response
         except Exception as exc:
@@ -144,6 +146,7 @@ class YCAgentRuntime:
                 {"verification": verification},
             )
             trace.save()
+            self.last_trace_events = list(trace.events)
         except Exception as exc:
             self._record_run_failed(trace, state_store, exc)
             raise
@@ -338,6 +341,7 @@ class YCAgentRuntime:
         trace.record("run_failed", details)
         state_store.save_checkpoint("run_failed", "failed", details)
         trace.save()
+        self.last_trace_events = list(trace.events)
 
 
 ResearchAgentHarness = YCAgentRuntime

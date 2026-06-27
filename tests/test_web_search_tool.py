@@ -63,7 +63,7 @@ class TestWebSearchTool(unittest.TestCase):
         tool = WebSearchTool(provider=TavilyWebSearchProvider(api_key="key", client=client))
 
         result = tool.run(
-            query="latest docx automation tools",
+            query="latest code review automation tools",
             max_results=3,
             search_depth="advanced",
             topic="general",
@@ -72,10 +72,10 @@ class TestWebSearchTool(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["tool"], "web_search")
         self.assertEqual(result["provider"], "tavily")
-        self.assertEqual(result["query"], "latest docx automation tools")
+        self.assertEqual(result["query"], "latest code review automation tools")
         self.assertEqual(result["answer"], "A concise answer.")
         self.assertEqual(result["results"][0]["url"], "https://example.com")
-        self.assertEqual(client.calls[0]["query"], "latest docx automation tools")
+        self.assertEqual(client.calls[0]["query"], "latest code review automation tools")
         self.assertEqual(client.calls[0]["max_results"], 3)
         self.assertEqual(client.calls[0]["search_depth"], "advanced")
 

@@ -2,6 +2,7 @@ import unittest
 from pathlib import Path
 
 from yc_agents.harness.verification import VerificationGate
+from yc_agents.harness.verification_report import build_verification_report
 
 
 class TestVerificationGate(unittest.TestCase):
@@ -79,6 +80,78 @@ class TestVerificationGate(unittest.TestCase):
         result = gate.verify_checklist("hello", [])
 
         self.assertTrue(result["passed"])
+
+    def test_verification_gate_verifies_required_substrings(self):
+        gate = VerificationGate()
+
+        result = gate.verify_required_substrings(
+            "已生成 eval 方案，包含 trace 和工具指标。",
+            ["eval", "trace"],
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(
+            [check["name"] for check in result["checks"]],
+            ["required_substring", "required_substring"],
+        )
+
+    def test_verification_gate_reports_missing_required_substring(self):
+        gate = VerificationGate()
+
+        result = gate.verify_required_substrings("只生成了方案。", ["trace"])
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["checks"][0]["message"],
+            "Required substring missing: trace",
+        )
+
+    def test_build_verification_report_merges_checks(self):
+        report = build_verification_report(
+            run_id="run-1",
+            checks=[
+                {
+                    "passed": True,
+                    "checks": [{"name": "a", "passed": True, "message": "ok"}],
+                },
+                {
+                    "passed": False,
+                    "checks": [{"name": "b", "passed": False, "message": "bad"}],
+                },
+            ],
+        )
+
+        self.assertEqual(report["run_id"], "run-1")
+        self.assertFalse(report["passed"])
+        self.assertEqual(report["check_count"], 2)
+        self.assertEqual(
+            report["failed_checks"],
+            [{"name": "b", "passed": False, "message": "bad"}],
+        )
+
+    def test_verification_gate_checks_command_result_exit_code(self):
+        gate = VerificationGate()
+
+        passed = gate.verify_command_result(
+            command="python -m pytest -q",
+            exit_code=0,
+            stdout="10 passed",
+            stderr="",
+        )
+        failed = gate.verify_command_result(
+            command="python -m pytest -q",
+            exit_code=1,
+            stdout="",
+            stderr="1 failed",
+        )
+
+        self.assertTrue(passed["passed"])
+        self.assertEqual(passed["checks"][0]["name"], "command_exit_code")
+        self.assertFalse(failed["passed"])
+        self.assertEqual(
+            failed["checks"][0]["message"],
+            "Command failed: python -m pytest -q",
+        )
 
 
 if __name__ == "__main__":

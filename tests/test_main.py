@@ -1,4 +1,5 @@
 import tempfile
+import json
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -9,7 +10,7 @@ from yc_agents.cli.workspaces import WorkspaceStore
 from yc_agents.harness.permissions import HumanApprovalGate
 from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.memory.compressor import MemoryCompressor
-from yc_agents.memory.profile import ResearchProfileMemory
+from yc_agents.memory.profile import CodeAgentProfileMemory
 from yc_agents.memory.session import SessionMemory
 from yc_agents.memory.summary import SummaryMemory
 from yc_agents.tools.file_reader import FileReaderTool
@@ -77,7 +78,7 @@ class TestMainEntryPoint(unittest.TestCase):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertIsInstance(runtime.agent.summary_memory, SummaryMemory)
-        self.assertIsInstance(runtime.agent.profile_memory, ResearchProfileMemory)
+        self.assertIsInstance(runtime.agent.profile_memory, CodeAgentProfileMemory)
         self.assertIsInstance(runtime.agent.memory_compressor, MemoryCompressor)
         self.assertIsInstance(runtime.agent.rag_search_tool, RAGSearchTool)
         self.assertGreater(runtime.agent.compression_threshold, 0)
@@ -136,6 +137,49 @@ class TestMainEntryPoint(unittest.TestCase):
 
         self.assertGreaterEqual(len(tools), 1)
         self.assertIsInstance(tools[0], MCPToolAdapter)
+
+    def test_build_mcp_tools_uses_declared_tool_metadata(self):
+        class StaticClient:
+            def call_tool(self, server_name, tool_name, arguments):
+                return {
+                    "server": server_name,
+                    "tool": tool_name,
+                    "arguments": arguments,
+                }
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            path = Path(tmp_dir) / "mcp_servers.json"
+            path.write_text(
+                json.dumps(
+                    {
+                        "servers": {
+                            "filesystem": {
+                                "description": "Filesystem MCP",
+                                "tools": [
+                                    {"name": "read_file", "description": "Read a file"},
+                                    {
+                                        "name": "list_directory",
+                                        "description": "List directory",
+                                    },
+                                ],
+                            }
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+
+            tools = main.build_mcp_tools(config_path=path, client=StaticClient())
+
+        self.assertEqual(
+            [tool.name for tool in tools],
+            [
+                "mcp_filesystem_read_file",
+                "mcp_filesystem_list_directory",
+            ],
+        )
+        self.assertEqual(tools[0].tool_name, "read_file")
 
 
 if __name__ == "__main__":

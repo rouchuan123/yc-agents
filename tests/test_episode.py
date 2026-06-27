@@ -1,4 +1,4 @@
-﻿import unittest
+import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
@@ -22,7 +22,7 @@ class TestEpisodePackage(unittest.TestCase):
             writer.write_retrieved_sources(
                 [
                     {
-                        "source": "paper.md",
+                        "source": "code-notes.md",
                         "chunk_id": "c1",
                         "score": 0.8,
                         "text": "evidence",

@@ -42,3 +42,26 @@ def test_test_script_is_python_only():
     assert "python -m pytest -q" in script
     assert "desktop" not in script.lower()
     assert "npm" not in script.lower()
+
+
+def test_readme_positions_ycore_as_code_agent_harness():
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    assert "面向 code agent" in readme
+    assert "本地 Agent Harness" in readme
+    assert "code-review" in readme
+    assert "eval-writer" in readme
+    assert ("论文" + "助手") not in readme
+    assert ("文献" + "综述") not in readme
+    assert ("开题" + "报告") not in readme
+    assert "DOCX 处理包" not in readme
+
+
+def test_removed_word_formatting_package_but_docx_reading_stays():
+    removed_package = "docx" + "_format"
+    removed_tool = "docx" + "_format" + "_normalizer.py"
+
+    assert not (ROOT / "yc_agents" / removed_package).exists()
+    assert not (ROOT / "yc_agents" / "tools" / removed_tool).exists()
+    assert (ROOT / "yc_agents" / "tools" / "docx_reader.py").exists()
+    assert (ROOT / "yc_agents" / "tools" / "file_reader.py").exists()

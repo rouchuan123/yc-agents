@@ -1,3 +1,6 @@
+from yc_agents.harness.context_report import build_context_report
+
+
 class ContextManager:
     def build_skill_selection_context(
         self,
@@ -6,13 +9,15 @@ class ContextManager:
         memory_messages=None,
         memory_context=None,
         workspace_context=None,
+        include_context_report=False,
+        context_budget_tokens=8000,
     ):
         memory = self.build_memory_context(
             session=memory_messages,
             memory_context=memory_context,
         )
 
-        return {
+        context = {
             "task": "skill_selection",
             "user_input": user_input,
             "workspace": workspace_context or {},
@@ -24,6 +29,14 @@ class ContextManager:
             ],
         }
 
+        if include_context_report:
+            context["context_report"] = build_context_report(
+                context,
+                max_tokens=context_budget_tokens,
+            )
+
+        return context
+
     def build_skill_execution_context(
         self,
         user_input,
@@ -32,10 +45,12 @@ class ContextManager:
         memory_context=None,
         rag_results=None,
         workspace_context=None,
+        include_context_report=False,
+        context_budget_tokens=8000,
     ):
         memory = self.build_memory_context(memory_context=memory_context)
 
-        return {
+        context = {
             "task": "skill_execution",
             "user_input": user_input,
             "workspace": workspace_context or {},
@@ -45,6 +60,14 @@ class ContextManager:
             "selection": selection,
             "rag_results": rag_results or [],
         }
+
+        if include_context_report:
+            context["context_report"] = build_context_report(
+                context,
+                max_tokens=context_budget_tokens,
+            )
+
+        return context
 
     def build_memory_context(
         self,
