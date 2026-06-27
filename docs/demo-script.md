@@ -2,7 +2,7 @@
 
 ## 演示目标
 
-展示 YCore 作为面向 code agent 的本地 Agent Harness，如何把中文用户请求拆成 Skill 选择、本地代码证据、工具调用、trace/state 和结果复核，而不是只生成一段口头回复。
+展示 YCore 作为通用 skill-driven 本地 Agent Harness，如何把中文用户请求拆成 Skill 选择、本地证据、工具调用、trace/state 和结果复核。当前演示用 `code-review` 和 `eval-writer`，但具体落地方向由 Skill 决定。
 
 ## 演示前准备
 
@@ -41,12 +41,12 @@ python scripts/demo_eval_run.py
 5. `ToolGateway` 校验工具权限和参数。
 6. runtime 写入 `.ycore/runs/<session_id>/<run_id>/trace.json`、`state.json` 和 `final_output.md`。
 
-## 场景二：eval-writer 设计 code-agent eval
+## 场景二：eval-writer 设计 eval
 
 用户输入：
 
 ```text
-请用 eval-writer 为这个 code agent 设计 deterministic eval、真实模型 smoke eval 和人工 rubric。
+请用 eval-writer 为当前验证 Skill 设计 deterministic eval、真实模型 smoke eval 和人工 rubric。
 ```
 
 演示重点：
@@ -66,17 +66,17 @@ python scripts/demo_eval_run.py
 
 ## 面试演示顺序
 
-1. 先讲项目定位：面向 code agent 的本地 Agent Harness。
+1. 先讲项目定位：通用 skill-driven 本地 Agent Harness。
 2. 跑离线 deterministic demo，展示 eval 结果。
 3. 打开 trace/state 输出，解释 Skill 选择和工具调用。
 4. 展示 ToolGateway、verification、memory/context 和可选 RAG 的设计点。
-5. 最后说明 MCP 边界和后续扩展。
+5. 说明当前 demo 只是第一批验证 Skill，后续可以换其他领域 Skill。
 
 ## 五分钟讲解稿
 
-YCore 是一个面向中文用户、面向 code agent 的本地 Agent Harness。它不把具体审查流程写进全局 prompt，而是把通用运行边界做扎实：Skill 选择、工作区上下文、项目指令、工具权限、trace、state、eval 和 verification。
+YCore 是一个面向中文用户的通用本地 Agent Harness。它不把某个业务流程写进全局 prompt，而是把通用运行边界做扎实：Skill 选择、工作区上下文、项目指令、工具权限、trace、state、eval 和 verification。具体落地方向由 Skill 决定。
 
-当前主线是 `code-review`：让 agent 基于本地代码证据做项目体检和变更审查。`eval-writer` 负责把这个能力拆成 deterministic eval、真实模型 smoke eval 和人工 rubric，说明哪些能自动回归，哪些需要人工判断质量。
+当前我先用 `code-review` 和 `eval-writer` 做验证：前者证明 Harness 能支撑本地项目审查类 workflow，后者证明评测方案可以拆成 deterministic eval、真实模型 smoke eval 和人工 rubric。未来加入其他领域 Skill 时，复用的是同一套运行时、工具网关、trace 和 eval 框架。
 
 ## 常见追问
 
@@ -84,4 +84,4 @@ YCore 是一个面向中文用户、面向 code agent 的本地 Agent Harness。
 - 项目根 `YCORE.md` 和本地 `.ycore/YCORE.md` 谁优先？
 - 工具调用失败时 runtime 如何记录和恢复？
 - eval 为什么可以不依赖大模型？
-- trace 和 state 如何复核一次运行？
+- 新领域 Skill 如何接入同一套 Harness？

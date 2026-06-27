@@ -44,17 +44,38 @@ def test_test_script_is_python_only():
     assert "npm" not in script.lower()
 
 
-def test_readme_positions_ycore_as_code_agent_harness():
+def test_readme_positions_ycore_as_generic_skill_driven_harness():
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
 
-    assert "面向 code agent" in readme
-    assert "本地 Agent Harness" in readme
+    assert "通用的 skill-driven 本地 Agent Harness" in readme
+    assert "具体落地方向由 Skill 决定" in readme
+    assert "第一批验证 Skill" in readme
     assert "code-review" in readme
     assert "eval-writer" in readme
+    assert ("面向 code" + " agent 的本地 Agent Harness") not in readme
+    assert ("code-agent" + " 定位") not in readme
     assert ("论文" + "助手") not in readme
     assert ("文献" + "综述") not in readme
     assert ("开题" + "报告") not in readme
     assert "DOCX 处理包" not in readme
+
+
+def test_global_docs_keep_ycore_domain_agnostic():
+    docs = [
+        ROOT / "YCORE.md",
+        ROOT / "docs" / "architecture.md",
+        ROOT / "docs" / "demo-script.md",
+        ROOT / "docs" / "evaluation-report.md",
+    ]
+
+    for path in docs:
+        text = path.read_text(encoding="utf-8")
+        assert "通用" in text, path.relative_to(ROOT)
+        assert (
+            "由 Skill 决定" in text or "取决于 Skill" in text
+        ), path.relative_to(ROOT)
+        assert ("面向 code" + " agent 的本地 Agent Harness") not in text, path.relative_to(ROOT)
+        assert ("YCore code-agent" + " 定位") not in text, path.relative_to(ROOT)
 
 
 def test_removed_word_formatting_package_but_docx_reading_stays():

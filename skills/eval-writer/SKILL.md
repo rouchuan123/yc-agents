@@ -1,11 +1,12 @@
 ---
 name: eval-writer
-description: 当用户需要为 code agent、code-review skill、ToolGateway 工具边界、trace/state、verification、deterministic regression、人工 rubric、真实模型 smoke eval 或可选 LLM-as-Judge 设计 eval 时使用。
+description: 当用户需要为 Agent workflow、Skill、ToolGateway 工具边界、trace/state、verification、deterministic regression、人工 rubric、真实模型 smoke eval 或可选 LLM-as-Judge 设计 eval 时使用。
 triggers:
   - eval
   - 评估
   - 评测
-  - code agent eval
+  - Agent eval
+  - Skill eval
   - code review eval
   - 工具调用评估
   - trace 评估
@@ -31,7 +32,7 @@ allowed_tools:
   - file_reader
   - markdown_writer
 examples:
-  - 帮我给这个 code agent 写 eval
+  - 帮我给这个 Agent workflow 写 eval
   - 为 code-review 设计 deterministic eval cases
   - 设计一套真实模型 smoke eval 和人工 rubric
   - 看看 ToolGateway 工具边界还缺哪些评测
@@ -39,21 +40,21 @@ examples:
 
 # Eval Writer
 
-这个 Skill 面向中文用户，用于为 code agent 和 YCore Agent Harness 设计可回归、可解释、可面试讲清楚的评测方案。默认先输出中文评估方案；只有用户明确要求落地时，才生成 JSONL、写入 `eval/cases/*.jsonl`、修改测试、改 runner/report 或创建文件。
+这个 Skill 面向中文用户，用于为 Agent workflow、具体 Skill 和 YCore Agent Harness 设计可回归、可解释、可面试讲清楚的评测方案。默认先输出中文评估方案；只有用户明确要求落地时，才生成 JSONL、写入 `eval/cases/*.jsonl`、修改测试、改 runner/report 或创建文件。
 
 ## 核心原则
 
 deterministic eval 是默认路径。它用固定 runtime、fake trace、已有 trace/state 字段或受控 fixture 验证工程闭环：Skill 选择是否正确、ToolGateway 是否拦住边界、required tools 是否调用、forbidden tools 是否未用、trace 是否完整、verification 是否被记录。
 
-真实模型 smoke eval 面向手动验证和面试演示，只跑少量高价值 case。它不追求每日回归稳定性，而是用人工 rubric 判断 code agent 的分析质量：是否读取证据、是否追到关键链路、是否指出真实风险、建议是否可执行、是否诚实区分已确认事实和未确认事项。
+真实模型 smoke eval 面向手动验证和面试演示，只跑少量高价值 case。它不追求每日回归稳定性，而是用人工 rubric 判断当前 Skill 的输出质量：是否使用必要证据、是否遵守工具边界、是否完成关键步骤、建议是否可执行、是否诚实区分已确认事实和未确认事项。
 
 不要把关键词命中包装成完整语义正确。关键词、字段和 trace 检查只能作为弱基线；输出质量、风险判断、证据充分性和建议可执行性必须交给人工 rubric 或可选 LLM-as-Judge。
 
-RAG 只作为可选上下文，不是主要评测目标。只有当任务明确依赖本地资料检索时，才把 context retrieval 纳入 case；否则优先评测 code-review、工具边界、trace/state 和 verification。
+RAG 只作为可选上下文，不是主要评测目标。只有当任务明确依赖本地资料检索时，才把 context retrieval 纳入 case；否则优先评测 Skill 选择、工具边界、trace/state 和 verification。不同领域 Skill 可以拥有不同 rubric，但复用同一套 eval runner 和 metrics。
 
 ## 工作流程
 
-1. 明确被评估对象：code agent、`code-review`、`eval-writer`、ToolGateway、runtime、trace/state、verification 或某个具体工具链。
+1. 明确被评估对象：Agent workflow、具体 Skill、ToolGateway、runtime、trace/state、verification 或某个具体工具链。
 2. 阅读项目上下文：优先看 `README.md`、`docs/architecture.md`、`docs/evaluation-report.md`、`yc_agents/eval/*`、`eval/cases/*`、相关 `tests/*` 和目标模块。
 3. 说明已有评测资产和缺口；区分已确认事实、基于代码的推断、未确认事项。
 4. 设计维度：Skill 选择、工具边界、required/forbidden tools、trace 事件、state 输出、verification、错误恢复、输出质量、人工 rubric、可选 LLM-as-Judge。
