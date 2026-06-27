@@ -108,7 +108,7 @@ class TestSkillLoader(unittest.TestCase):
         skill = loader.load_one(Path("skills") / "eval-writer")
 
         required_markers = [
-            "code agent",
+            "Agent workflow",
             "deterministic eval",
             "真实模型 smoke eval",
             "人工 rubric",
@@ -119,6 +119,7 @@ class TestSkillLoader(unittest.TestCase):
             "工具边界",
             "输出质量",
             "不要把关键词命中包装成完整语义正确",
+            "不同领域 Skill",
             "RAG 只作为可选上下文",
         ]
         for marker in required_markers:
@@ -134,7 +135,8 @@ class TestSkillLoader(unittest.TestCase):
             "eval",
             "评估",
             "评测",
-            "code agent eval",
+            "Agent eval",
+            "Skill eval",
             "code review eval",
             "工具调用评估",
             "trace 评估",

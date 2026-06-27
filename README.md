@@ -1,14 +1,19 @@
 # YCore
 
-`YCore` 是一个面向 code agent 的本地 Agent Harness，面向中文用户，用 CLI 把 Skill 选择、工具边界、trace/state、eval 和 verification 串成可复盘的工程闭环。
+`YCore` 是一个通用的 skill-driven 本地 Agent Harness，面向中文用户，用 CLI 把 Skill 选择、工具边界、workspace/context、memory、trace/state、eval 和 verification 串成可复盘的工程闭环。
 
-它不是聊天壳，也不是把某个场景写死进全局 prompt。YCore 的全局运行时只负责受控执行：选择合适的 Skill、注入工作区上下文、通过 ToolGateway 调用工具、记录过程证据，并把结果交给 eval 与 verification 检查。
+YCore 不把业务方向写死在全局 prompt 里。具体落地方向由 Skill 决定：装什么 Skill，就验证什么类型的 Agent workflow。全局运行时只负责受控执行：选择合适的 Skill、注入上下文、通过 ToolGateway 调用工具、记录过程证据，并把结果交给 eval 与 verification 检查。
 
 ## 项目定位
 
-当前第一条具体落地线是 `code-review`：让 agent 读取本地仓库、建立项目地图、追关键链路、识别架构风险和测试缺口。`eval-writer` 用来为 code agent 设计 deterministic eval、真实模型 smoke eval 和人工 rubric。
+YCore 的核心目标是验证一套通用 Agent Harness 是否能支撑不同领域 Skill：Skill 如何被发现和选择、工具如何被管控、上下文如何注入、过程如何记录、结果如何评测。
 
-当前仓库默认发布两个示例业务 Skill：`code-review` 和 `eval-writer`。它们是 YCore code-agent 定位的首批落地能力，后续可以继续扩展 bugfix、代码修改和功能实现 agent。
+当前仓库默认发布两个示例业务 Skill，它们是第一批验证 Skill：
+
+- `code-review`：验证本地项目审查类 workflow，要求读取代码证据、追关键链路、识别风险和测试缺口。
+- `eval-writer`：验证 Agent eval 设计类 workflow，要求把评测目标拆成 deterministic eval、真实模型 smoke eval 和人工 rubric。
+
+后续可以继续加入其他领域 Skill，用同一套 Harness 验证新的落地方向。
 
 ## CLI 主线
 
@@ -31,14 +36,16 @@ CLI 顶部会显示当前工作区、模型、估算上下文占用、Git 分支
 
 ## 默认 Skill
 
+当前默认发布两个示例业务 Skill：
+
 - `code-review`：项目体检和变更审查，重点是代码证据、调用链、风险分级、测试缺口和最小验证。
-- `eval-writer`：为 code agent、工具边界、trace/state、verification 和输出质量设计评测方案。
+- `eval-writer`：为 Agent workflow、工具边界、trace/state、verification 和输出质量设计评测方案。
 
 具体工作流放在 Skill 中，不写入全局 prompt。
 
 ## 默认工具
 
-代码代理主线优先使用本地证据：
+默认 CLI runtime 暴露通用工具，具体是否使用由选中的 Skill 决定：
 
 - `workspace_files`：列出当前工作区可读文件。
 - `file_reader`：读取代码、配置、Markdown、PDF 和 `.docx` 需求或规格文档。
@@ -46,8 +53,8 @@ CLI 顶部会显示当前工作区、模型、估算上下文占用、Git 分支
 - `git_inspector`：只读查看 status、diff、commit、本地 refs 和 blame。
 - `verification_runner`：运行白名单内的最小验证命令。
 - `markdown_writer`：在用户要求保存时写入 Markdown 输出。
-
-`rag_search` 只作为可选上下文检索，不是 code-review 的主路径。`web_search` 仅用于用户明确需要外部或最新信息的场景。
+- `rag_search`：可选本地上下文检索。
+- `web_search`：用户明确需要外部或最新信息时使用。
 
 ## 核心能力
 
@@ -69,7 +76,7 @@ flowchart LR
     Agent --> Selector["Skill 选择"]
     Selector --> Skill["选中的 Skill"]
     Runtime --> Gateway["ToolGateway"]
-    Gateway --> Tools["代码证据工具"]
+    Gateway --> Tools["Skill 允许的工具"]
     Runtime --> Trace["Trace + State + Outputs"]
     Trace --> Eval["Eval + Verification"]
 ```
@@ -98,14 +105,15 @@ flowchart LR
 - `yc_agents/rag`：可选的本地上下文检索基础设施。
 - `yc_agents/skills`：技能定义、加载、发现和注册表。
 - `yc_agents/tools`：具体工具实现和工具注册表。
-- `eval/cases`：code agent deterministic eval cases。
+- `eval/cases`：当前验证 Skill 的 deterministic eval cases。
 - `skills`：面向用户发布的 Skill。
 - `tests`：Python 单元测试。
 
 ## 当前边界
 
 - 当前只保留 CLI 端。
-- 默认发布 `code-review` 和 `eval-writer` 两个 code-agent 落地 Skill。
+- 默认发布 `code-review` 和 `eval-writer` 两个示例业务 Skill。
+- 领域能力由 Skill 决定，YCore 全局层保持通用。
 - 保留通用 `.docx` 文件读取能力，方便读取需求或规格文档。
 - 不提供 Word 排版、格式修正或文档样式处理能力。
-- RAG 是可选 context infrastructure，不是主产品故事。
+- RAG 是可选 context infrastructure，不是固定产品故事。

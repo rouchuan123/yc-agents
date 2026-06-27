@@ -2,7 +2,7 @@
 
 ## 目的
 
-这份报告用于跟踪 code agent 在本地 Agent Harness 中是否真正完成任务，而不只是单元测试是否通过或回答看起来顺眼。
+这份报告用于跟踪 Agent 在通用本地 Agent Harness 中是否真正完成任务，而不只是单元测试是否通过或回答看起来顺眼。具体评测对象由 Skill 决定；当前 case 先覆盖 `code-review` 和 `eval-writer` 这两个验证 Skill。
 
 ## 用例集合
 
@@ -12,13 +12,13 @@
 - eval-writer 用例：`eval/cases/eval_writer_cases.jsonl`
 - 可选上下文用例：`eval/cases/context_cases.jsonl`
 
-当前覆盖项目体检、变更审查、测试缺口、Skill 选择、工具边界、trace/state、verification、输出质量和可选上下文检索。
+当前覆盖项目体检、变更审查、测试缺口、Skill 选择、工具边界、trace/state、verification、输出质量和可选上下文检索。后续新增其他领域 Skill 时，新增对应 eval cases 即可复用同一套 runner 和 metrics。
 
 ## Eval 是否需要大模型
 
 YCore 的默认 eval 不依赖大模型。deterministic eval 用固定 runtime、fake trace 或已有 trace 字段验证工程闭环：Skill 是否选对、工具是否被调用、禁止工具是否没用、trace 是否完整、verification 是否通过。
 
-真实模型 smoke eval 只作为手动验证和面试演示：少量 case 调真实模型，重点用人工 rubric 评估 code-review 是否读了证据、是否指出真实风险、建议是否可执行。关键词命中只能做弱基线，不能代表语义质量。
+真实模型 smoke eval 只作为手动验证和面试演示：少量 case 调真实模型，重点用人工 rubric 评估当前 Skill 的输出质量。关键词命中只能做弱基线，不能代表语义质量。
 
 ## 指标
 
@@ -58,7 +58,7 @@ VerificationGate 把“任务完成”拆成可检查证据：
 
 ## 人工 Rubric
 
-真实模型 smoke eval 或复杂 code-review 输出用人工 rubric 判断：
+真实模型 smoke eval 或复杂输出用人工 rubric 判断。不同领域 Skill 可以有不同 rubric；当前 `code-review` 样例重点看：
 
 | 维度 | 观察点 |
 | --- | --- |
