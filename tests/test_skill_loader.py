@@ -108,20 +108,18 @@ class TestSkillLoader(unittest.TestCase):
         skill = loader.load_one(Path("skills") / "eval-writer")
 
         required_markers = [
-            "默认先输出中文评估方案",
-            "只有用户明确要求时",
-            "JSONL",
-            "eval/cases",
-            "不要默认写文件",
+            "code agent",
+            "deterministic eval",
+            "真实模型 smoke eval",
+            "人工 rubric",
             "Skill 选择",
             "ToolGateway",
             "trace",
-            "state",
-            "RAG",
-            "自动化指标",
-            "人工复核",
-            "面试讲法",
-            "当前项目缺口",
+            "verification",
+            "工具边界",
+            "输出质量",
+            "不要把关键词命中包装成完整语义正确",
+            "RAG 只作为可选上下文",
         ]
         for marker in required_markers:
             with self.subTest(marker=marker):
@@ -136,8 +134,8 @@ class TestSkillLoader(unittest.TestCase):
             "eval",
             "评估",
             "评测",
-            "Agent 评测",
-            "RAG 评估",
+            "code agent eval",
+            "code review eval",
             "工具调用评估",
             "trace 评估",
             "LLM-as-Judge",

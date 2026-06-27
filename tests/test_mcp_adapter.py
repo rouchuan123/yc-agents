@@ -25,6 +25,15 @@ class FakeMCPClient:
         }
 
 
+class RecordingMCPClient:
+    def __init__(self):
+        self.calls = []
+
+    def call_tool(self, server_name, tool_name, arguments):
+        self.calls.append((server_name, tool_name, arguments))
+        return {"ok": True, "echo": arguments}
+
+
 class FakeTrace:
     def __init__(self):
         self.events = []
@@ -79,6 +88,29 @@ class TestMCPToolAdapter(unittest.TestCase):
         self.assertEqual(result["tool_name"], "search")
         self.assertEqual(result["result"], {"content": "mcp result"})
         self.assertEqual(client.calls[0]["arguments"], {"query": "agent runtime"})
+
+    def test_mcp_tool_adapter_passes_arguments_to_client(self):
+        client = RecordingMCPClient()
+        adapter = MCPToolAdapter(
+            name="mcp_filesystem_read_file",
+            description="Read file through MCP boundary",
+            server_name="filesystem",
+            tool_name="read_file",
+            client=client,
+        )
+
+        result = adapter.run(path="README.md")
+
+        self.assertEqual(client.calls, [("filesystem", "read_file", {"path": "README.md"})])
+        self.assertEqual(
+            result,
+            {
+                "type": "mcp_tool_result",
+                "server_name": "filesystem",
+                "tool_name": "read_file",
+                "result": {"ok": True, "echo": {"path": "README.md"}},
+            },
+        )
 
     def test_adapter_can_be_called_through_tool_gateway(self):
         client = FakeMCPClient()

@@ -9,7 +9,7 @@ from yc_agents.rag.embeddings import (
 def test_deterministic_embedding_provider_returns_vectors():
     provider = DeterministicEmbeddingProvider(dimensions=4)
 
-    vectors = provider.embed(["研究背景", "技术路线"])
+    vectors = provider.embed(["接口说明", "技术路线"])
 
     assert len(vectors) == 2
     assert len(vectors[0]) == 4
@@ -27,7 +27,7 @@ def test_api_embedding_provider_uses_injected_client():
     class Embeddings:
         def create(self, model, input):
             assert model == "demo-model"
-            assert input == ["研究背景"]
+            assert input == ["接口说明"]
 
             class Item:
                 embedding = [0.1, 0.2]
@@ -42,7 +42,7 @@ def test_api_embedding_provider_uses_injected_client():
 
     provider = APIEmbeddingProvider(Client(), model="demo-model")
 
-    assert provider.embed(["研究背景"]) == [[0.1, 0.2]]
+    assert provider.embed(["接口说明"]) == [[0.1, 0.2]]
 
 
 def test_local_http_embedding_provider_uses_injected_client():

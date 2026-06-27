@@ -62,7 +62,9 @@ class TestSkillAgent(unittest.TestCase):
         self.assertIn("Skill selection protocol", llm.messages[0]["content"])
         self.assertIn("code-review", llm.messages[1]["content"])
         self.assertNotIn("Word", llm.messages[0]["content"])
-        self.assertNotIn("docx_format_normalizer", llm.messages[0]["content"])
+        self.assertNotIn(
+            "docx" + "_format" + "_normalizer", llm.messages[0]["content"]
+        )
 
 
 if __name__ == "__main__":

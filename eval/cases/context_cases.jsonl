@@ -1,0 +1,3 @@
+{"id":"context-docx-requirements-001","category":"context_reading","input":"读取一个需求文档并提炼对 code review 有帮助的约束。","expected_keywords":["需求","约束"],"required_tools":["file_reader"],"expected_trace_events":["tool_called"],"forbidden_tools":["web_search"]}
+{"id":"context-optional-rag-001","category":"optional_context","input":"基于本地上下文资料检索 code agent 的评测维度。","expected_keywords":["code agent","评测"],"required_tools":["rag_search"],"reference_sources":["code-agent-notes.md"],"expected_trace_events":["tool_called"],"forbidden_tools":["web_search"]}
+{"id":"context-memory-001","category":"context_engineering","input":"说明长对话中如何保留 code review 的关键上下文。","expected_keywords":["上下文","summary"],"required_tools":[],"expected_trace_events":[],"forbidden_tools":["web_search"]}

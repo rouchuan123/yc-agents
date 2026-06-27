@@ -12,7 +12,7 @@ class FakeRetriever:
                 "source": "demo.md",
                 "chunk_id": 0,
                 "score": 1,
-                "text": "研究背景",
+                "text": "接口说明",
                 "metadata": {"section": "背景"},
             }
         ]
@@ -22,9 +22,10 @@ def test_rag_search_tool_accepts_injected_retriever_and_formats_results():
     retriever = FakeRetriever()
     tool = RAGSearchTool(retriever)
 
-    result = tool.run("研究背景", top_k=2)
+    result = tool.run("接口说明", top_k=2)
 
-    assert retriever.calls == [{"query": "研究背景", "top_k": 2}]
-    assert "RAG 检索结果" in result
-    assert "demo.md" in result
-    assert "背景" in result
+    assert retriever.calls == [{"query": "接口说明", "top_k": 2}]
+    assert result["type"] == "rag_search_result"
+    assert "RAG 检索结果" in result["text"]
+    assert result["sources"] == ["demo.md"]
+    assert result["results"][0]["metadata"]["section"] == "背景"

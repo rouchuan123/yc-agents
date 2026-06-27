@@ -26,6 +26,18 @@ class MemoryCompressor:
 
         return "\n".join(lines)
 
+    def compress_messages_with_metadata(self, messages):
+        messages = list(messages or [])
+        summary = self.compress_messages(messages)
+        kept_count = min(len(messages), self.max_items)
+
+        return {
+            "summary": summary,
+            "input_count": len(messages),
+            "kept_count": kept_count,
+            "compressed_count": max(0, len(messages) - kept_count),
+        }
+
     def save_summary(self, summary):
         return self.summary_memory.save(summary)
 

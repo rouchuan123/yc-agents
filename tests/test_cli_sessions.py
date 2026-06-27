@@ -31,12 +31,12 @@ class TestCLISessionStore(unittest.TestCase):
             context = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
             store = CLISessionStore(context)
 
-            session = store.create_session("开题报告")
+            session = store.create_session("代码审查")
 
-            self.assertEqual(session.title, "开题报告")
+            self.assertEqual(session.title, "代码审查")
             self.assertEqual(store.ensure_current_session().id, session.id)
             metadata = json.loads((session.path / "session.json").read_text(encoding="utf-8"))
-            self.assertEqual(metadata["title"], "开题报告")
+            self.assertEqual(metadata["title"], "代码审查")
 
     def test_sessions_are_isolated_by_workspace(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -46,8 +46,8 @@ class TestCLISessionStore(unittest.TestCase):
             first = CLISessionStore(first_context)
             second = CLISessionStore(second_context)
 
-            first_session = first.create_session("开题报告")
-            second_session = second.create_session("文献综述")
+            first_session = first.create_session("代码审查")
+            second_session = second.create_session("架构复盘")
 
             first_session.messages_path.write_text(
                 json.dumps([{"role": "user", "content": "A"}]),

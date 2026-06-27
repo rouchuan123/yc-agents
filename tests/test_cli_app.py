@@ -232,9 +232,9 @@ class FakeSessionStore:
 
 
 class FakeWorkspace:
-    def __init__(self, workspace_id="workspace-current", path=r"E:\paper"):
+    def __init__(self, workspace_id="workspace-current", path=r"E:\code"):
         self.id = workspace_id
-        self.name = "paper"
+        self.name = "code"
         self.path = Path(path)
         self.ycore_dir = self.path / ".ycore"
 
@@ -793,9 +793,9 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         )
         app.append_turn("Assistant", "old")
 
-        asyncio.run(app.handle_cli_input("/session new 开题报告"))
+        asyncio.run(app.handle_cli_input("/session new 代码审查"))
 
-        self.assertEqual(session_store.created_titles, ["开题报告"])
+        self.assertEqual(session_store.created_titles, ["代码审查"])
         self.assertEqual(app.session.id, "session-created")
         self.assertEqual(app.transcript_entries, [])
 

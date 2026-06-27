@@ -1,5 +1,36 @@
 class RAGCitationFormatter:
     def format(self, query, results):
+        normalized = []
+
+        for index, result in enumerate(results or [], start=1):
+            content = result.get("content", result.get("text", ""))
+            normalized.append(
+                {
+                    "rank": index,
+                    "source": result.get("source"),
+                    "chunk_id": result.get("chunk_id"),
+                    "content": content,
+                    "text": content,
+                    "score": result.get("score", 0),
+                    "metadata": result.get("metadata", {}),
+                }
+            )
+
+        sources = []
+        for item in normalized:
+            source = item.get("source")
+            if source and source not in sources:
+                sources.append(source)
+
+        return {
+            "type": "rag_search_result",
+            "query": query,
+            "results": normalized,
+            "sources": sources,
+            "text": self._format_text(query, normalized),
+        }
+
+    def _format_text(self, query, results):
         lines = [
             "# RAG 检索结果",
             "",

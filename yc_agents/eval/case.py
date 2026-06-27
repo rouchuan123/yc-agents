@@ -11,6 +11,10 @@ class EvalCase:
     expected_keywords: list[str] = field(default_factory=list)
     required_tools: list[str] = field(default_factory=list)
     reference_sources: list[str] = field(default_factory=list)
+    expected_trace_events: list[str] = field(default_factory=list)
+    forbidden_tools: list[str] = field(default_factory=list)
+    expects_conflict: bool = False
+    min_noise_resistance: float = 0.0
 
 
 def load_cases(path):
@@ -31,6 +35,10 @@ def load_cases(path):
                     expected_keywords=list(data.get("expected_keywords", [])),
                     required_tools=list(data.get("required_tools", [])),
                     reference_sources=list(data.get("reference_sources", [])),
+                    expected_trace_events=list(data.get("expected_trace_events", [])),
+                    forbidden_tools=list(data.get("forbidden_tools", [])),
+                    expects_conflict=bool(data.get("expects_conflict", False)),
+                    min_noise_resistance=float(data.get("min_noise_resistance", 0.0)),
                 )
             )
 

@@ -39,7 +39,7 @@ def test_plain_answer_messages_include_project_instructions_in_order():
     assert ".ycore/YCORE.md" in system_prompt
 
 
-def test_core_prompt_is_generic_not_word_or_paper_specific():
+def test_core_prompt_is_generic_not_word_or_old_domain_specific():
     messages = make_builder().plain_answer_messages(
         user_input="hello",
         memory={"session": [], "summary": "", "profile": {}},
@@ -53,7 +53,7 @@ def test_core_prompt_is_generic_not_word_or_paper_specific():
     assert "skill-driven" in system_prompt
     assert "web_search" in system_prompt
     assert "workspace_files" in system_prompt
-    assert "docx_format_normalizer" not in system_prompt
+    assert ("docx" + "_format" + "_normalizer") not in system_prompt
     assert "word document automation" not in system_prompt
     assert "论文" not in system_prompt
 

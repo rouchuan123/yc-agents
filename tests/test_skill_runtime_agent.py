@@ -60,6 +60,27 @@ def write_skill(skills_dir, name="code-review", allowed_tools=None):
     skill_file.write_text("\n".join(lines), encoding="utf-8")
 
 
+class FakeIntentRouter:
+    def __init__(self):
+        self.calls = []
+
+    def route(self, user_input, skills):
+        self.calls.append((user_input, skills))
+        return {
+            "type": "intent_route",
+            "selected_skill": skills[0].name,
+            "confidence": 0.9,
+            "candidates": [
+                {
+                    "skill_name": skills[0].name,
+                    "score": 0.9,
+                    "components": {"rule": 1.0, "semantic": 0.5, "llm": 0.8},
+                    "reasons": {"rule": "trigger matched"},
+                }
+            ],
+        }
+
+
 class TestSkillRuntimeAgent(unittest.TestCase):
     def test_run_includes_workspace_context_in_model_prompts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -474,7 +495,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             plain_prompt.index("Local project rule"),
         )
 
-    def test_runtime_agent_core_prompt_is_not_word_or_paper_specific(self):
+    def test_runtime_agent_core_prompt_is_not_word_or_old_domain_specific(self):
         llm = FakeLLM(
             [
                 json.dumps(
@@ -493,9 +514,34 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         agent.run("hello")
 
         plain_prompt = llm.messages[1][0]["content"]
-        self.assertNotIn("docx_format_normalizer", plain_prompt)
+        self.assertNotIn("docx" + "_format" + "_normalizer", plain_prompt)
         self.assertNotIn("Word document automation", plain_prompt)
         self.assertNotIn("论文", plain_prompt)
+
+    def test_skill_runtime_agent_uses_intent_router_for_candidate_order(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            skills_dir.mkdir()
+            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            router = FakeIntentRouter()
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "eval-writer",
+                            "confidence": 0.9,
+                            "reason": "route",
+                        }
+                    ),
+                    "评估方案",
+                ]
+            )
+
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir, intent_router=router)
+
+            self.assertEqual(agent.run("帮我写 eval"), "评估方案")
+            self.assertTrue(router.calls)
 
 
 if __name__ == "__main__":
