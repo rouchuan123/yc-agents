@@ -115,6 +115,18 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                     self.assertEqual(runtime.tool_registry.get_tool(tool_name).name, tool_name)
                     self.assertIn(tool_name, runtime.agent.workspace_context["available_tools"])
 
+    def test_runtime_factory_registers_command_reader_as_global_but_skill_gated_tool(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("review")
+
+            runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
+
+            self.assertIn("command_reader", runtime.allowed_tools)
+            self.assertEqual(runtime.tool_registry.get_tool("command_reader").name, "command_reader")
+            self.assertIn("command_reader", runtime.agent.workspace_context["available_tools"])
+
     def test_build_cli_runtime_attaches_intent_router(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

@@ -18,6 +18,7 @@ from yc_agents.rag.keyword_index import KeywordIndex
 from yc_agents.rag.vector_store import VectorStore
 from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.code_search import CodeSearchTool
+from yc_agents.tools.command_reader import CommandReaderTool
 from yc_agents.tools.git_inspector import GitInspectorTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.rag_search import RAGSearchTool
@@ -73,6 +74,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
                 "git_inspector",
                 "code_search",
                 "verification_runner",
+                "command_reader",
             ],
         },
     )
@@ -82,6 +84,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     tool_registry.register(FileReaderTool(session.workspace.path))
     tool_registry.register(GitInspectorTool(session.workspace.path))
     tool_registry.register(CodeSearchTool(session.workspace.path))
+    tool_registry.register(CommandReaderTool(session.workspace.path))
     tool_registry.register(VerificationRunnerTool(session.workspace.path))
     tool_registry.register(WebSearchTool())
     tool_registry.register(rag_search_tool)
@@ -99,6 +102,7 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
             "git_inspector",
             "code_search",
             "verification_runner",
+            "command_reader",
         ],
         approval_gate=HumanApprovalGate(),
         output_root=session.runs_path,

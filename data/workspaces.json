@@ -1,5 +1,5 @@
 {
-  "current_workspace_id": "workspace_测试_c4e4e1fb",
+  "current_workspace_id": "workspace_yc-agents-master_cd2328ea",
   "workspaces": [
     {
       "id": "workspace_yc-agents_15b1cf86",
@@ -10,12 +10,12 @@
       "last_used_at": "2026-06-24T00:43:55"
     },
     {
-      "id": "workspace_测试_c4e4e1fb",
-      "name": "测试",
-      "path": "E:\\文件\\测试",
-      "created_at": "2026-06-26T18:07:56",
-      "updated_at": "2026-06-26T18:07:56",
-      "last_used_at": "2026-06-26T18:07:56"
+      "id": "workspace_yc-agents-master_cd2328ea",
+      "name": "yc-agents-master",
+      "path": "E:\\文件\\测试\\yc-agents-master",
+      "created_at": "2026-06-27T17:40:30",
+      "updated_at": "2026-06-27T17:40:30",
+      "last_used_at": "2026-06-27T17:40:30"
     }
   ]
 }
