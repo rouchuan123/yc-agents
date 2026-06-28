@@ -17,6 +17,9 @@ class CodeSearchTool(BaseTool):
             ToolField(name="line", type="int", required=False, default=1),
             ToolField(name="context_lines", type="int", required=False, default=2),
             ToolField(name="max_results", type="int", required=False, default=50),
+            ToolField(name="path_glob", type="str", required=False, default=""),
+            ToolField(name="start_line", type="int", required=False, default=1),
+            ToolField(name="end_line", type="int", required=False, default=1),
         ]
     )
 
@@ -25,17 +28,30 @@ class CodeSearchTool(BaseTool):
         self.timeout_seconds = timeout_seconds
         self.max_output_chars = max_output_chars
 
-    def run(self, operation, pattern="", file_path="", line=1, context_lines=2, max_results=50):
+    def run(
+        self,
+        operation,
+        pattern="",
+        file_path="",
+        line=1,
+        context_lines=2,
+        max_results=50,
+        path_glob="",
+        start_line=1,
+        end_line=1,
+    ):
         if operation == "list_files":
-            return self._list_files(max_results)
+            return self._list_files(max_results, path_glob=path_glob)
         if operation == "search":
-            return self._search(pattern, context_lines, max_results)
+            return self._search(pattern, context_lines, max_results, path_glob=path_glob)
         if operation == "snippet":
             return self._snippet(file_path, line, context_lines)
+        if operation == "read_range":
+            return self._read_range(file_path, start_line, end_line)
         raise ValueError(f"Unsupported code_search operation: {operation}")
 
-    def _list_files(self, max_results):
-        files, raw = self._rg_files(max_results)
+    def _list_files(self, max_results, path_glob=""):
+        files, raw = self._rg_files(max_results, path_glob=path_glob)
         raw_output, truncated = truncate_text(raw, self.max_output_chars)
         return {
             "tool": self.name,
@@ -47,15 +63,20 @@ class CodeSearchTool(BaseTool):
             "truncated": truncated,
         }
 
-    def _search(self, pattern, context_lines, max_results):
+    def _search(self, pattern, context_lines, max_results, path_glob=""):
         pattern = str(pattern or "")
         if not pattern:
             raise ValueError("Search pattern is required")
         max_results = max(1, min(int(max_results or 50), 200))
         context_lines = max(0, min(int(context_lines or 0), 5))
+        safe_glob = self._safe_path_glob(path_glob)
+        command = ["rg", "--line-number", "--with-filename", "--color", "never"]
+        if safe_glob:
+            command.extend(["-g", safe_glob])
+        command.append(pattern)
 
         completed = subprocess.run(
-            ["rg", "--line-number", "--with-filename", "--color", "never", pattern],
+            command,
             cwd=self.workspace_root,
             check=False,
             stdout=subprocess.PIPE,
@@ -119,11 +140,40 @@ class CodeSearchTool(BaseTool):
             "truncated": truncated,
         }
 
-    def _rg_files(self, max_results):
+    def _read_range(self, file_path, start_line, end_line):
+        path = resolve_workspace_path(self.workspace_root, file_path)
+        relative = str(path.relative_to(self.workspace_root)).replace("\\", "/")
+        text_lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        start_line = max(1, int(start_line or 1))
+        end_line = max(start_line, int(end_line or start_line))
+        end_line = min(end_line, len(text_lines))
+        rows = [
+            {"line": number, "text": text_lines[number - 1]}
+            for number in range(start_line, end_line + 1)
+        ]
+        raw_output = "\n".join(f"{row['line']}: {row['text']}" for row in rows)
+        raw_output, truncated = truncate_text(raw_output, self.max_output_chars)
+        return {
+            "tool": self.name,
+            "operation": "read_range",
+            "ok": True,
+            "path": relative,
+            "start_line": start_line,
+            "end_line": end_line,
+            "lines": rows,
+            "raw_output": raw_output,
+            "truncated": truncated,
+        }
+
+    def _rg_files(self, max_results, path_glob=""):
         max_results = max(1, min(int(max_results or 50), 1000))
+        safe_glob = self._safe_path_glob(path_glob)
+        command = ["rg", "--files"]
+        if safe_glob:
+            command.extend(["-g", safe_glob])
         try:
             completed = subprocess.run(
-                ["rg", "--files"],
+                command,
                 cwd=self.workspace_root,
                 check=False,
                 stdout=subprocess.PIPE,
@@ -141,11 +191,23 @@ class CodeSearchTool(BaseTool):
         files = []
         for path in sorted(self.workspace_root.rglob("*")):
             relative_parts = path.relative_to(self.workspace_root).parts
+            relative = str(path.relative_to(self.workspace_root)).replace("\\", "/")
             if path.is_file() and ".git" not in relative_parts:
-                files.append(str(path.relative_to(self.workspace_root)).replace("\\", "/"))
+                if safe_glob and not Path(relative).match(safe_glob):
+                    continue
+                files.append(relative)
             if len(files) >= max_results:
                 break
         return files, "\n".join(files)
+
+    def _safe_path_glob(self, path_glob):
+        path_glob = str(path_glob or "").strip()
+        if not path_glob:
+            return ""
+        normalized = path_glob.replace("\\", "/")
+        if normalized.startswith("/") or ":" in normalized or ".." in normalized.split("/"):
+            raise PermissionError(f"Path glob escapes active workspace: {path_glob}")
+        return normalized
 
     def _context(self, file_path, line_number, count, before):
         if count <= 0:

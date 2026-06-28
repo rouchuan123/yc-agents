@@ -8,6 +8,8 @@ from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.memory.session import SessionMemory
 from yc_agents.prompts.builder import PromptBuilder
 from yc_agents.prompts.project_instructions import ProjectInstruction
+from yc_agents.tools.base import BaseTool
+from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.registry import ToolRegistry
 
@@ -34,6 +36,14 @@ class FakeRAGSearchTool:
     def run(self, query, top_k=3):
         self.calls.append({"query": query, "top_k": top_k})
         return [{"source": "template.md", "text": "report-standard"}]
+
+
+class WorkspaceFilesStubTool(BaseTool):
+    name = "workspace_files"
+    description = "Stub workspace listing tool."
+
+    def run(self, pattern="*"):
+        return {"files": [{"path": "app.py"}]}
 
 
 def write_skill(skills_dir, name="code-review", allowed_tools=None):
@@ -542,6 +552,192 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
             self.assertEqual(agent.run("帮我写 eval"), "评估方案")
             self.assertTrue(router.calls)
+
+
+    def test_runtime_denies_global_tool_not_allowed_by_selected_skill(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            skills_dir = root / "skills"
+            write_skill(skills_dir, allowed_tools=["workspace_files"])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "tool_name": "markdown_writer",
+                            "arguments": {
+                                "file_name": "blocked",
+                                "content": "blocked",
+                            },
+                            "reason": "should be denied",
+                        }
+                    ),
+                ]
+            )
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
+            registry = ToolRegistry()
+            registry.register(MarkdownWriterTool(output_dir=root / "outputs"))
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["workspace_files", "markdown_writer"],
+            )
+
+            with self.assertRaises(Exception) as caught:
+                runtime.run("review this project")
+
+            self.assertIn("Tool is not allowed: markdown_writer", str(caught.exception))
+
+    def test_plain_answer_only_allows_minimal_workspace_tools(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "tool_name": "markdown_writer",
+                            "arguments": {
+                                "file_name": "plain",
+                                "content": "plain",
+                            },
+                            "reason": "should be denied in plain answer",
+                        }
+                    ),
+                ]
+            )
+            agent = SkillRuntimeAgent(llm)
+            registry = ToolRegistry()
+            registry.register(MarkdownWriterTool(output_dir=root / "outputs"))
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["workspace_files", "file_reader", "markdown_writer"],
+            )
+
+            with self.assertRaises(Exception) as caught:
+                runtime.run("hello")
+
+            self.assertIn("Tool is not allowed: markdown_writer", str(caught.exception))
+
+    def test_runtime_records_unknown_tool_declared_by_skill_without_failing(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            skills_dir = root / "skills"
+            write_skill(skills_dir, allowed_tools=["workspace_files", "ghost_tool"])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "tool_name": "workspace_files",
+                            "arguments": {},
+                            "reason": "list files",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "final_answer",
+                            "content": "done",
+                        }
+                    ),
+                ]
+            )
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
+            registry = ToolRegistry()
+            registry.register(WorkspaceFilesStubTool())
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["workspace_files"],
+            )
+
+            response = runtime.run("review this project")
+
+            self.assertEqual(response, "done")
+            missing_events = [
+                event for event in runtime.last_trace_events
+                if event["event_type"] == "skill_allowed_tool_missing"
+            ]
+            self.assertEqual(len(missing_events), 1)
+            self.assertEqual(missing_events[0]["payload"]["tool_name"], "ghost_tool")
+
+    def test_runtime_can_read_python_file_through_file_reader_tool_call(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / "app.py").write_text("def handler():\n    return 'ok'\n", encoding="utf-8")
+            skills_dir = root / "skills"
+            write_skill(skills_dir, allowed_tools=["file_reader"])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "tool_name": "file_reader",
+                            "arguments": {"file_path": "app.py"},
+                            "reason": "read python source",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "final_answer",
+                            "content": "read app.py",
+                        }
+                    ),
+                ]
+            )
+            agent = SkillRuntimeAgent(llm, skills_dir=skills_dir)
+            registry = ToolRegistry()
+            registry.register(FileReaderTool(workspace))
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["file_reader"],
+            )
+
+            response = runtime.run("review python file")
+
+            self.assertEqual(response, "read app.py")
+            observation_payload = json.loads(llm.messages[2][1]["content"])
+            self.assertIn("def handler", observation_payload["observation"]["tool_result"]["text"])
 
 
 if __name__ == "__main__":

@@ -37,6 +37,10 @@ class SkillRuntimeAgent:
         self.rag_top_k = rag_top_k
         self.workspace_context = workspace_context or {}
         self.intent_router = intent_router
+        self.current_selected_skill_name = None
+        self.current_skill_allowed_tools = []
+        self.current_turn_is_plain_answer = True
+        self.plain_answer_allowed_tools = ["workspace_files", "file_reader"]
 
     def run(self, user_input):
         registry = self._load_registry()
@@ -59,13 +63,16 @@ class SkillRuntimeAgent:
         selected_name = selection.get("selected_skill")
 
         if not selected_name:
+            self._set_plain_tool_context()
             return self._plain_answer(user_input, memory_context)
 
         try:
             selected_skill = registry.get_skill(selected_name)
         except KeyError:
+            self._set_plain_tool_context()
             return self._plain_answer(user_input, memory_context)
 
+        self._set_skill_tool_context(selected_skill)
         return self._answer_with_skill(user_input, selected_skill, selection, memory_context)
 
     def stream(self, user_input):
@@ -90,15 +97,18 @@ class SkillRuntimeAgent:
         selected_name = selection.get("selected_skill")
 
         if not selected_name:
+            self._set_plain_tool_context()
             yield from self._stream_plain_answer(user_input, memory_context)
             return
 
         try:
             selected_skill = registry.get_skill(selected_name)
         except KeyError:
+            self._set_plain_tool_context()
             yield from self._stream_plain_answer(user_input, memory_context)
             return
 
+        self._set_skill_tool_context(selected_skill)
         yield from self._stream_answer_with_skill(
             user_input,
             selected_skill,
@@ -137,6 +147,23 @@ class SkillRuntimeAgent:
             memory=memory,
             workspace_context=self.workspace_context,
         )
+
+    def _set_plain_tool_context(self):
+        self.current_selected_skill_name = None
+        self.current_skill_allowed_tools = list(self.plain_answer_allowed_tools)
+        self.current_turn_is_plain_answer = True
+
+    def _set_skill_tool_context(self, selected_skill):
+        self.current_selected_skill_name = selected_skill.name
+        self.current_skill_allowed_tools = list(selected_skill.allowed_tools)
+        self.current_turn_is_plain_answer = False
+
+    def current_turn_tool_context(self):
+        return {
+            "selected_skill": self.current_selected_skill_name,
+            "allowed_tools": list(self.current_skill_allowed_tools),
+            "plain_answer": self.current_turn_is_plain_answer,
+        }
 
     def _answer_with_skill(self, user_input, selected_skill, selection, memory_context=None):
         memory = memory_context or self.context_manager.build_memory_context()

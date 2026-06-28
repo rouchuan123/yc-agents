@@ -19,6 +19,9 @@ from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.harness.verification import VerificationGate
 
 
+PLAIN_ANSWER_ALLOWED_TOOLS = ["workspace_files", "file_reader"]
+
+
 class YCAgentRuntime:
     def __init__(
         self,
@@ -264,7 +267,7 @@ class YCAgentRuntime:
 
         gateway = ToolGateway(
             tool_registry=self.tool_registry,
-            allowed_tools=self.allowed_tools,
+            allowed_tools=self._effective_allowed_tools(trace),
             trace=trace,
             approval_gate=self.approval_gate,
             policy=policy,
@@ -307,6 +310,44 @@ class YCAgentRuntime:
             return final_response
 
         return final_data.get("content", "")
+
+    def _effective_allowed_tools(self, trace):
+        runtime_allowed = set(self.allowed_tools)
+        registered = set(getattr(self.tool_registry, "tools", {}).keys()) if self.tool_registry else set()
+        context_getter = getattr(self.agent, "current_turn_tool_context", None)
+
+        if callable(context_getter):
+            tool_context = context_getter()
+            declared = set(tool_context.get("allowed_tools") or PLAIN_ANSWER_ALLOWED_TOOLS)
+            selected_skill = tool_context.get("selected_skill")
+            plain_answer = bool(tool_context.get("plain_answer"))
+        else:
+            declared = set(self.allowed_tools)
+            selected_skill = None
+            plain_answer = False
+
+        for missing_tool in sorted(declared - registered):
+            trace.record(
+                "skill_allowed_tool_missing",
+                {
+                    "selected_skill": selected_skill,
+                    "tool_name": missing_tool,
+                },
+            )
+
+        effective = sorted(runtime_allowed & declared)
+        if registered:
+            effective = sorted(set(effective) & registered)
+
+        trace.record(
+            "effective_allowed_tools",
+            {
+                "selected_skill": selected_skill,
+                "plain_answer": plain_answer,
+                "allowed_tools": effective,
+            },
+        )
+        return effective
 
     def _is_tool_call_json(self, text):
         try:

@@ -88,3 +88,48 @@ def test_observation_messages_require_tool_call_or_final_answer_json():
     assert "tool_call" in system_prompt
     assert "final_answer" in system_prompt
     assert "If another tool is needed" in system_prompt
+
+
+def test_tool_protocol_documents_exact_file_reader_schema():
+    messages = make_builder().plain_answer_messages(
+        user_input="read project",
+        memory={"session": [], "summary": "", "profile": {}},
+        workspace_context={"available_tools": ["workspace_files", "file_reader"]},
+    )
+
+    system_prompt = messages[0]["content"]
+    assert '{"file_path":"yc_agents/tools/file_reader.py"}' in system_prompt
+    assert '{"file_path":"large.py","allow_large":true}' in system_prompt
+    assert "Do not call file_reader with files, paths, or relative_path" in system_prompt
+
+
+def test_tool_protocol_documents_code_search_and_command_reader_schemas():
+    messages = make_builder().skill_execution_messages(
+        context={
+            "task": "skill_execution",
+            "user_input": "review this project",
+            "selected_skill": {
+                "name": "code-review",
+                "allowed_tools": ["workspace_files", "file_reader", "code_search", "command_reader"],
+            },
+            "workspace": {"path": "C:/project"},
+        }
+    )
+
+    system_prompt = messages[0]["content"]
+    assert '"operation":"read_range"' in system_prompt
+    assert '"path_glob":"yc_agents/**/*.py"' in system_prompt
+    assert '"command_key":"rg_search"' in system_prompt
+    assert '"use_regex":false' in system_prompt
+    assert "command_reader is a fallback" in system_prompt
+
+
+def test_tool_protocol_lists_tool_priority_order():
+    messages = make_builder().skill_execution_messages(
+        context={"selected_skill": {"name": "code-review"}, "workspace": {}}
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "Tool priority:" in system_prompt
+    assert "1. workspace_files / code_search" in system_prompt
+    assert "5. command_reader" in system_prompt

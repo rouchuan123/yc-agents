@@ -26,6 +26,7 @@ allowed_tools:
   - git_inspector
   - code_search
   - verification_runner
+  - command_reader
 examples:
   - 帮我审查这个项目
   - 总结当前仓库的架构和风险

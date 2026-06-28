@@ -59,3 +59,60 @@ def test_rejects_path_traversal(workspace):
 
     with pytest.raises(PermissionError):
         tool.run(operation="snippet", file_path="../outside.py", line=1)
+
+
+def test_search_can_filter_by_path_glob(workspace):
+    tool = CodeSearchTool(workspace)
+
+    result = tool.run(
+        operation="search",
+        pattern="handler",
+        path_glob="src/**/*.py",
+        context_lines=0,
+    )
+
+    assert result["ok"] is True
+    assert result["count"] >= 1
+    assert all(match["path"].startswith("src/") for match in result["matches"])
+    assert not any(match["path"].startswith("tests/") for match in result["matches"])
+
+
+def test_list_files_can_filter_by_path_glob(workspace):
+    tool = CodeSearchTool(workspace)
+
+    result = tool.run(operation="list_files", path_glob="tests/**/*.py")
+
+    assert result["ok"] is True
+    assert result["files"] == ["tests/test_app.py"]
+
+
+def test_read_range_returns_exact_line_bounds(workspace):
+    (workspace / "src" / "multi.py").write_text(
+        "line1\nline2\nline3\nline4\n",
+        encoding="utf-8",
+    )
+    tool = CodeSearchTool(workspace)
+
+    result = tool.run(
+        operation="read_range",
+        file_path="src/multi.py",
+        start_line=2,
+        end_line=3,
+    )
+
+    assert result["ok"] is True
+    assert result["operation"] == "read_range"
+    assert result["path"] == "src/multi.py"
+    assert result["start_line"] == 2
+    assert result["end_line"] == 3
+    assert result["lines"] == [
+        {"line": 2, "text": "line2"},
+        {"line": 3, "text": "line3"},
+    ]
+
+
+def test_rejects_unsafe_path_glob(workspace):
+    tool = CodeSearchTool(workspace)
+
+    with pytest.raises(PermissionError):
+        tool.run(operation="search", pattern="handler", path_glob="../*.py")

@@ -155,9 +155,38 @@ class PromptBuilder:
             '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
             "- For current, recent, latest, external, or web information, request web_search with a focused query.\n"
             "- If the user explicitly asks to save, export, or generate a Markdown file, return only valid markdown_writer tool_call JSON.\n"
-            '- tool_call example: {"type":"tool_call","message":"我先查看工作区文件，了解项目结构。","tool_name":"workspace_files","arguments":{"pattern":"*"},"reason":"List workspace files"}\n'
-            '- markdown_writer example: {"type":"tool_call","message":"我将保存 Markdown 文件。","tool_name":"markdown_writer","arguments":{"file_name":"draft.md","content":"# Draft"},"reason":"Save Markdown file"}\n'
-            '- web_search example: {"type":"tool_call","message":"我先搜索最新资料。","tool_name":"web_search","arguments":{"query":"latest Python packaging changes","max_results":5},"reason":"Search current web information"}'
+            "\n"
+            "Tool priority:\n"
+            "1. workspace_files / code_search for project maps, symbol search, call-chain search, and file slices.\n"
+            "2. file_reader for full small files and document previews.\n"
+            "3. git_inspector for Git evidence.\n"
+            "4. verification_runner for allowlisted verification commands.\n"
+            "5. command_reader only as a fallback when the higher-level tools cannot express the read-only inspection.\n"
+            "\n"
+            "file_reader schema:\n"
+            '- {"file_path":"yc_agents/tools/file_reader.py"}\n'
+            '- {"file_path":"large.py","allow_large":true}\n'
+            "- Only use allow_large when the user explicitly asks to read a full large file.\n"
+            "- Do not call file_reader with files, paths, or relative_path.\n"
+            "\n"
+            "code_search schema:\n"
+            '- {"operation":"list_files","path_glob":"yc_agents/**/*.py","max_results":100}\n'
+            '- {"operation":"search","pattern":"ToolGateway","path_glob":"yc_agents/**/*.py","context_lines":2,"max_results":50}\n'
+            '- {"operation":"snippet","file_path":"yc_agents/tools/file_reader.py","line":20,"context_lines":5}\n'
+            '- {"operation":"read_range","file_path":"yc_agents/tools/file_reader.py","start_line":1,"end_line":80}\n'
+            "\n"
+            "command_reader schema:\n"
+            '- {"command_key":"rg_files","path_glob":"yc_agents/**/*.py","max_results":100}\n'
+            '- {"command_key":"rg_search","pattern":"ToolGateway","path_glob":"yc_agents/**/*.py","use_regex":false,"max_results":50}\n'
+            '- {"command_key":"git_status_short"}\n'
+            '- {"command_key":"git_diff_stat"}\n'
+            '- {"command_key":"git_diff_file","file_path":"yc_agents/tools/file_reader.py"}\n'
+            '- {"command_key":"pytest_collect_only","target":"tests/test_workspace_file_tools.py"}\n'
+            "- command_reader is a fallback and never accepts arbitrary shell commands.\n"
+            "\n"
+            '- tool_call example: {"type":"tool_call","message":"I will inspect the workspace files first.","tool_name":"workspace_files","arguments":{"pattern":"*"},"reason":"List workspace files"}\n'
+            '- markdown_writer example: {"type":"tool_call","message":"I will save the Markdown file.","tool_name":"markdown_writer","arguments":{"file_name":"draft.md","content":"# Draft"},"reason":"Save Markdown file"}\n'
+            '- web_search example: {"type":"tool_call","message":"I will search for current sources first.","tool_name":"web_search","arguments":{"query":"latest Python packaging changes","max_results":5},"reason":"Search current web information"}'
         )
 
     def _truthfulness_protocol(self):
@@ -217,6 +246,6 @@ class PromptBuilder:
             '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
             "- If the task is complete, return a final_answer JSON.\n"
             "- Do not return Markdown or extra explanation.\n"
-            '- tool_call format: {"type":"tool_call","message":"我接下来读取 README 判断项目定位。","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
+            '- tool_call format: {"type":"tool_call","message":"I will read README next to understand the project.","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
             '- final_answer format: {"type":"final_answer","content":"final answer for the user"}'
         )
