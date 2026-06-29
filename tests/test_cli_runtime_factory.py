@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+import unittest.mock
 from pathlib import Path
 
 from yc_agents.cli.runtime_factory import build_cli_runtime
@@ -141,6 +142,71 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         env_example = Path(".env.example").read_text(encoding="utf-8")
 
         self.assertIn("TAVILY_API_KEY=", env_example)
+
+    def test_build_cli_runtime_registers_sqlite_mcp_tools_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(
+                ycore_root=root,
+                startup_dir=root,
+            ).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("analytics")
+
+            with unittest.mock.patch.dict(
+                "os.environ",
+                {
+                    "YCORE_SQLITE_MCP_ENABLED": "true",
+                    "YCORE_ANALYTICS_ENABLED": "false",
+                },
+                clear=False,
+            ):
+                runtime = build_cli_runtime(
+                    session,
+                    llm=FakeLLM(),
+                    skills_dir=root / "skills",
+                )
+
+            try:
+                tool_names = set(runtime.tool_registry.tools)
+                self.assertIn("mcp_sqlite_list_tables", tool_names)
+                self.assertIn("mcp_sqlite_describe_table", tool_names)
+                self.assertIn("mcp_sqlite_query_readonly", tool_names)
+                self.assertIn("mcp_sqlite_query_readonly", runtime.allowed_tools)
+                self.assertIn(
+                    "mcp_sqlite_query_readonly",
+                    runtime.agent.workspace_context["available_tools"],
+                )
+            finally:
+                runtime.close()
+
+    def test_build_cli_runtime_configures_analytics_recorder_when_enabled(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(
+                ycore_root=root,
+                startup_dir=root,
+            ).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("analytics")
+
+            with unittest.mock.patch.dict(
+                "os.environ",
+                {
+                    "YCORE_ANALYTICS_ENABLED": "true",
+                    "YCORE_SQLITE_MCP_ENABLED": "false",
+                },
+                clear=False,
+            ):
+                runtime = build_cli_runtime(
+                    session,
+                    llm=FakeLLM(),
+                    skills_dir=root / "skills",
+                )
+
+            self.assertIsNotNone(runtime.analytics_recorder)
+            self.assertEqual(
+                runtime.analytics_recorder.config.db_path,
+                workspace.path / ".ycore" / "sqlite" / "analytics.sqlite",
+            )
 
 
 if __name__ == "__main__":

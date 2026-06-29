@@ -3,6 +3,7 @@ import tempfile
 from pathlib import Path
 
 from yc_agents.harness.tool_gateway import ToolGateway
+from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.tools.mcp_adapter import MCPToolAdapter
 from yc_agents.tools.mcp_client import MCPClientConfig, StaticMCPClient
 from yc_agents.tools.registry import ToolRegistry
@@ -138,6 +139,19 @@ class TestMCPToolAdapter(unittest.TestCase):
             "tool_called",
             [event["event_type"] for event in trace.events],
         )
+
+    def test_mcp_tool_adapter_accepts_optional_schema(self):
+        schema = ToolSchema(fields=[ToolField(name="sql", type="str", required=True)])
+        adapter = MCPToolAdapter(
+            name="mcp_sqlite_query_readonly",
+            description="Query SQLite",
+            server_name="sqlite",
+            tool_name="sqlite.query_readonly",
+            client=RecordingMCPClient(),
+            schema=schema,
+        )
+
+        self.assertIs(adapter.schema, schema)
 
 
 if __name__ == "__main__":

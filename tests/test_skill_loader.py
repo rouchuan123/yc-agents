@@ -11,10 +11,20 @@ class TestSkillLoader(unittest.TestCase):
 
         skills = loader.load_all()
 
-        self.assertEqual([skill.name for skill in skills], ["code-review", "eval-writer"])
+        self.assertEqual(
+            [skill.name for skill in skills],
+            ["code-review", "eval-writer", "ycore-analytics"],
+        )
         self.assertTrue(all("中文" in skill.body for skill in skills))
-        self.assertTrue(all("workspace_files" in skill.allowed_tools for skill in skills))
-        self.assertTrue(all("file_reader" in skill.allowed_tools for skill in skills))
+        tools_by_skill = {skill.name: set(skill.allowed_tools) for skill in skills}
+        self.assertIn("workspace_files", tools_by_skill["code-review"])
+        self.assertIn("file_reader", tools_by_skill["code-review"])
+        self.assertIn("workspace_files", tools_by_skill["eval-writer"])
+        self.assertIn("file_reader", tools_by_skill["eval-writer"])
+        self.assertIn(
+            "mcp_sqlite_query_readonly",
+            tools_by_skill["ycore-analytics"],
+        )
 
     def test_code_review_skill_requires_deep_evidence_based_review(self):
         loader = SkillLoader("skills")

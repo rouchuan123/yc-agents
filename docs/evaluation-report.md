@@ -2,7 +2,7 @@
 
 ## 目的
 
-这份报告用于跟踪 Agent 在通用本地 Agent Harness 中是否真正完成任务，而不只是单元测试是否通过或回答看起来顺眼。具体评测对象由 Skill 决定；当前 case 先覆盖 `code-review` 和 `eval-writer` 这两个验证 Skill。
+这份报告用于跟踪 Agent 在通用本地 Agent Harness 中是否真正完成任务，而不只是单元测试是否通过或回答看起来顺眼。具体评测对象由 Skill 决定；当前 case 先覆盖 `code-review` 和 `eval-writer`，并通过 `ycore-analytics` 查询运行可观测性数据。
 
 ## 用例集合
 
@@ -42,6 +42,8 @@ ToolGateway 评测不只看回答内容，也统计 trace 中的工具事件：
 - `tool_needs_approval`：需要人工审批。
 
 这些事件会汇总为 `tool_event_totals` 和 `tool_failure_labels`，用于解释一次 Agent 运行失败到底是策略、参数、工具实现还是外部环境问题。
+
+当 `YCORE_ANALYTICS_ENABLED=true` 时，YCore 会把运行事件实时写入 workspace-local SQLite。运行 eval cases 时，`eval_results` 额外记录 case 级判定结果，便于后续通过 `ycore-analytics` 查询通过率、失败原因和工具边界回归情况。
 
 ## Verification Gate
 

@@ -18,6 +18,9 @@ htmlcov/
 
 # 运行输出与本地数据
 outputs/
+.ycore/sqlite/
+*.sqlite-wal
+*.sqlite-shm
 data/vector_store/
 data/memory/
 data/documents/

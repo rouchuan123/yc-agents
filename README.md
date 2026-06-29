@@ -8,10 +8,11 @@ YCore 不把业务方向写死在全局 prompt 里。具体落地方向由 Skill
 
 YCore 的核心目标是验证一套通用 Agent Harness 是否能支撑不同领域 Skill：Skill 如何被发现和选择、工具如何被管控、上下文如何注入、过程如何记录、结果如何评测。
 
-当前仓库默认发布两个示例业务 Skill，它们是第一批验证 Skill：
+当前仓库默认发布三个示例业务 Skill，它们是第一批验证 Skill：
 
 - `code-review`：验证本地项目审查类 workflow，要求读取代码证据、追关键链路、识别风险和测试缺口。
 - `eval-writer`：验证 Agent eval 设计类 workflow，要求把评测目标拆成 deterministic eval、真实模型 smoke eval 和人工 rubric。
+- `ycore-analytics`：验证 workspace-local SQLite analytics 和只读 MCP 查询 workflow，要求用运行元数据、工具事件、verification 和 eval 结果回答运行健康度问题。
 
 后续可以继续加入其他领域 Skill，用同一套 Harness 验证新的落地方向。
 
@@ -36,10 +37,11 @@ CLI 顶部会显示当前工作区、模型、估算上下文占用、Git 分支
 
 ## 默认 Skill
 
-当前默认发布两个示例业务 Skill：
+当前默认发布三个示例业务 Skill：
 
 - `code-review`：项目体检和变更审查，重点是代码证据、调用链、风险分级、测试缺口和最小验证。
 - `eval-writer`：为 Agent workflow、工具边界、trace/state、verification 和输出质量设计评测方案。
+- `ycore-analytics`：查询当前 workspace 的 SQLite analytics，分析运行情况、工具失败、verification、eval 通过率和 denied 工具事件。
 
 具体工作流放在 Skill 中，不写入全局 prompt。
 
@@ -64,6 +66,7 @@ CLI 顶部会显示当前工作区、模型、估算上下文占用、Git 分支
 - 支持工作区根目录 `YCORE.md` 与本地 `.ycore/YCORE.md` 两层项目指令。
 - 通过 `ToolGateway` 管理工具权限、参数校验、审批边界和追踪记录。
 - 在当前 workspace 的 `.ycore/runs/` 下写入输入、输出、trace 和 state checkpoint。
+- 可选 SQLite analytics：把当前 workspace 的 Agent 运行元数据、工具事件、verification 和 eval 结果写入 `.ycore/sqlite/analytics.sqlite`，并通过只读 SQLite MCP 工具供 `ycore-analytics` 查询。
 - 用 eval runner 与 VerificationGate 把“模型说完成”转成可检查证据。
 
 ## 架构
@@ -112,7 +115,7 @@ flowchart LR
 ## 当前边界
 
 - 当前只保留 CLI 端。
-- 默认发布 `code-review` 和 `eval-writer` 两个示例业务 Skill。
+- 默认发布 `code-review`、`eval-writer` 和 `ycore-analytics` 三个示例业务 Skill。
 - 领域能力由 Skill 决定，YCore 全局层保持通用。
 - 保留通用 `.docx` 文件读取能力，方便读取需求或规格文档。
 - 不提供 Word 排版、格式修正或文档样式处理能力。

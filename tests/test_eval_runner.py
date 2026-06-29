@@ -107,3 +107,44 @@ def test_run_cases_includes_trace_metrics():
     assert results[0]["tool_success"] is True
     assert results[0]["trace_event_success"] is True
     assert results[0]["forbidden_tool_success"] is True
+
+
+class FakeAnalyticsRecorder:
+    def __init__(self):
+        self.eval_results = []
+
+    def record_eval_result(self, result):
+        self.eval_results.append(result)
+
+
+def test_run_cases_records_eval_results_when_runtime_has_analytics():
+    class FakeAnalyticsRuntime:
+        def __init__(self):
+            self.analytics_recorder = FakeAnalyticsRecorder()
+            self.last_run_id = None
+            self.last_trace_events = [
+                {"event_type": "tool_called", "payload": {"tool_name": "workspace_files"}},
+            ]
+
+        def run(self, user_input):
+            self.last_run_id = "run-analytics-1"
+            return f"文件 output for {user_input}"
+
+    runtime = FakeAnalyticsRuntime()
+
+    results = run_cases(
+        runtime,
+        [
+            EvalCase(
+                id="case-1",
+                category="skill_selection",
+                input="hello",
+                expected_keywords=["文件"],
+                required_tools=["workspace_files"],
+            )
+        ],
+    )
+
+    assert len(results) == 1
+    assert runtime.analytics_recorder.eval_results[0]["case_id"] == "case-1"
+    assert runtime.analytics_recorder.eval_results[0]["run_id"] == runtime.last_run_id

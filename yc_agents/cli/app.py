@@ -286,6 +286,7 @@ class YCAgentsTUIApp(App):
         if self._copy_selected_text():
             return
 
+        self.close_runtime()
         self.exit()
 
     def _copy_selected_text(self):
@@ -328,6 +329,7 @@ class YCAgentsTUIApp(App):
             return
 
         if command.action == "exit":
+            self.close_runtime()
             self.exit()
             return
 
@@ -922,8 +924,18 @@ class YCAgentsTUIApp(App):
         if self.session is None:
             return
 
+        self.close_runtime()
         self.runtime = self.runtime_builder(self.session)
         self.attach_runtime_event_callback()
+
+    def close_runtime(self):
+        close = getattr(self.runtime, "close", None)
+        if callable(close):
+            with suppress(Exception):
+                close()
+
+    def on_unmount(self):
+        self.close_runtime()
 
     def reload_transcript(self):
         if self.session_store is None:
