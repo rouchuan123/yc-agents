@@ -1,0 +1,114 @@
+{
+  "agents": {
+    "defaults": {
+      "model": {
+        "primary": "deepseek/deepseek-v4-flash",
+        "fallbacks": []
+      }
+    },
+    "entries": {
+      "main": {
+        "enabled": true
+      }
+    }
+  },
+  "models": {
+    "mode": "merge",
+    "providers": {
+      "deepseek": {
+        "baseUrl": "https://api.deepseek.com",
+        "api": "openai-completions",
+        "apiKeyEnv": "DEEPSEEK_API_KEY",
+        "models": [
+          {
+            "id": "deepseek-v4-flash",
+            "name": "deepseek-v4-flash",
+            "contextWindow": 64000,
+            "maxOutputTokens": 4096,
+            "request": {
+              "max_tokens": 4096,
+              "temperature": 0.2,
+              "top_p": 0.95
+            }
+          }
+        ]
+      }
+    }
+  },
+  "skills": {
+    "dirs": [
+      "skills"
+    ],
+    "entries": {
+      "code-review": {
+        "enabled": true
+      },
+      "eval-writer": {
+        "enabled": true
+      },
+      "ycore-analytics": {
+        "enabled": true
+      }
+    }
+  },
+  "tools": {
+    "profile": "coding",
+    "allow": [
+      "workspace_files",
+      "file_reader",
+      "markdown_writer",
+      "rag_search",
+      "web_search",
+      "git_inspector",
+      "code_search",
+      "verification_runner",
+      "command_reader"
+    ],
+    "web": {
+      "search": {
+        "provider": "tavily",
+        "enabled": true,
+        "apiKeyEnv": "TAVILY_API_KEY"
+      }
+    }
+  },
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "enabled": false,
+        "description": "Local filesystem MCP boundary for future external server integration.",
+        "type": "stdio",
+        "command": "npx",
+        "args": [
+          "-y",
+          "@modelcontextprotocol/server-filesystem",
+          "."
+        ]
+      }
+    }
+  },
+  "runtime": {
+    "expectsJson": true,
+    "toolCalling": "json-protocol",
+    "modelTimeoutSeconds": 60,
+    "maxToolCalls": 12,
+    "toolTimeoutSeconds": 30,
+    "invalidJsonRetryCount": 1,
+    "failOnInvalidJson": true
+  },
+  "analytics": {
+    "enabled": true,
+    "sqliteMcp": {
+      "enabled": true
+    },
+    "fullText": false,
+    "strict": false,
+    "dbPath": null,
+    "previewChars": 200,
+    "maxRows": 100,
+    "retentionRuns": 1000
+  },
+  "memory": {
+    "compressionThreshold": 12
+  }
+}

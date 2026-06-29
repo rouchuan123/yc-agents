@@ -153,6 +153,16 @@ class TestVerificationGate(unittest.TestCase):
             "Command failed: python -m pytest -q",
         )
 
+    def test_verify_trace_events_fails_when_invalid_model_json_seen(self):
+        gate = VerificationGate()
+
+        result = gate.verify_trace_events(
+            [{"event_type": "invalid_model_json", "payload": {}}]
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["checks"][0]["name"], "no_invalid_model_json")
+
 
 if __name__ == "__main__":
     unittest.main()

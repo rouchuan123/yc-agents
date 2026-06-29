@@ -86,6 +86,20 @@ flowchart LR
 
 更多边界说明见 [docs/architecture.md](docs/architecture.md)。
 
+## Root `ycore.json`
+
+YCore uses a single non-secret configuration model. The required global config lives at the project/install root `ycore.json`; workspace-specific overrides are optional and must live at `<workspace>/.ycore/ycore.json`.
+
+`.env` and `.env.example` are for secrets only, such as `DEEPSEEK_API_KEY` and `TAVILY_API_KEY`. Runtime knobs such as model selection, provider base URLs, model timeout, context window, request defaults, tools, skills, analytics, memory, MCP servers, and JSON protocol policy belong in `ycore.json`.
+
+Workspace state is not stored in `ycore.json`. CLI workspace registry data remains in `data/workspaces.json`, and per-workspace metadata remains in `.ycore/workspace.json`.
+
+If the global `ycore.json` is missing, YCore fails with a clear error. It does not recover non-secret runtime configuration from `LLM_*` or `YCORE_ANALYTICS_*` environment variables.
+
+Model parameters are stored under `models.providers.<provider>.models[]`. `contextWindow` is YCore metadata for context display and budgeting; `maxOutputTokens` is semantic metadata; `request` contains default OpenAI-compatible API request parameters such as `max_tokens`, `temperature`, and `top_p`. Per-call keyword arguments still override `request` defaults.
+
+Default runtime policy retries once when the model output is not valid protocol JSON; if the retry is still invalid, the current run fails.
+
 ## 快速开始
 
 | 任务 | 命令 |

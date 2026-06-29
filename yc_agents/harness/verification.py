@@ -27,6 +27,26 @@ class VerificationGate:
             ),
         )
 
+    def verify_trace_events(self, events):
+        has_invalid_json = any(
+            event.get("event_type") == "invalid_model_json"
+            for event in events or []
+        )
+        return {
+            "passed": not has_invalid_json,
+            "checks": [
+                {
+                    "name": "no_invalid_model_json",
+                    "passed": not has_invalid_json,
+                    "message": (
+                        "No invalid model JSON events"
+                        if not has_invalid_json
+                        else "Run contains invalid_model_json events"
+                    ),
+                }
+            ],
+        }
+
     def verify_file_exists(self, file_path):
         path = Path(file_path)
         passed = path.exists() and path.is_file()

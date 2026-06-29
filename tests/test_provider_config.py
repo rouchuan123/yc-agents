@@ -1,5 +1,6 @@
 import unittest
 
+from yc_agents.config.ycore import ModelProviderSettings
 from yc_agents.core.config import ProviderConfig
 
 
@@ -73,6 +74,9 @@ class TestProviderConfig(unittest.TestCase):
                 "model": "qwen-test",
                 "base_url": "https://api-inference.modelscope.cn/v1",
                 "timeout": 60,
+                "context_window": None,
+                "max_output_tokens": None,
+                "request_defaults": {},
                 "has_api_key": True,
                 "capabilities": {
                     "provider": "modelscope",
@@ -118,6 +122,30 @@ class TestProviderConfig(unittest.TestCase):
 
         with self.assertRaisesRegex(ValueError, "LLM_TIMEOUT 必须是正整数"):
             ProviderConfig.from_env(env)
+
+    def test_provider_config_can_be_created_from_ycore_settings(self):
+        settings = ModelProviderSettings(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            api="openai-completions",
+            base_url="https://api.deepseek.com",
+            api_key="secret",
+            timeout=45,
+            context_window=64000,
+            max_output_tokens=4096,
+            request={"max_tokens": 4096, "temperature": 0.2},
+        )
+
+        config = ProviderConfig.from_ycore(settings)
+
+        self.assertEqual(config.provider, "deepseek")
+        self.assertEqual(config.model, "deepseek-v4-flash")
+        self.assertEqual(config.api_key, "secret")
+        self.assertEqual(config.base_url, "https://api.deepseek.com")
+        self.assertEqual(config.timeout, 45)
+        self.assertEqual(config.context_window, 64000)
+        self.assertEqual(config.max_output_tokens, 4096)
+        self.assertEqual(config.request_defaults, {"max_tokens": 4096, "temperature": 0.2})
 
 
 if __name__ == "__main__":

@@ -36,6 +36,9 @@ class YCAgentRuntime:
         tool_policy=None,
         analytics_recorder=None,
         managed_resources=None,
+        invalid_json_retry_count=0,
+        fail_on_invalid_json=False,
+        context_limit=8000,
     ):
         self.agent = agent
         self.expects_json = expects_json
@@ -48,6 +51,9 @@ class YCAgentRuntime:
         self.tool_policy = tool_policy
         self.analytics_recorder = analytics_recorder
         self.managed_resources = list(managed_resources or [])
+        self.invalid_json_retry_count = invalid_json_retry_count
+        self.fail_on_invalid_json = fail_on_invalid_json
+        self.context_limit = int(context_limit or 8000)
         if analytics_recorder is not None:
             self.managed_resources.append(analytics_recorder)
         self.last_trace_events = []
@@ -277,15 +283,26 @@ class YCAgentRuntime:
 
     def _handle_json_response(self, trace, user_input, response, process_entries):
         policy = self._new_tool_policy()
+        invalid_attempts = 0
 
         while True:
-            response = self._handle_json_response_once(
+            response, invalid_error = self._handle_json_response_once(
                 trace,
                 user_input,
                 response,
                 policy,
                 process_entries,
             )
+
+            if invalid_error is not None:
+                if invalid_attempts < self.invalid_json_retry_count:
+                    invalid_attempts += 1
+                    response = self._retry_after_invalid_json(user_input, invalid_error)
+                    trace.record("model_called")
+                    continue
+                if self.fail_on_invalid_json:
+                    raise invalid_error
+                return response
 
             if not self._is_tool_call_json(response):
                 return response
@@ -295,7 +312,7 @@ class YCAgentRuntime:
             preface, data = extract_model_json(response)
         except InvalidModelJSONError as exc:
             trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
-            return response
+            return response, exc
 
         self._emit_process_entry(
             trace,
@@ -310,10 +327,10 @@ class YCAgentRuntime:
                 data,
                 policy,
                 process_entries,
-            )
+            ), None
 
         if data["type"] == "final_answer":
-            return data.get("content", "")
+            return data.get("content", ""), None
 
         if data["type"] == "skill_selection":
             trace.record("skill_selected", {
@@ -322,7 +339,17 @@ class YCAgentRuntime:
                 "reason": data.get("reason"),
             })
 
-        return response
+        return response, None
+
+    def _retry_after_invalid_json(self, user_input, error):
+        retry = getattr(self.agent, "run_with_protocol_error", None)
+        if callable(retry):
+            return retry(user_input, error)
+
+        return self.agent.run(
+            user_input
+            + "\n\n系统提示：上一条模型输出不是合法 JSON。请只返回符合协议的 JSON，不要输出 Markdown 代码块或额外解释。"
+        )
 
     def _handle_tool_call(self, trace, user_input, data, policy, process_entries):
         self._emit_process_entry(
@@ -369,7 +396,16 @@ class YCAgentRuntime:
         try:
             preface, final_data = extract_model_json(final_response)
         except InvalidModelJSONError as exc:
-            trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
+            if self._looks_like_tool_call_response(final_response):
+                trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
+                if self.fail_on_invalid_json:
+                    raise exc
+            else:
+                self._emit_process_entry(
+                    trace,
+                    process_entries,
+                    assistant_step_entry(final_response),
+                )
             return final_response
 
         self._emit_process_entry(
@@ -428,6 +464,13 @@ class YCAgentRuntime:
             return False
 
         return data.get("type") == "tool_call"
+
+    def _looks_like_tool_call_response(self, text):
+        stripped = str(text or "").strip()
+        if not stripped:
+            return True
+
+        return '"type"' in stripped and "tool_call" in stripped
 
     def _tool_loop_was_stopped(self, tool_result):
         return (

@@ -241,11 +241,9 @@ class PromptBuilder:
         return (
             "Observation protocol:\n"
             "- You have received one tool execution observation.\n"
-            "- Return only valid JSON.\n"
-            "- If another tool is needed to complete the user's request, return a tool_call JSON.\n"
+            "- If another tool is needed to complete the user's request, return only valid tool_call JSON.\n"
             '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
-            "- If the task is complete, return a final_answer JSON.\n"
-            "- Do not return Markdown or extra explanation.\n"
-            '- tool_call format: {"type":"tool_call","message":"I will read README next to understand the project.","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
-            '- final_answer format: {"type":"final_answer","content":"final answer for the user"}'
+            "- If the task is complete, answer directly in natural language.\n"
+            "- Do not wrap final answers in JSON.\n"
+            '- tool_call format: {"type":"tool_call","message":"I will read README next to understand the project.","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}'
         )

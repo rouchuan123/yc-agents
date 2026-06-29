@@ -22,12 +22,18 @@ class YCAgentsLLM:
         )
 
 
+    def _request_kwargs(self, kwargs):
+        merged = dict(getattr(self.config, "request_defaults", {}) or {})
+        merged.update(kwargs)
+        return merged
+
+
     def think(self, messages, **kwargs):   
         try:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                **kwargs,
+                **self._request_kwargs(kwargs),
             )
         except Exception as exc:
             raise LLMCallError(
@@ -38,11 +44,12 @@ class YCAgentsLLM:
 
     def stream_think(self, messages, **kwargs):
         try:
+            request_kwargs = self._request_kwargs(kwargs)
+            request_kwargs["stream"] = True
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=messages,
-                stream=True,
-                **kwargs,
+                **request_kwargs,
             )
         except Exception as exc:
             raise LLMCallError(

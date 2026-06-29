@@ -23,7 +23,96 @@ class FakeLLM:
     pass
 
 
+def write_ycore_config(root):
+    config = {
+        "agents": {
+            "defaults": {
+                "model": {
+                    "primary": "deepseek/deepseek-v4-flash",
+                    "fallbacks": [],
+                },
+            },
+            "entries": {"main": {"enabled": True}},
+        },
+        "models": {
+            "providers": {
+                "deepseek": {
+                    "baseUrl": "https://api.deepseek.com",
+                    "api": "openai-completions",
+                    "apiKeyEnv": "DEEPSEEK_API_KEY",
+                    "models": [
+                        {
+                            "id": "deepseek-v4-flash",
+                            "contextWindow": 64000,
+                            "maxOutputTokens": 4096,
+                            "request": {"max_tokens": 4096},
+                        }
+                    ],
+                }
+            }
+        },
+        "tools": {
+            "allow": [
+                "workspace_files",
+                "file_reader",
+                "markdown_writer",
+                "rag_search",
+                "web_search",
+                "git_inspector",
+                "code_search",
+                "verification_runner",
+                "command_reader",
+            ],
+            "web": {
+                "search": {
+                    "provider": "tavily",
+                    "enabled": True,
+                    "apiKeyEnv": "TAVILY_API_KEY",
+                }
+            },
+        },
+        "skills": {"dirs": ["skills"], "entries": {}},
+        "runtime": {
+            "expectsJson": True,
+            "maxToolCalls": 12,
+            "toolTimeoutSeconds": 30,
+            "invalidJsonRetryCount": 1,
+            "failOnInvalidJson": True,
+        },
+        "analytics": {
+            "enabled": False,
+            "sqliteMcp": {"enabled": False},
+        },
+        "memory": {"compressionThreshold": 12},
+    }
+    (root / "ycore.json").write_text(json.dumps(config), encoding="utf-8")
+
+
 class TestMainEntryPoint(unittest.TestCase):
+    def setUp(self):
+        self.global_config_dir = tempfile.TemporaryDirectory()
+        self.global_config_root = Path(self.global_config_dir.name)
+        write_ycore_config(self.global_config_root)
+        self.global_config_patch = patch(
+            "yc_agents.config.ycore.YCoreConfig.default_global_config_path",
+            return_value=self.global_config_root / "ycore.json",
+        )
+        self.global_config_patch.start()
+        self.env_patch = patch.dict(
+            "os.environ",
+            {
+                "DEEPSEEK_API_KEY": "test-deepseek",
+                "TAVILY_API_KEY": "test-tavily",
+            },
+            clear=False,
+        )
+        self.env_patch.start()
+
+    def tearDown(self):
+        self.env_patch.stop()
+        self.global_config_patch.stop()
+        self.global_config_dir.cleanup()
+
     def build_runtime_in_temp_workspace(self):
         temp_dir = tempfile.TemporaryDirectory()
         self.addCleanup(temp_dir.cleanup)

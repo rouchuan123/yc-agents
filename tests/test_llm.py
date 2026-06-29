@@ -60,7 +60,64 @@ class StreamingClient:
         self.chat.completions = StreamingCompletions()
 
 
+class SuccessfulCompletions:
+    def __init__(self):
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        message = type("Message", (), {"content": "ok"})()
+        choice = type("Choice", (), {"message": message})()
+        return type("Response", (), {"choices": [choice]})()
+
+
+class SuccessfulClient:
+    def __init__(self):
+        self.chat = FakeChat()
+        self.chat.completions = SuccessfulCompletions()
+
+
 class TestYCAgentsLLM(unittest.TestCase):
+    def test_think_applies_ycore_request_defaults(self):
+        config = ProviderConfig(
+            provider="deepseek",
+            model="deepseek-chat",
+            api_key="secret-key",
+            base_url="https://api.deepseek.com/v1",
+            timeout=30,
+            request_defaults={"max_tokens": 4096, "temperature": 0.2},
+        )
+        client = SuccessfulClient()
+        llm = YCAgentsLLM(config=config, client=client)
+
+        result = llm.think([{"role": "user", "content": "hello"}])
+
+        self.assertEqual(result, "ok")
+        call = client.chat.completions.calls[0]
+        self.assertEqual(call["max_tokens"], 4096)
+        self.assertEqual(call["temperature"], 0.2)
+
+    def test_think_kwargs_override_ycore_request_defaults(self):
+        config = ProviderConfig(
+            provider="deepseek",
+            model="deepseek-chat",
+            api_key="secret-key",
+            base_url="https://api.deepseek.com/v1",
+            timeout=30,
+            request_defaults={"max_tokens": 4096, "temperature": 0.2},
+        )
+        client = SuccessfulClient()
+        llm = YCAgentsLLM(config=config, client=client)
+
+        llm.think(
+            [{"role": "user", "content": "hello"}],
+            temperature=0.7,
+        )
+
+        call = client.chat.completions.calls[0]
+        self.assertEqual(call["max_tokens"], 4096)
+        self.assertEqual(call["temperature"], 0.7)
+
     def test_think_wraps_provider_error_without_leaking_api_key(self):
         config = ProviderConfig(
             provider="deepseek",
@@ -88,6 +145,7 @@ class TestYCAgentsLLM(unittest.TestCase):
             api_key="secret-key",
             base_url="https://api.deepseek.com/v1",
             timeout=30,
+            request_defaults={"max_tokens": 4096, "temperature": 0.2},
         )
         client = StreamingClient()
         llm = YCAgentsLLM(config=config, client=client)
@@ -95,7 +153,10 @@ class TestYCAgentsLLM(unittest.TestCase):
         chunks = list(llm.stream_think([{"role": "user", "content": "hello"}]))
 
         self.assertEqual(chunks, ["hello", " world"])
-        self.assertTrue(client.chat.completions.calls[0]["stream"])
+        call = client.chat.completions.calls[0]
+        self.assertEqual(call["max_tokens"], 4096)
+        self.assertEqual(call["temperature"], 0.2)
+        self.assertTrue(call["stream"])
 
 
 if __name__ == "__main__":

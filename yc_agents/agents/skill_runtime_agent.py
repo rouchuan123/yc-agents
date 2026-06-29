@@ -1,3 +1,5 @@
+import json
+
 from yc_agents.agents.skill_agent import SkillAgent
 from yc_agents.harness.context_manager import ContextManager
 from yc_agents.harness.json_protocol import InvalidModelJSONError, parse_model_json
@@ -58,7 +60,7 @@ class SkillRuntimeAgent:
         try:
             selection = parse_model_json(selection_text)
         except InvalidModelJSONError:
-            return selection_text
+            return self._final_answer_json(selection_text)
 
         selected_name = selection.get("selected_skill")
 
@@ -91,7 +93,7 @@ class SkillRuntimeAgent:
         try:
             selection = parse_model_json(selection_text)
         except InvalidModelJSONError:
-            yield selection_text
+            yield self._final_answer_json(selection_text)
             return
 
         selected_name = selection.get("selected_skill")
@@ -127,6 +129,12 @@ class SkillRuntimeAgent:
     def _plain_answer(self, user_input, memory_context=None):
         return self.llm.think(
             self._build_plain_answer_messages(user_input, memory_context)
+        )
+
+    def _final_answer_json(self, content):
+        return json.dumps(
+            {"type": "final_answer", "content": str(content or "")},
+            ensure_ascii=False,
         )
 
     def _stream_plain_answer(self, user_input, memory_context=None):

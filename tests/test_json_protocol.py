@@ -84,6 +84,31 @@ class TestJSONProtocol(unittest.TestCase):
 
         self.assertEqual(result["message"], "我先看文件。")
 
+    def test_extract_model_json_accepts_fenced_json_tool_call(self):
+        text = (
+            "我先查看项目文件。\n\n"
+            "```json\n"
+            "{\"type\":\"tool_call\",\"tool_name\":\"workspace_files\",\"arguments\":{\"pattern\":\"*\"}}\n"
+            "```"
+        )
+
+        preface, data = extract_model_json(text)
+
+        self.assertEqual(preface, "我先查看项目文件。")
+        self.assertEqual(data["type"], "tool_call")
+        self.assertEqual(data["tool_name"], "workspace_files")
+
+    def test_extract_model_json_ignores_text_after_first_complete_object(self):
+        text = (
+            "{\"type\":\"tool_call\",\"tool_name\":\"workspace_files\",\"arguments\":{}}\n"
+            "```"
+        )
+
+        preface, data = extract_model_json(text)
+
+        self.assertEqual(preface, "")
+        self.assertEqual(data["type"], "tool_call")
+
 
 if __name__ == "__main__":
     unittest.main()

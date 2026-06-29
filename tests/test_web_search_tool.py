@@ -108,6 +108,11 @@ class TestWebSearchTool(unittest.TestCase):
         self.assertNotIn("include_domains", call)
         self.assertNotIn("exclude_domains", call)
 
+    def test_tavily_provider_uses_injected_api_key(self):
+        provider = TavilyWebSearchProvider(api_key="configured-key", client=None)
+
+        self.assertEqual(provider.api_key, "configured-key")
+
 
 if __name__ == "__main__":
     unittest.main()
