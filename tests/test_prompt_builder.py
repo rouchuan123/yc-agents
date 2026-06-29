@@ -75,7 +75,7 @@ def test_skill_execution_messages_include_selected_skill_context_as_user_json():
     assert "Review instructions" in messages[1]["content"]
 
 
-def test_observation_messages_require_tool_call_or_final_answer_json():
+def test_observation_messages_allow_plain_final_answer_after_tools():
     messages = make_builder().observation_messages(
         user_input="list files",
         memory={"session": [], "summary": "", "profile": {}},
@@ -84,10 +84,10 @@ def test_observation_messages_require_tool_call_or_final_answer_json():
     )
 
     system_prompt = messages[0]["content"]
-    assert "Return only valid JSON" in system_prompt
     assert "tool_call" in system_prompt
-    assert "final_answer" in system_prompt
+    assert "answer directly in natural language" in system_prompt
     assert "If another tool is needed" in system_prompt
+    assert "Do not wrap final answers in JSON" in system_prompt
 
 
 def test_tool_protocol_documents_exact_file_reader_schema():

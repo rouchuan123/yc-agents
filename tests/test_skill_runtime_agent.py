@@ -208,6 +208,20 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(response, "Plain answer")
             self.assertEqual(saved_messages[-1]["content"], "Plain answer")
 
+    def test_runtime_treats_plain_skill_selection_output_as_final_answer(self):
+        llm = FakeLLM(["I can review code, read files, and run safe checks."])
+        agent = SkillRuntimeAgent(llm)
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("what skills do you have?")
+
+        self.assertEqual(response, "I can review code, read files, and run safe checks.")
+        self.assertEqual(len(llm.messages), 1)
+
     def test_runtime_agent_saves_structured_process_entries_to_session_memory(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             memory_file = Path(tmp_dir) / "session.json"
@@ -384,7 +398,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             )
             self.assertEqual(assistant_message["process_entries"][2]["type"], "tool_result")
 
-    def test_observation_prompt_allows_follow_up_tool_call_or_final_answer(self):
+    def test_observation_prompt_allows_follow_up_tool_call_or_plain_final_answer(self):
         llm = FakeLLM(
             [
                 json.dumps(
@@ -411,7 +425,8 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
         system_prompt = llm.messages[0][0]["content"]
         self.assertIn("tool_call", system_prompt)
-        self.assertIn("final_answer", system_prompt)
+        self.assertIn("answer directly in natural language", system_prompt)
+        self.assertIn("Do not wrap final answers in JSON", system_prompt)
         self.assertIn("If another tool is needed", system_prompt)
         self.assertNotIn("Return only valid final_answer JSON", system_prompt)
 
@@ -438,7 +453,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
         self.assertIn('"message"', prompt)
         self.assertIn("visible progress", prompt)
-        self.assertIn("final_answer", prompt)
+        self.assertIn("answer directly in natural language", prompt)
 
     def test_run_retries_when_skill_execution_repeats_skill_selection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

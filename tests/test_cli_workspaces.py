@@ -100,6 +100,31 @@ class TestWorkspaceStore(unittest.TestCase):
             self.assertEqual(data["id"], context.id)
             self.assertEqual(data["path"], str(root.resolve()))
 
+    def test_workspace_store_keeps_workspace_state_out_of_root_ycore_json(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace_path = root / "project"
+            workspace_path.mkdir()
+            store = WorkspaceStore(ycore_root=root, startup_dir=workspace_path)
+
+            context = store.ensure_active_workspace()
+
+            index_path = root / "data" / "workspaces.json"
+            self.assertTrue(index_path.exists())
+            index = json.loads(index_path.read_text(encoding="utf-8"))
+            self.assertEqual(index["current_workspace_id"], context.id)
+            self.assertEqual(index["workspaces"][0]["path"], str(workspace_path.resolve()))
+
+            workspace_json = workspace_path / ".ycore" / "workspace.json"
+            self.assertTrue(workspace_json.exists())
+            metadata = json.loads(workspace_json.read_text(encoding="utf-8"))
+            self.assertEqual(metadata["id"], context.id)
+
+            root_ycore = workspace_path / "ycore.json"
+            if root_ycore.exists():
+                data = json.loads(root_ycore.read_text(encoding="utf-8"))
+                self.assertNotIn("workspaces", data)
+
 
 if __name__ == "__main__":
     unittest.main()

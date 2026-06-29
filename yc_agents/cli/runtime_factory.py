@@ -3,10 +3,13 @@ import sys
 from yc_agents.analytics.config import AnalyticsConfig
 from yc_agents.analytics.recorder import AnalyticsRecorder
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
+from yc_agents.config.ycore import YCoreConfig
+from yc_agents.core.config import ProviderConfig
 from yc_agents.core.llm import YCAgentsLLM
 from yc_agents.harness.permissions import HumanApprovalGate
 from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
+from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.intent.llm_classifier import LLMIntentClassifier
 from yc_agents.intent.router import IntentRouter
 from yc_agents.intent.rule_matcher import RuleIntentMatcher
@@ -31,13 +34,26 @@ from yc_agents.tools.mcp_adapter import MCPToolAdapter
 from yc_agents.tools.rag_search import RAGSearchTool
 from yc_agents.tools.registry import ToolRegistry
 from yc_agents.tools.verification_runner import VerificationRunnerTool
-from yc_agents.tools.web_search import WebSearchTool
+from yc_agents.tools.web_search import TavilyWebSearchProvider, WebSearchTool
 from yc_agents.tools.workspace_files import WorkspaceFilesTool
 
 
-def build_cli_runtime(session, llm=None, skills_dir="skills"):
-    llm = llm or YCAgentsLLM()
-    analytics_config = AnalyticsConfig.from_env(session.workspace.path)
+def build_cli_runtime(session, llm=None, skills_dir=None):
+    ycore_config = YCoreConfig.load(session.workspace.path)
+    provider_settings = ycore_config.resolve_model_provider()
+    provider_config = ProviderConfig.from_ycore(provider_settings)
+    if llm is None:
+        llm = YCAgentsLLM(config=provider_config)
+
+    analytics_config = AnalyticsConfig.from_ycore(
+        session.workspace.path,
+        ycore_config.analytics_data(),
+    )
+    runtime_config = ycore_config.runtime_data()
+    memory_config = ycore_config.memory_data()
+    configured_allowed_tools = ycore_config.allowed_tools()
+    compression_threshold = int(memory_config.get("compressionThreshold", 12))
+    resolved_skills_dir = skills_dir or ycore_config.skills_dirs()[0]
     analytics_recorder = (
         AnalyticsRecorder(analytics_config, session_id=session.id)
         if analytics_config.analytics_enabled
@@ -64,33 +80,28 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         semantic_matcher=SemanticIntentMatcher(),
         llm_classifier=LLMIntentClassifier(llm),
     )
-    available_tools = [
-        "workspace_files",
-        "file_reader",
-        "markdown_writer",
-        "rag_search",
-        "web_search",
-        "git_inspector",
-        "code_search",
-        "verification_runner",
-        "command_reader",
-    ]
+    available_tools = list(configured_allowed_tools)
     if analytics_config.sqlite_mcp_enabled:
-        available_tools.extend(
-            [
-                "mcp_sqlite_list_tables",
-                "mcp_sqlite_describe_table",
-                "mcp_sqlite_query_readonly",
-            ]
-        )
+        for name in [
+            "mcp_sqlite_list_tables",
+            "mcp_sqlite_describe_table",
+            "mcp_sqlite_query_readonly",
+        ]:
+            if name not in available_tools:
+                available_tools.append(name)
+
+    tool_policy = ToolExecutionPolicy(
+        max_calls=int(runtime_config.get("maxToolCalls", 12)),
+        timeout_seconds=int(runtime_config.get("toolTimeoutSeconds", 30)),
+    )
     agent = SkillRuntimeAgent(
         llm,
-        skills_dir=skills_dir,
+        skills_dir=resolved_skills_dir,
         session_memory=session_memory,
         summary_memory=summary_memory,
         profile_memory=profile_memory,
         memory_compressor=memory_compressor,
-        compression_threshold=12,
+        compression_threshold=compression_threshold,
         rag_search_tool=rag_search_tool,
         prompt_builder=prompt_builder,
         intent_router=intent_router,
@@ -109,7 +120,13 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
     tool_registry.register(CodeSearchTool(session.workspace.path))
     tool_registry.register(CommandReaderTool(session.workspace.path))
     tool_registry.register(VerificationRunnerTool(session.workspace.path))
-    tool_registry.register(WebSearchTool())
+    tool_registry.register(
+        WebSearchTool(
+            provider=TavilyWebSearchProvider(
+                api_key=ycore_config.resolve_web_search_api_key()
+            )
+        )
+    )
     tool_registry.register(rag_search_tool)
     if analytics_config.sqlite_mcp_enabled:
         sqlite_client = StdioMCPClient(
@@ -175,6 +192,10 @@ def build_cli_runtime(session, llm=None, skills_dir="skills"):
         allowed_tools=available_tools,
         approval_gate=HumanApprovalGate(),
         output_root=session.runs_path,
+        tool_policy=tool_policy,
+        invalid_json_retry_count=int(runtime_config.get("invalidJsonRetryCount", 0)),
+        fail_on_invalid_json=bool(runtime_config.get("failOnInvalidJson", False)),
         analytics_recorder=analytics_recorder,
         managed_resources=managed_resources,
+        context_limit=provider_config.context_window or 8000,
     )

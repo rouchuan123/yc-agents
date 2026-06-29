@@ -42,6 +42,11 @@ def extract_model_json(text):
     except InvalidModelJSONError:
         pass
 
+    fenced = _extract_fenced_json(stripped)
+    if fenced is not None:
+        preface, candidate = fenced
+        return preface, parse_model_json(candidate)
+
     start = stripped.find("{")
     if start < 0:
         raise InvalidModelJSONError(
@@ -49,10 +54,40 @@ def extract_model_json(text):
             raw_text=raw_text,
         )
 
-    candidate = stripped[start:]
+    decoder = json.JSONDecoder()
+    try:
+        _data, end = decoder.raw_decode(stripped[start:])
+    except json.JSONDecodeError as exc:
+        raise InvalidModelJSONError(
+            f"Model output is not valid JSON: {exc.msg}",
+            raw_text=raw_text,
+        ) from exc
+
+    candidate = stripped[start : start + end]
     preface = stripped[:start].strip()
-    data = parse_model_json(candidate)
-    return preface, data
+    return preface, parse_model_json(candidate)
+
+
+def _extract_fenced_json(text):
+    fence_start = text.find("```")
+    if fence_start < 0:
+        return None
+
+    line_end = text.find("\n", fence_start)
+    if line_end < 0:
+        return None
+
+    fence_header = text[fence_start + 3 : line_end].strip().lower()
+    if fence_header and fence_header not in {"json", "jsonc"}:
+        return None
+
+    fence_end = text.find("```", line_end + 1)
+    if fence_end < 0:
+        return None
+
+    preface = text[:fence_start].strip()
+    candidate = text[line_end + 1 : fence_end].strip()
+    return preface, candidate
 
 
 def _validate_base_message(data, raw_text):

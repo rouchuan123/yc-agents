@@ -1188,7 +1188,7 @@ def build_default_status_collector(runtime, workspace_provider=None, session_pro
             workspace_provider() if workspace_provider is not None else Path.cwd()
         ),
         session_id=session_provider,
-        context_limit=8000,
+        context_limit=getattr(runtime, "context_limit", 8000),
     )
 
 

@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from yc_agents.harness.json_protocol import InvalidModelJSONError
 from yc_agents.harness.runtime import ResearchAgentHarness, YCAgentRuntime
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.tools.base import BaseTool
@@ -92,6 +93,28 @@ class FakeToolCallAgent:
                 "content": "tool handled",
             }
         )
+
+
+class FakeToolThenPlainFinalAgent(FakeToolCallAgent):
+    def run_with_observation(self, user_input, observation):
+        return (
+            "## Project review\n\n"
+            "The tool result is enough to answer now, so this final response "
+            "should not need to be escaped inside JSON."
+        )
+
+
+class FakeToolThenTruncatedFinalAnswerAgent(FakeToolCallAgent):
+    def run_with_observation(self, user_input, observation):
+        return (
+            '{"type":"final_answer","content":"## Project review\\n\\n'
+            "The provider truncated this long Markdown answer before closing the JSON string."
+        )
+
+
+class FakeToolThenMalformedToolCallAgent(FakeToolCallAgent):
+    def run_with_observation(self, user_input, observation):
+        return '{"type":"tool_call","tool_name":"fake_tool","arguments":'
 
 
 class FakeProgressToolCallAgent:
@@ -241,6 +264,40 @@ class FakeInvalidJSONAgent:
         return "I think code-review is useful"
 
 
+class FakeInvalidThenFinalAgent:
+    def __init__(self):
+        self.calls = 0
+        self.remembered = []
+
+    def run(self, user_input):
+        self.calls += 1
+        if self.calls == 1:
+            return "not json"
+        return json.dumps({"type": "final_answer", "content": "recovered"})
+
+    def run_with_protocol_error(self, user_input, error):
+        return self.run(user_input)
+
+    def remember_structured_turn(self, user_input, response, process_entries):
+        self.remembered.append((user_input, response, process_entries))
+
+
+class FakeAlwaysInvalidAgent:
+    def __init__(self):
+        self.calls = 0
+        self.remembered = []
+
+    def run(self, user_input):
+        self.calls += 1
+        return "still not json"
+
+    def run_with_protocol_error(self, user_input, error):
+        return self.run(user_input)
+
+    def remember_structured_turn(self, user_input, response, process_entries):
+        self.remembered.append((user_input, response, process_entries))
+
+
 class FakeTool(BaseTool):
     name = "fake_tool"
     description = "Fake tool."
@@ -383,6 +440,60 @@ class TestYCAgentRuntime(unittest.TestCase):
         response = runtime.run("trigger tool")
 
         self.assertEqual(response, "tool handled")
+
+    def test_runtime_allows_plain_final_answer_after_tool_observation(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            registry = ToolRegistry()
+            registry.register(FakeTool())
+            runtime = YCAgentRuntime(
+                FakeToolThenPlainFinalAgent(),
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["fake_tool"],
+                fail_on_invalid_json=True,
+                output_root=Path(tmp_dir),
+            )
+
+            response = runtime.run("trigger tool")
+            run_dir = next(Path(tmp_dir).iterdir())
+            trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
+
+            self.assertIn("## Project review", response)
+            self.assertIn("should not need to be escaped inside JSON", response)
+            self.assertNotIn(
+                "invalid_model_json",
+                [event["event_type"] for event in trace["events"]],
+            )
+
+    def test_runtime_allows_truncated_final_answer_json_after_tool_observation(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeToolThenTruncatedFinalAnswerAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("trigger tool")
+
+        self.assertIn("## Project review", response)
+        self.assertIn("provider truncated", response)
+
+    def test_runtime_still_rejects_malformed_tool_call_after_observation(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        runtime = YCAgentRuntime(
+            FakeToolThenMalformedToolCallAgent(),
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            fail_on_invalid_json=True,
+        )
+
+        with self.assertRaises(InvalidModelJSONError):
+            runtime.run("trigger tool")
 
     def test_runtime_collects_progress_message_and_tool_summary(self):
         registry = ToolRegistry()
@@ -559,6 +670,47 @@ class TestYCAgentRuntime(unittest.TestCase):
             trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
             event_types = [event["event_type"] for event in trace["events"]]
             self.assertIn("invalid_model_json", event_types)
+
+    def test_runtime_retries_invalid_json_once_and_recovers(self):
+        agent = FakeInvalidThenFinalAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            invalid_json_retry_count=1,
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("recover")
+
+        self.assertEqual(response, "recovered")
+        self.assertEqual(agent.calls, 2)
+        self.assertTrue(agent.remembered)
+
+    def test_runtime_marks_run_failed_when_invalid_json_persists(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            agent = FakeAlwaysInvalidAgent()
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                output_root=Path(tmp_dir),
+                invalid_json_retry_count=1,
+                fail_on_invalid_json=True,
+            )
+
+            with self.assertRaises(InvalidModelJSONError):
+                runtime.run("fail")
+
+            run_dir = next(Path(tmp_dir).iterdir())
+            state = json.loads((run_dir / "state.json").read_text(encoding="utf-8"))
+            trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
+
+            self.assertEqual(state["status"], "failed")
+            self.assertEqual(state["current_step"], "run_failed")
+            self.assertEqual(
+                [event["event_type"] for event in trace["events"]].count("invalid_model_json"),
+                2,
+            )
+            self.assertEqual(agent.remembered, [])
 
     def test_runtime_mirrors_events_verification_and_output_to_analytics(self):
         recorder = FakeAnalyticsRecorder()

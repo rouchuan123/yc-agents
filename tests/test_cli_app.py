@@ -8,7 +8,7 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Collapsible, Markdown as TextualMarkdown, RichLog
 
-from yc_agents.cli.app import YCAgentsTUIApp
+from yc_agents.cli.app import YCAgentsTUIApp, build_default_status_collector
 from yc_agents.cli.status import CLIStatus
 
 
@@ -312,6 +312,20 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertIn("Session session-1234", status)
         self.assertIn("Model gpt-test", status)
         self.assertIn("Branch feature/new-cli", status)
+
+    def test_default_status_collector_uses_runtime_context_limit(self):
+        runtime = FakeRuntime()
+        runtime.context_limit = 64000
+
+        collector = build_default_status_collector(
+            runtime,
+            workspace_provider=lambda: Path(r"E:\code\yc-agents"),
+            session_provider=lambda: "session-1234",
+        )
+
+        status = collector.collect()
+
+        self.assertEqual(status.context_limit, 64000)
 
     def test_message_input_calls_runtime_and_records_turns(self):
         runtime = FakeRuntime()

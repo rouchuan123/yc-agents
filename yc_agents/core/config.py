@@ -11,6 +11,9 @@ class ProviderConfig:
     api_key: str
     base_url: str
     timeout: int = 60
+    context_window: int | None = None
+    max_output_tokens: int | None = None
+    request_defaults: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -45,6 +48,29 @@ class ProviderConfig:
             base_url=base_url,
             timeout=timeout,
             capabilities=get_provider_capabilities(provider),
+        )
+
+    @classmethod
+    def from_ycore(cls, settings):
+        if not settings.model:
+            raise ValueError("缺少模型 ID")
+
+        if not settings.api_key:
+            raise ValueError("缺少模型 API key")
+
+        if not settings.base_url:
+            raise ValueError("缺少模型 baseUrl")
+
+        return cls(
+            provider=settings.provider,
+            model=settings.model,
+            api_key=settings.api_key,
+            base_url=settings.base_url,
+            timeout=settings.timeout,
+            context_window=settings.context_window,
+            max_output_tokens=settings.max_output_tokens,
+            request_defaults=dict(settings.request or {}),
+            capabilities=get_provider_capabilities(settings.provider),
         )
 
     @staticmethod
@@ -84,6 +110,9 @@ class ProviderConfig:
             "model": self.model,
             "base_url": self.base_url,
             "timeout": self.timeout,
+            "context_window": self.context_window,
+            "max_output_tokens": self.max_output_tokens,
+            "request_defaults": dict(self.request_defaults),
             "has_api_key": bool(self.api_key),
             "capabilities": dict(self.capabilities),
         }
