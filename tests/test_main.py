@@ -19,10 +19,6 @@ from yc_agents.tools.mcp_adapter import MCPToolAdapter
 from yc_agents.tools.rag_search import RAGSearchTool
 
 
-class FakeLLM:
-    pass
-
-
 def write_ycore_config(root):
     config = {
         "agents": {
@@ -123,15 +119,13 @@ class TestMainEntryPoint(unittest.TestCase):
         ):
             return main.build_runtime()
 
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
-    def test_build_runtime_wraps_skill_runtime_agent(self, _mock_llm_class):
+    def test_build_runtime_wraps_skill_runtime_agent(self):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertIsInstance(runtime, YCAgentRuntime)
         self.assertIsInstance(runtime.agent, SkillRuntimeAgent)
 
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
-    def test_build_runtime_registers_markdown_writer_tool(self, _mock_llm_class):
+    def test_build_runtime_registers_markdown_writer_tool(self):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertTrue(runtime.expects_json)
@@ -141,8 +135,7 @@ class TestMainEntryPoint(unittest.TestCase):
             MarkdownWriterTool,
         )
 
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
-    def test_build_runtime_registers_reader_and_rag_tools(self, _mock_llm_class):
+    def test_build_runtime_registers_reader_and_rag_tools(self):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertIn("file_reader", runtime.allowed_tools)
@@ -156,14 +149,12 @@ class TestMainEntryPoint(unittest.TestCase):
             RAGSearchTool,
         )
 
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
-    def test_build_runtime_configures_session_memory(self, _mock_llm_class):
+    def test_build_runtime_configures_session_memory(self):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertIsInstance(runtime.agent.session_memory, SessionMemory)
 
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
-    def test_build_runtime_configures_enhanced_memory_and_rag(self, _mock_llm_class):
+    def test_build_runtime_configures_enhanced_memory_and_rag(self):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertIsInstance(runtime.agent.summary_memory, SummaryMemory)
@@ -172,8 +163,7 @@ class TestMainEntryPoint(unittest.TestCase):
         self.assertIsInstance(runtime.agent.rag_search_tool, RAGSearchTool)
         self.assertGreater(runtime.agent.compression_threshold, 0)
 
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
-    def test_build_runtime_configures_permission_gate(self, _mock_llm_class):
+    def test_build_runtime_configures_permission_gate(self):
         runtime = self.build_runtime_in_temp_workspace()
 
         self.assertIsInstance(runtime.approval_gate, HumanApprovalGate)
@@ -181,14 +171,32 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_exports_build_runtime(self):
         self.assertTrue(callable(main.build_runtime))
 
+    @patch("main.build_cli_runtime")
+    def test_build_runtime_lets_runtime_factory_construct_ycore_llm(
+        self,
+        mock_build_cli_runtime,
+    ):
+        runtime = object()
+        mock_build_cli_runtime.return_value = runtime
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+
+        with patch(
+            "main.WorkspaceStore",
+            side_effect=lambda: WorkspaceStore(ycore_root=root, startup_dir=root),
+        ):
+            self.assertIs(main.build_runtime(), runtime)
+
+        _args, kwargs = mock_build_cli_runtime.call_args
+        self.assertNotIn("llm", kwargs)
+
     @patch("main.run_tui")
     @patch("main.build_cli_runtime")
-    @patch("main.YCAgentsLLM", return_value=FakeLLM())
     @patch("main.load_dotenv")
     def test_main_loads_env_builds_runtime_and_starts_tui(
         self,
         mock_load_dotenv,
-        _mock_llm_class,
         mock_build_cli_runtime,
         mock_run_tui,
     ):
@@ -206,6 +214,8 @@ class TestMainEntryPoint(unittest.TestCase):
 
         mock_load_dotenv.assert_called_once_with()
         mock_build_cli_runtime.assert_called_once()
+        _args, build_kwargs = mock_build_cli_runtime.call_args
+        self.assertNotIn("llm", build_kwargs)
         args, kwargs = mock_run_tui.call_args
         self.assertEqual(args, (runtime,))
         self.assertIn("workspace_store", kwargs)

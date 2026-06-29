@@ -4,7 +4,6 @@ from yc_agents.cli.app import run_tui
 from yc_agents.cli.runtime_factory import build_cli_runtime
 from yc_agents.cli.sessions import CLISessionStore
 from yc_agents.cli.workspaces import WorkspaceStore
-from yc_agents.core.llm import YCAgentsLLM
 from yc_agents.tools.mcp_adapter import MCPToolAdapter
 from yc_agents.tools.mcp_client import MCPClientConfig
 
@@ -45,7 +44,7 @@ def build_mcp_tools(config_path="mcp_servers.json", client=None):
 def build_runtime():
     workspace = WorkspaceStore().ensure_active_workspace()
     session = CLISessionStore(workspace).ensure_current_session()
-    return build_cli_runtime(session, llm=YCAgentsLLM())
+    return build_cli_runtime(session)
 
 
 def main():
@@ -54,7 +53,7 @@ def main():
     workspace = workspace_store.ensure_active_workspace()
     session_store = CLISessionStore(workspace)
     session = session_store.ensure_current_session()
-    runtime = build_cli_runtime(session, llm=YCAgentsLLM())
+    runtime = build_cli_runtime(session)
     run_tui(
         runtime,
         workspace_store=workspace_store,
