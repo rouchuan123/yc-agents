@@ -34,6 +34,8 @@ class YCAgentRuntime:
         output_root=None,
         event_callback=None,
         tool_policy=None,
+        analytics_recorder=None,
+        managed_resources=None,
     ):
         self.agent = agent
         self.expects_json = expects_json
@@ -44,11 +46,22 @@ class YCAgentRuntime:
         self.output_root = output_root
         self.event_callback = event_callback
         self.tool_policy = tool_policy
+        self.analytics_recorder = analytics_recorder
+        self.managed_resources = list(managed_resources or [])
+        if analytics_recorder is not None:
+            self.managed_resources.append(analytics_recorder)
         self.last_trace_events = []
+        self.last_run_id = None
 
     def run(self, user_input):
         context = RunContext(user_input=user_input, output_root=self.output_root)
-        trace = TraceRecorder(context, event_callback=self.event_callback)
+        self.last_run_id = context.run_id
+        run_analytics = self._start_run_analytics(context)
+        trace = TraceRecorder(
+            context,
+            event_callback=self._build_event_callback(run_analytics),
+            propagate_callback_errors=bool(getattr(run_analytics, "strict", False)),
+        )
         writer = RunOutputWriter(context)
         state_store = StateStore(context.outputs_dir / "state.json")
 
@@ -74,8 +87,15 @@ class YCAgentRuntime:
             writer.write_final_output(response)
             verification = self.verification_gate.verify_final_output(response)
             writer.write_verification(verification)
+            if run_analytics is not None:
+                run_analytics.record_final_output(response)
+                run_analytics.record_verification(verification)
             self._remember_completed_turn(user_input, response, process_entries)
             trace.record("run_finished")
+            if run_analytics is not None:
+                run_analytics.finish(
+                    "finished" if verification["passed"] else "failed"
+                )
             state_store.save_checkpoint(
                 "run_finished",
                 "finished" if verification["passed"] else "failed",
@@ -86,6 +106,12 @@ class YCAgentRuntime:
 
             return response
         except Exception as exc:
+            if run_analytics is not None:
+                run_analytics.finish(
+                    "failed",
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
             self._record_run_failed(trace, state_store, exc)
             raise
 
@@ -97,7 +123,13 @@ class YCAgentRuntime:
             return
 
         context = RunContext(user_input=user_input, output_root=self.output_root)
-        trace = TraceRecorder(context, event_callback=self.event_callback)
+        self.last_run_id = context.run_id
+        run_analytics = self._start_run_analytics(context)
+        trace = TraceRecorder(
+            context,
+            event_callback=self._build_event_callback(run_analytics),
+            propagate_callback_errors=bool(getattr(run_analytics, "strict", False)),
+        )
         writer = RunOutputWriter(context)
         state_store = StateStore(context.outputs_dir / "state.json")
 
@@ -141,8 +173,15 @@ class YCAgentRuntime:
             writer.write_final_output(response)
             verification = self.verification_gate.verify_final_output(response)
             writer.write_verification(verification)
+            if run_analytics is not None:
+                run_analytics.record_final_output(response)
+                run_analytics.record_verification(verification)
             self._remember_completed_turn(user_input, response, process_entries)
             trace.record("run_finished")
+            if run_analytics is not None:
+                run_analytics.finish(
+                    "finished" if verification["passed"] else "failed"
+                )
             state_store.save_checkpoint(
                 "run_finished",
                 "finished" if verification["passed"] else "failed",
@@ -151,6 +190,12 @@ class YCAgentRuntime:
             trace.save()
             self.last_trace_events = list(trace.events)
         except Exception as exc:
+            if run_analytics is not None:
+                run_analytics.finish(
+                    "failed",
+                    error_type=exc.__class__.__name__,
+                    error_message=str(exc),
+                )
             self._record_run_failed(trace, state_store, exc)
             raise
 
@@ -190,6 +235,33 @@ class YCAgentRuntime:
             return None
 
         return remember_turn(user_input, response)
+
+    def _start_run_analytics(self, context):
+        if self.analytics_recorder is None:
+            return None
+
+        return self.analytics_recorder.start_run(context)
+
+    def _build_event_callback(self, run_analytics):
+        def callback(event):
+            if run_analytics is not None:
+                run_analytics.record_event(event)
+            if self.event_callback is not None:
+                try:
+                    self.event_callback(event)
+                except Exception:
+                    pass
+
+        return callback
+
+    def close(self):
+        for resource in reversed(self.managed_resources):
+            close = getattr(resource, "close", None)
+            if callable(close):
+                close()
+
+    def shutdown(self):
+        self.close()
 
     def _emit_process_entry(self, trace, process_entries, entry):
         if not entry:

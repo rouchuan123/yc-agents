@@ -12,6 +12,14 @@ from yc_agents.cli.app import YCAgentsTUIApp
 from yc_agents.cli.status import CLIStatus
 
 
+class ClosableRuntime:
+    def __init__(self):
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
 class FakeRuntime:
     def __init__(self, fail=False):
         self.fail = fail
@@ -837,6 +845,21 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertEqual(workspace_store.added_paths, [r"E:\new-workspace"])
         self.assertEqual(app.workspace.id, "workspace-added")
         self.assertIs(app.runtime, rebuilt)
+
+    def test_rebuild_runtime_closes_previous_runtime(self):
+        old_runtime = ClosableRuntime()
+        new_runtime = ClosableRuntime()
+        app = YCAgentsTUIApp(
+            old_runtime,
+            status_collector=FakeStatusCollector(),
+            session=object(),
+            runtime_builder=lambda session: new_runtime,
+        )
+
+        app.rebuild_runtime()
+
+        self.assertTrue(old_runtime.closed)
+        self.assertIs(app.runtime, new_runtime)
 
     def test_session_command_opens_interactive_list_and_enter_switches_selection(self):
         session_store = FakeSessionStore()

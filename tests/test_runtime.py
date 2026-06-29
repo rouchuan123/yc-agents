@@ -249,6 +249,47 @@ class FakeTool(BaseTool):
         return {"echo": text}
 
 
+class FakeRunAnalytics:
+    def __init__(self):
+        self.events = []
+        self.verifications = []
+        self.outputs = []
+        self.finishes = []
+        self.strict = True
+
+    def record_event(self, event):
+        self.events.append(event)
+
+    def record_verification(self, verification):
+        self.verifications.append(verification)
+
+    def record_final_output(self, output):
+        self.outputs.append(output)
+
+    def finish(self, status, finished_at=None, error_type=None, error_message=None):
+        self.finishes.append(
+            {
+                "status": status,
+                "error_type": error_type,
+                "error_message": error_message,
+            }
+        )
+
+
+class FakeAnalyticsRecorder:
+    def __init__(self):
+        self.started = []
+        self.run = FakeRunAnalytics()
+        self.closed = False
+
+    def start_run(self, context):
+        self.started.append(context.run_id)
+        return self.run
+
+    def close(self):
+        self.closed = True
+
+
 class FakeApprovalGate:
     def check_tool_call(self, tool_name, arguments):
         return {
@@ -518,6 +559,30 @@ class TestYCAgentRuntime(unittest.TestCase):
             trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
             event_types = [event["event_type"] for event in trace["events"]]
             self.assertIn("invalid_model_json", event_types)
+
+    def test_runtime_mirrors_events_verification_and_output_to_analytics(self):
+        recorder = FakeAnalyticsRecorder()
+        runtime = YCAgentRuntime(FakeAgent(), analytics_recorder=recorder)
+
+        response = runtime.run("hello analytics")
+
+        self.assertEqual(response, "echo: hello analytics")
+        self.assertTrue(recorder.started)
+        self.assertIn(
+            "run_started",
+            [event["event_type"] for event in recorder.run.events],
+        )
+        self.assertEqual(recorder.run.outputs, ["echo: hello analytics"])
+        self.assertTrue(recorder.run.verifications[0]["passed"])
+        self.assertEqual(recorder.run.finishes[-1]["status"], "finished")
+
+    def test_runtime_close_closes_analytics_recorder(self):
+        recorder = FakeAnalyticsRecorder()
+        runtime = YCAgentRuntime(FakeAgent(), analytics_recorder=recorder)
+
+        runtime.close()
+
+        self.assertTrue(recorder.closed)
 
 
 if __name__ == "__main__":

@@ -43,37 +43,41 @@ def run_cases(runtime, cases):
         rag_results = rag_result.get("results", [])
         noise_score = noise_resistance_score(rag_results)
 
-        results.append(
-            {
-                "case_id": case.id,
-                "category": case.category,
-                "input": case.input,
-                "output": output,
-                "keyword_success": keyword_success(output, case.expected_keywords),
-                "latency_seconds": latency_seconds,
-                "required_tools": case.required_tools,
-                "reference_sources": case.reference_sources,
-                "trace_events": trace_events,
-                "tool_success": tool_success(trace_events, case.required_tools),
-                "trace_event_success": trace_event_success(
-                    trace_events,
-                    case.expected_trace_events,
-                ),
-                "forbidden_tool_success": forbidden_tool_success(
-                    trace_events,
-                    case.forbidden_tools,
-                ),
-                "tool_event_counts": tool_event_counts(trace_events),
-                "tool_failure_labels": classify_tool_events(trace_events),
-                "retrieval_hit": retrieval_hit(rag_results, case.reference_sources),
-                "noise_resistance_score": noise_score,
-                "noise_resistance_success": noise_score >= case.min_noise_resistance,
-                "conflict_awareness_success": conflict_awareness_success(
-                    output,
-                    expects_conflict=case.expects_conflict,
-                ),
-            }
-        )
+        result = {
+            "case_id": case.id,
+            "category": case.category,
+            "input": case.input,
+            "output": output,
+            "keyword_success": keyword_success(output, case.expected_keywords),
+            "latency_seconds": latency_seconds,
+            "required_tools": case.required_tools,
+            "reference_sources": case.reference_sources,
+            "trace_events": trace_events,
+            "tool_success": tool_success(trace_events, case.required_tools),
+            "trace_event_success": trace_event_success(
+                trace_events,
+                case.expected_trace_events,
+            ),
+            "forbidden_tool_success": forbidden_tool_success(
+                trace_events,
+                case.forbidden_tools,
+            ),
+            "tool_event_counts": tool_event_counts(trace_events),
+            "tool_failure_labels": classify_tool_events(trace_events),
+            "retrieval_hit": retrieval_hit(rag_results, case.reference_sources),
+            "noise_resistance_score": noise_score,
+            "noise_resistance_success": noise_score >= case.min_noise_resistance,
+            "conflict_awareness_success": conflict_awareness_success(
+                output,
+                expects_conflict=case.expects_conflict,
+            ),
+            "run_id": getattr(runtime, "last_run_id", None),
+        }
+        results.append(result)
+
+        analytics_recorder = getattr(runtime, "analytics_recorder", None)
+        if analytics_recorder is not None:
+            analytics_recorder.record_eval_result(result)
 
     return results
 
