@@ -1,5 +1,5 @@
 {
-  "current_workspace_id": "workspace_yc-agents-master_cd2328ea",
+  "current_workspace_id": "workspace_Ycore-demo_a46c761f",
   "workspaces": [
     {
       "id": "workspace_yc-agents_15b1cf86",
@@ -10,12 +10,12 @@
       "last_used_at": "2026-06-30T14:30:36"
     },
     {
-      "id": "workspace_yc-agents-master_cd2328ea",
-      "name": "yc-agents-master",
-      "path": "E:\\文件\\测试\\yc-agents-master",
-      "created_at": "2026-06-27T17:40:30",
-      "updated_at": "2026-06-30T14:30:39",
-      "last_used_at": "2026-06-30T14:30:39"
+      "id": "workspace_Ycore-demo_a46c761f",
+      "name": "Ycore-demo",
+      "path": "E:\\code\\Ycore-demo",
+      "created_at": "2026-06-30T15:31:48",
+      "updated_at": "2026-06-30T15:31:48",
+      "last_used_at": "2026-06-30T15:31:48"
     }
   ]
 }

@@ -156,6 +156,23 @@ class FakeProgressToolCallAgent:
         )
 
 
+class FakeSelectedSkillFinalAgent:
+    def run(self, user_input):
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "项目审查完成。",
+            }
+        )
+
+    def current_turn_tool_context(self):
+        return {
+            "selected_skill": "code-review",
+            "allowed_tools": ["workspace_files"],
+            "plain_answer": False,
+        }
+
+
 class FakePrefaceToolCallAgent(FakeProgressToolCallAgent):
     def run(self, user_input):
         return (
@@ -506,6 +523,27 @@ class TestYCAgentRuntime(unittest.TestCase):
         response = runtime.run("trigger tool")
 
         self.assertEqual(response, "tool handled")
+
+    def test_runtime_records_selected_skill_trace_event_without_tool_call(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime = YCAgentRuntime(
+                FakeSelectedSkillFinalAgent(),
+                expects_json=True,
+                output_root=Path(tmp_dir),
+            )
+
+            response = runtime.run("审查项目")
+
+            run_dir = next(Path(tmp_dir).iterdir())
+            trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
+            skill_events = [
+                event
+                for event in trace["events"]
+                if event["event_type"] == "skill_selected"
+            ]
+            self.assertEqual(response, "项目审查完成。")
+            self.assertEqual(len(skill_events), 1)
+            self.assertEqual(skill_events[0]["payload"]["selected_skill"], "code-review")
 
     def test_runtime_accepts_final_answer_json_after_tool_observation(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
