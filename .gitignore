@@ -14,18 +14,18 @@ __pycache__/
 .ruff_cache/
 .coverage
 .superpowers/
-.ycore/
 htmlcov/
 
 # 运行输出与本地数据
 outputs/
-.ycore/sqlite/
+.ycore/
 *.sqlite-wal
 *.sqlite-shm
 data/vector_store/
 data/memory/
 data/documents/
 data/simulated/
+data/workspaces.json
 
 # 本地临时文件
 %TEMP%/
@@ -39,11 +39,6 @@ docs/%TEMP%/
 .DS_Store
 Thumbs.db
 .claude/
-
-# Frontend dependencies and build output
-node_modules/
-desktop/node_modules/
-desktop/dist/
 
 # 文档
 docs/superpowers/

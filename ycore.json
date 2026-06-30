@@ -26,7 +26,7 @@
           {
             "id": "deepseek-v4-flash",
             "name": "deepseek-v4-flash",
-            "contextWindow": 64000,
+            "contextWindow": 1000000,
             "maxOutputTokens": 4096,
             "request": {
               "max_tokens": 4096,
@@ -52,7 +52,7 @@
           {
             "id": "mimo-v2.5-pro",
             "name": "MiMo V2.5 Pro",
-            "contextWindow": 64000,
+            "contextWindow": 1000000,
             "maxOutputTokens": 4096,
             "request": {
               "max_completion_tokens": 4096,
