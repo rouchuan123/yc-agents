@@ -8,10 +8,14 @@ from yc_agents.eval.case import load_cases
 from yc_agents.eval.metrics import (
     classify_tool_events,
     conflict_awareness_success,
+    expected_verification_success,
     forbidden_tool_success,
     keyword_success,
     noise_resistance_score,
+    output_sections_success,
     retrieval_hit,
+    skill_success,
+    state_steps_success,
     tool_success,
     tool_event_counts,
     trace_event_success,
@@ -31,6 +35,21 @@ def _extract_latest_rag_result(trace_events):
     return {"results": [], "sources": []}
 
 
+def _load_state(runtime):
+    run_dir = getattr(runtime, "last_run_dir", None)
+    if run_dir is None:
+        return None
+
+    state_path = Path(run_dir) / "state.json"
+    if not state_path.exists():
+        return None
+
+    try:
+        return json.loads(state_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
 def run_cases(runtime, cases):
     results = []
 
@@ -39,6 +58,7 @@ def run_cases(runtime, cases):
         output = runtime.run(case.input)
         latency_seconds = time.perf_counter() - started_at
         trace_events = list(getattr(runtime, "last_trace_events", []))
+        state = _load_state(runtime)
         rag_result = _extract_latest_rag_result(trace_events)
         rag_results = rag_result.get("results", [])
         noise_score = noise_resistance_score(rag_results)
@@ -46,17 +66,33 @@ def run_cases(runtime, cases):
         result = {
             "case_id": case.id,
             "category": case.category,
+            "judge_mode": case.judge_mode,
             "input": case.input,
             "output": output,
+            "expected_skill": case.expected_skill,
+            "failure_notes": case.failure_notes,
             "keyword_success": keyword_success(output, case.expected_keywords),
+            "output_sections_success": output_sections_success(
+                output,
+                case.expected_output_sections,
+            ),
             "latency_seconds": latency_seconds,
             "required_tools": case.required_tools,
             "reference_sources": case.reference_sources,
             "trace_events": trace_events,
+            "skill_success": skill_success(trace_events, case.expected_skill),
             "tool_success": tool_success(trace_events, case.required_tools),
             "trace_event_success": trace_event_success(
                 trace_events,
                 case.expected_trace_events,
+            ),
+            "state_steps_success": state_steps_success(
+                state,
+                case.expected_state_steps,
+            ),
+            "verification_success": expected_verification_success(
+                state,
+                case.expected_verification,
             ),
             "forbidden_tool_success": forbidden_tool_success(
                 trace_events,

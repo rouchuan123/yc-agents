@@ -17,6 +17,37 @@ def trace_event_success(trace_events, expected_events):
     return all(event_type in event_types for event_type in expected_events)
 
 
+def skill_success(trace_events, expected_skill):
+    if not expected_skill:
+        return True
+
+    selected = [
+        event.get("payload", {}).get("selected_skill")
+        for event in trace_events
+        if event.get("event_type") == "skill_selected"
+    ]
+    return expected_skill in selected
+
+
+def output_sections_success(output, expected_sections):
+    text = output or ""
+    return all(section in text for section in expected_sections)
+
+
+def state_steps_success(state, expected_steps):
+    if not expected_steps:
+        return True
+    if not isinstance(state, dict):
+        return False
+
+    steps = {
+        item.get("step")
+        for item in state.get("history", [])
+        if isinstance(item, dict)
+    }
+    return all(step in steps for step in expected_steps)
+
+
 def forbidden_tool_success(trace_events, forbidden_tools):
     called = {
         event.get("payload", {}).get("tool_name")
@@ -115,6 +146,22 @@ def conflict_awareness_success(output, expects_conflict=False):
 
 def verification_success(report):
     return bool(isinstance(report, dict) and report.get("passed") is True)
+
+
+def expected_verification_success(state, expected_verification):
+    if expected_verification is None:
+        return True
+    if not isinstance(state, dict):
+        return False
+
+    for item in reversed(state.get("history", [])):
+        if not isinstance(item, dict):
+            continue
+        verification = item.get("details", {}).get("verification")
+        if isinstance(verification, dict):
+            return bool(verification.get("passed")) is bool(expected_verification)
+
+    return False
 
 
 def average(values):

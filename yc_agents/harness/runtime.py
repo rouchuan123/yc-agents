@@ -60,10 +60,12 @@ class YCAgentRuntime:
             self.managed_resources.append(analytics_recorder)
         self.last_trace_events = []
         self.last_run_id = None
+        self.last_run_dir = None
 
     def run(self, user_input):
         context = RunContext(user_input=user_input, output_root=self.output_root)
         self.last_run_id = context.run_id
+        self.last_run_dir = context.outputs_dir
         run_analytics = self._start_run_analytics(context)
         trace = TraceRecorder(
             context,
@@ -135,6 +137,7 @@ class YCAgentRuntime:
 
         context = RunContext(user_input=user_input, output_root=self.output_root)
         self.last_run_id = context.run_id
+        self.last_run_dir = context.outputs_dir
         run_analytics = self._start_run_analytics(context)
         trace = TraceRecorder(
             context,
