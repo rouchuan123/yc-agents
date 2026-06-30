@@ -79,9 +79,11 @@ class YCAgentRuntime:
             writer.write_input()
             writer.write_context(self._build_context_snapshot(context))
             process_entries = []
+            recorded_selected_skill = set()
 
             response = self.agent.run(user_input)
             trace.record("model_called")
+            self._record_selected_skill(trace, recorded_selected_skill)
             state_store.save_checkpoint("model_called", "running")
 
             if self.expects_json:
@@ -89,6 +91,7 @@ class YCAgentRuntime:
                     trace,
                     user_input,
                     response,
+                    recorded_selected_skill,
                     process_entries,
                 )
 
@@ -147,6 +150,7 @@ class YCAgentRuntime:
             writer.write_input()
             writer.write_context(self._build_context_snapshot(context))
             process_entries = []
+            recorded_selected_skill = set()
 
             chunks = []
             buffered_for_json = self.expects_json
@@ -167,6 +171,7 @@ class YCAgentRuntime:
 
             response = "".join(chunks)
             trace.record("model_called")
+            self._record_selected_skill(trace, recorded_selected_skill)
             state_store.save_checkpoint("model_called", "running")
 
             if self.expects_json and buffered_for_json:
@@ -174,6 +179,7 @@ class YCAgentRuntime:
                     trace,
                     user_input,
                     response,
+                    recorded_selected_skill,
                     process_entries,
                 )
                 yield response
@@ -283,7 +289,14 @@ class YCAgentRuntime:
             return remember_structured(user_input, response, process_entries)
         return self._remember_turn(user_input, response)
 
-    def _handle_json_response(self, trace, user_input, response, process_entries):
+    def _handle_json_response(
+        self,
+        trace,
+        user_input,
+        response,
+        recorded_selected_skill,
+        process_entries,
+    ):
         policy = self._new_tool_policy()
         invalid_attempts = 0
 
@@ -293,6 +306,7 @@ class YCAgentRuntime:
                 user_input,
                 response,
                 policy,
+                recorded_selected_skill,
                 process_entries,
             )
 
@@ -305,6 +319,7 @@ class YCAgentRuntime:
                         expectation=self._runtime_expectation(),
                     )
                     trace.record("model_called")
+                    self._record_selected_skill(trace, recorded_selected_skill)
                     continue
                 if self.fail_on_invalid_json:
                     raise invalid_error
@@ -313,7 +328,15 @@ class YCAgentRuntime:
             if not self._is_tool_call_json(response):
                 return response
 
-    def _handle_json_response_once(self, trace, user_input, response, policy, process_entries):
+    def _handle_json_response_once(
+        self,
+        trace,
+        user_input,
+        response,
+        policy,
+        recorded_selected_skill,
+        process_entries,
+    ):
         try:
             preface, data = extract_model_json(
                 response,
@@ -335,6 +358,7 @@ class YCAgentRuntime:
                 user_input,
                 data,
                 policy,
+                recorded_selected_skill,
                 process_entries,
             ), None
 
@@ -359,7 +383,15 @@ class YCAgentRuntime:
             + "\n\n系统提示：上一条模型输出不是合法 JSON。请只返回符合协议的 JSON，不要输出 Markdown 代码块或额外解释。"
         )
 
-    def _handle_tool_call(self, trace, user_input, data, policy, process_entries):
+    def _handle_tool_call(
+        self,
+        trace,
+        user_input,
+        data,
+        policy,
+        recorded_selected_skill,
+        process_entries,
+    ):
         self._emit_process_entry(
             trace,
             process_entries,
@@ -400,6 +432,7 @@ class YCAgentRuntime:
 
         final_response = self.agent.run_with_observation(user_input, observation)
         trace.record("model_called")
+        self._record_selected_skill(trace, recorded_selected_skill)
 
         try:
             preface, final_data = extract_model_json(
@@ -427,6 +460,26 @@ class YCAgentRuntime:
             return final_response
 
         return final_data.get("content", "")
+
+    def _record_selected_skill(self, trace, recorded_selected_skill):
+        context_getter = getattr(self.agent, "current_turn_tool_context", None)
+        if not callable(context_getter):
+            return
+
+        tool_context = context_getter() or {}
+        selected_skill = tool_context.get("selected_skill")
+        if not selected_skill or selected_skill in recorded_selected_skill:
+            return
+
+        recorded_selected_skill.add(selected_skill)
+        trace.record(
+            "skill_selected",
+            {
+                "selected_skill": selected_skill,
+                "allowed_tools": list(tool_context.get("allowed_tools") or []),
+                "plain_answer": bool(tool_context.get("plain_answer")),
+            },
+        )
 
     def _effective_allowed_tools(self, trace):
         runtime_allowed = set(self.allowed_tools)
