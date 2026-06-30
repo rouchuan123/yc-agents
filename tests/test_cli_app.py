@@ -5,8 +5,8 @@ from pathlib import Path
 from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
-from textual.containers import VerticalScroll
-from textual.widgets import Collapsible, Markdown as TextualMarkdown, RichLog
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import Collapsible, ListView, Markdown as TextualMarkdown, RichLog
 
 from yc_agents.cli.app import YCAgentsTUIApp, build_default_status_collector
 from yc_agents.cli.status import CLIStatus
@@ -448,6 +448,186 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertIn("#processing-elapsed", app.CSS)
         self.assertIn("#chat-box", app.CSS)
 
+    def test_compose_builds_agent_workbench_shell(self):
+        workspace_store = FakeWorkspaceStore()
+        session_store = FakeSessionStore()
+        app = YCAgentsTUIApp(
+            FakeRuntime(),
+            status_collector=FakeStatusCollector(),
+            workspace_store=workspace_store,
+            workspace=workspace_store.current,
+            session_store=session_store,
+            session=session_store.current,
+        )
+
+        widgets = list(app.compose())
+
+        self.assertIsNotNone(app.sidebar)
+        self.assertIsNotNone(app.workspace_list)
+        self.assertIsNotNone(app.session_list)
+        self.assertIsNotNone(app.transcript)
+        self.assertIsInstance(app.workbench, Horizontal)
+        self.assertIsInstance(app.main_pane, Vertical)
+        self.assertIn("#sidebar", app.CSS)
+        self.assertIn("#main-pane", app.CSS)
+        self.assertIn("#workspace-list", app.CSS)
+        self.assertIn("#session-list", app.CSS)
+        self.assertIsNotNone(app.prompt_area)
+        self.assertEqual([widget.id for widget in widgets], ["status", "workbench"])
+
+    def test_sidebar_is_visible_by_default_and_ctrl_b_binding_exists(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+        self.assertTrue(app.sidebar_visible)
+        self.assertIn(("ctrl+b", "toggle_sidebar", "Sidebar"), app.BINDINGS)
+
+    def test_prompt_area_mounts_inside_main_pane_without_footer(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+            async with app.run_test():
+                root_widget_ids = [widget.id for widget in app.screen.children]
+
+                self.assertNotIn(None, root_widget_ids)
+                self.assertIs(app.prompt_area.parent, app.main_pane)
+                self.assertIs(app.command_suggestions.parent, app.prompt_area)
+                self.assertIs(app.prompt.parent, app.prompt_area)
+
+        asyncio.run(run_app())
+
+    def test_workbench_css_keeps_quiet_dense_layout_contract(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+        self.assertIn("#sidebar", app.CSS)
+        self.assertIn("width: 34", app.CSS)
+        self.assertIn("#main-pane", app.CSS)
+        self.assertIn("#prompt-area", app.CSS)
+        self.assertIn("#chat-box", app.CSS)
+        self.assertIn("#prompt", app.CSS)
+        prompt_css = app.CSS.split("#prompt {", 1)[1].split("}", 1)[0]
+        self.assertNotIn("dock:", prompt_css)
+        self.assertNotIn("gradient", app.CSS.lower())
+
+    def test_running_app_populates_workspace_and_session_sidebar_lists(self):
+        async def run_app():
+            workspace_store = FakeWorkspaceStore()
+            session_store = FakeSessionStore()
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                workspace_store=workspace_store,
+                workspace=workspace_store.current,
+                session_store=session_store,
+                session=session_store.current,
+            )
+
+            async with app.run_test():
+                workspace_items = list(app.workspace_list.children)
+                session_items = list(app.session_list.children)
+
+                self.assertEqual(
+                    [item.entry.item_id for item in workspace_items],
+                    ["workspace-current", "workspace-other"],
+                )
+                self.assertEqual(
+                    [item.entry.item_id for item in session_items],
+                    ["session-current", "session-next"],
+                )
+                self.assertTrue(workspace_items[0].entry.active)
+                self.assertTrue(session_items[0].entry.active)
+
+        asyncio.run(run_app())
+
+    def test_sidebar_refreshes_after_session_new(self):
+        async def run_app():
+            session_store = FakeSessionStore()
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                session_store=session_store,
+                session=session_store.current,
+                runtime_builder=lambda session: FakeRuntime(),
+            )
+
+            async with app.run_test():
+                app.create_session("New sidebar session")
+                await app.sidebar_refresh_task
+
+                session_items = list(app.session_list.children)
+                self.assertEqual(app.session.id, "session-created")
+                self.assertEqual(session_items[0].entry.item_id, "session-created")
+                self.assertTrue(session_items[0].entry.active)
+
+        asyncio.run(run_app())
+
+    def test_sidebar_workspace_selection_switches_workspace(self):
+        async def run_app():
+            workspace_store = FakeWorkspaceStore()
+            session_store = FakeSessionStore()
+            rebuilt = FakeRuntime()
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                workspace_store=workspace_store,
+                workspace=workspace_store.current,
+                session_store=session_store,
+                session=session_store.current,
+                session_store_builder=lambda workspace: session_store,
+                runtime_builder=lambda session: rebuilt,
+            )
+
+            async with app.run_test():
+                item = list(app.workspace_list.children)[1]
+                app.handle_sidebar_entry_selected(item.entry)
+                await app.sidebar_refresh_task
+
+                self.assertEqual(workspace_store.switched_ids, ["workspace-other"])
+                self.assertEqual(app.workspace.id, "workspace-other")
+                self.assertIs(app.runtime, rebuilt)
+
+        asyncio.run(run_app())
+
+    def test_sidebar_session_selection_switches_session(self):
+        async def run_app():
+            session_store = FakeSessionStore()
+            rebuilt = FakeRuntime()
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                session_store=session_store,
+                session=session_store.current,
+                runtime_builder=lambda session: rebuilt,
+            )
+
+            async with app.run_test():
+                item = list(app.session_list.children)[1]
+                app.handle_sidebar_entry_selected(item.entry)
+                await app.sidebar_refresh_task
+
+                self.assertEqual(session_store.switched_ids, ["session-next"])
+                self.assertEqual(app.transcript_entries, [("You", "old"), ("Assistant", "answer")])
+                self.assertIs(app.runtime, rebuilt)
+
+        asyncio.run(run_app())
+
+    def test_sidebar_focus_shortcuts_create_and_delete_sessions(self):
+        session_store = FakeSessionStore()
+        app = YCAgentsTUIApp(
+            FakeRuntime(),
+            status_collector=FakeStatusCollector(),
+            session_store=session_store,
+            session=session_store.current,
+            runtime_builder=lambda session: FakeRuntime(),
+        )
+
+        app.sidebar_focus_kind = "session"
+        app.key_n()
+        self.assertEqual(session_store.created_titles, [None])
+
+        app.key_d()
+        self.assertIsNotNone(app.pending_confirmation)
+        self.assertEqual(app.pending_confirmation["action"], "session_delete")
+
     def test_prompt_keeps_visible_input_box_and_cursor_style(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         list(app.compose())
@@ -455,6 +635,17 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertFalse(app.prompt.compact)
         self.assertIn("#prompt > .input--cursor", app.CSS)
         self.assertIn("text-style: underline", app.CSS)
+
+    def test_prompt_content_line_remains_visible_in_workbench(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+            async with app.run_test(size=(120, 36)):
+                app.prompt.value = "visible input"
+
+                self.assertGreaterEqual(app.prompt.content_size.height, 1)
+
+        asyncio.run(run_app())
 
     def test_redraw_transcript_renders_assistant_markdown_in_scroll_container(self):
         async def run_app():
@@ -921,6 +1112,45 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertEqual(app.workspace.id, "workspace-other")
         self.assertIs(app.runtime, rebuilt)
 
+    def test_slash_session_command_still_uses_overlay_selection_list(self):
+        session_store = FakeSessionStore()
+        rebuilt = FakeRuntime()
+        app = YCAgentsTUIApp(
+            FakeRuntime(),
+            status_collector=FakeStatusCollector(),
+            session_store=session_store,
+            session=session_store.current,
+            runtime_builder=lambda session: rebuilt,
+        )
+        app.prompt = type("Prompt", (), {"value": ""})()
+
+        asyncio.run(app.handle_cli_input("/session"))
+
+        self.assertTrue(app.selection_list_visible)
+        self.assertEqual(app.selection_list_kind, "session")
+
+    def test_process_events_remain_in_assistant_turn_not_sidebar(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                ProcessEventRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test():
+                await app.handle_cli_input("分析项目")
+
+                speakers = [speaker for speaker, _content in app.transcript_entries]
+                self.assertEqual(speakers, ["You", "Assistant"])
+                speaker, content = app.transcript_entries[1]
+                self.assertEqual(speaker, "Assistant")
+                self.assertEqual(len(content["process_entries"]), 2)
+                self.assertTrue(content["process_collapsed"])
+                self.assertEqual(len(list(app.workspace_list.children)), 0)
+
+        asyncio.run(run_app())
+
     def test_workspace_switch_command_switches_by_id(self):
         workspace_store = FakeWorkspaceStore()
         session_store = FakeSessionStore()
@@ -1009,6 +1239,17 @@ class TestYCAgentsTUIApp(unittest.TestCase):
             app.command_suggestions.value,
         )
         self.assertGreater(app.command_suggestion_scroll_offset, 0)
+
+    def test_command_suggestion_navigation_updates_prompt_value(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.prompt = FakePrompt("/")
+        app.update_command_suggestions("/")
+
+        app.key_down()
+
+        self.assertEqual(app.prompt.value, "/session new")
+        self.assertEqual(app.prompt.cursor_position, len("/session new"))
+        self.assertTrue(app.command_suggestions_visible)
 
     def test_command_suggestions_reset_scroll_when_filter_changes(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())

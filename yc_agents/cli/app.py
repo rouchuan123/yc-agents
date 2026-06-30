@@ -9,11 +9,19 @@ from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
-from textual.containers import Vertical, VerticalScroll
-from textual.widgets import Collapsible, Footer, Input, Markdown as TextualMarkdown, RichLog, Static
+from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.widgets import (
+    Collapsible,
+    Input,
+    Label,
+    ListView,
+    Markdown as TextualMarkdown,
+    Static,
+)
 
 from yc_agents.cli.commands import parse_cli_input
 from yc_agents.cli.runtime_factory import build_cli_runtime
+from yc_agents.cli.sidebar import SidebarListItem, build_session_entries, build_workspace_entries
 from yc_agents.cli.sessions import CLISessionStore
 from yc_agents.cli.status import StatusCollector
 from yc_agents.cli.suggestions import CommandSuggestionRegistry
@@ -24,19 +32,59 @@ class YCAgentsTUIApp(App):
     CSS = """
     Screen {
         layout: vertical;
+        background: #0b1020;
+        color: $text;
     }
 
     #status {
         dock: top;
         height: 2;
         padding: 0 1;
-        background: $surface;
+        background: #0f172a;
         color: $text;
+    }
+
+    #workbench {
+        height: 1fr;
+    }
+
+    #sidebar {
+        width: 34;
+        min-width: 28;
+        padding: 0 1;
+        border-right: solid #334155;
+        background: #0f172a;
+    }
+
+    #sidebar.hidden {
+        display: none;
+    }
+
+    .sidebar-title {
+        height: 1;
+        margin-top: 1;
+        color: $accent;
+        text-style: bold;
+    }
+
+    #workspace-list {
+        height: 7;
+        margin-bottom: 1;
+    }
+
+    #session-list {
+        height: 1fr;
+    }
+
+    #main-pane {
+        width: 1fr;
+        height: 1fr;
     }
 
     #chat-box {
         height: 1fr;
-        border: tall $primary;
+        border: tall #2563eb;
+        background: #0b1020;
     }
 
     #transcript {
@@ -48,27 +96,36 @@ class YCAgentsTUIApp(App):
         height: 1;
         padding: 0 1;
         color: $text-muted;
-        background: $surface;
-    }
-
-    #command-suggestions {
-        height: 8;
-        max-height: 8;
-        padding: 0 1;
-        background: $surface;
-        color: $text-muted;
+        background: #0f172a;
     }
 
     #selection-list {
         height: auto;
         max-height: 10;
         padding: 0 1;
-        background: $surface;
+        background: #111827;
         color: $text;
     }
 
+    #selection-list.hidden {
+        display: none;
+    }
+
+    #command-suggestions {
+        height: 8;
+        max-height: 8;
+        padding: 0 1;
+        background: #111827;
+        color: $text-muted;
+    }
+
+    #prompt-area {
+        height: auto;
+        background: #0f172a;
+    }
+
     #prompt {
-        dock: bottom;
+        background: #0f172a;
     }
 
     #prompt > .input--cursor {
@@ -79,6 +136,7 @@ class YCAgentsTUIApp(App):
     """
 
     BINDINGS = [
+        ("ctrl+b", "toggle_sidebar", "Sidebar"),
         ("ctrl+c", "copy_selection_or_quit", "Copy/Quit"),
         ("ctrl+shift+c", "copy_selection", "Copy"),
     ]
@@ -105,10 +163,19 @@ class YCAgentsTUIApp(App):
         self.timer_interval = timer_interval
         self.transcript_entries = []
         self.status_widget = None
+        self.workbench = None
+        self.sidebar = None
+        self.workspace_list = None
+        self.session_list = None
+        self.main_pane = None
+        self.sidebar_visible = True
+        self.sidebar_refresh_task = None
+        self.sidebar_focus_kind = None
         self.transcript = None
         self.elapsed_status = None
         self.selection_list = None
         self.command_suggestions = None
+        self.prompt_area = None
         self.prompt = None
         self.workspace_store = workspace_store
         self.workspace = workspace
@@ -144,24 +211,37 @@ class YCAgentsTUIApp(App):
 
     def compose(self) -> ComposeResult:
         self.status_widget = Static(self.render_status(), id="status")
+        self.sidebar = Vertical(id="sidebar")
+        self.workspace_list = ListView(id="workspace-list")
+        self.session_list = ListView(id="session-list")
         self.transcript = VerticalScroll(id="transcript")
         self.elapsed_status = Static("", id="processing-elapsed")
         self.selection_list = Static("", id="selection-list")
+        self.selection_list.display = False
         self.command_suggestions = Static("", id="command-suggestions")
         self.command_suggestions.display = False
         self.prompt = Input(
-            placeholder="输入消息，或使用 /status /stop /skills /clear /exit",
+            placeholder="Type a message, or use /status /stop /skills /clear /exit",
             id="prompt",
         )
+        self.prompt_area = Vertical(
+            self.command_suggestions,
+            self.prompt,
+            id="prompt-area",
+        )
+        self.main_pane = Vertical(
+            Vertical(self.transcript, self.elapsed_status, id="chat-box"),
+            self.selection_list,
+            self.prompt_area,
+            id="main-pane",
+        )
+        self.workbench = Horizontal(self.sidebar, self.main_pane, id="workbench")
 
         yield self.status_widget
-        yield Vertical(self.transcript, self.elapsed_status, id="chat-box")
-        yield self.selection_list
-        yield self.command_suggestions
-        yield self.prompt
-        yield Footer()
+        yield self.workbench
 
-    def on_mount(self):
+    async def on_mount(self):
+        await self.refresh_sidebar()
         if self.prompt is not None:
             self.prompt.focus()
 
@@ -184,6 +264,18 @@ class YCAgentsTUIApp(App):
 
     def on_input_changed(self, event: Input.Changed):
         self.update_command_suggestions(event.value)
+
+    def on_list_view_highlighted(self, event: ListView.Highlighted):
+        if event.list_view is self.workspace_list:
+            self.sidebar_focus_kind = "workspace"
+        elif event.list_view is self.session_list:
+            self.sidebar_focus_kind = "session"
+
+    def on_list_view_selected(self, event: ListView.Selected):
+        entry = getattr(event.item, "entry", None)
+        if entry is None:
+            return
+        self.handle_sidebar_entry_selected(entry)
 
     def render_status(self, width=100):
         return self.status_collector.collect().summary(width=width)
@@ -289,6 +381,11 @@ class YCAgentsTUIApp(App):
         self.close_runtime()
         self.exit()
 
+    def action_toggle_sidebar(self):
+        self.sidebar_visible = not self.sidebar_visible
+        if self.sidebar is not None:
+            self.sidebar.display = self.sidebar_visible
+
     def _copy_selected_text(self):
         selected_text = self.screen.get_selected_text()
 
@@ -321,6 +418,30 @@ class YCAgentsTUIApp(App):
             return
         if self.command_suggestions_visible:
             self.move_suggestion_selection(1)
+
+    def key_n(self):
+        if self.sidebar_focus_kind == "session":
+            self.create_session()
+
+    def key_d(self):
+        if self.sidebar_focus_kind == "session":
+            target = getattr(self.session, "id", None)
+            self.request_confirmation(
+                "session_delete",
+                target,
+                "Delete session? This removes its memory and runs.",
+            )
+
+    def handle_sidebar_entry_selected(self, entry):
+        if entry.kind == "workspace":
+            self.switch_workspace(entry.item_id)
+            return
+
+        if entry.kind == "session":
+            self.switch_session(entry.item_id)
+            return
+
+        self.append_turn("Error", f"Unknown sidebar entry: {entry.kind}")
 
     async def handle_cli_input(self, text):
         command = parse_cli_input(text)
@@ -802,8 +923,10 @@ class YCAgentsTUIApp(App):
     def clear_transcript(self):
         self.transcript_entries.clear()
 
-        if self.transcript is not None:
+        if self.transcript is not None and hasattr(self.transcript, "clear"):
             self.transcript.clear()
+        elif self.transcript is not None:
+            self._schedule_widget_transcript_redraw()
 
         if self.elapsed_status is not None:
             self.elapsed_status.update("")
@@ -811,6 +934,46 @@ class YCAgentsTUIApp(App):
     def refresh_status(self):
         if self.status_widget is not None:
             self.status_widget.update(self.render_status())
+
+    async def refresh_sidebar(self):
+        if self.sidebar is None:
+            return
+
+        if not list(self.sidebar.children):
+            await self.sidebar.mount(
+                Label("Workspace", classes="sidebar-title"),
+                self.workspace_list,
+                Label("Sessions", classes="sidebar-title"),
+                self.session_list,
+            )
+
+        if self.workspace_list is not None:
+            await self.workspace_list.clear()
+            workspace_items = [
+                SidebarListItem(entry)
+                for entry in build_workspace_entries(self.workspace_store, self.workspace)
+            ]
+            if workspace_items:
+                for item in workspace_items:
+                    await self.workspace_list.append(item)
+
+        if self.session_list is not None:
+            await self.session_list.clear()
+            session_items = [
+                SidebarListItem(entry)
+                for entry in build_session_entries(self.session_store, self.session)
+            ]
+            if session_items:
+                for item in session_items:
+                    await self.session_list.append(item)
+
+    def schedule_sidebar_refresh(self):
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+
+        self.sidebar_refresh_task = loop.create_task(self.refresh_sidebar())
 
     def create_session(self, title=None):
         if self.session_store is None:
@@ -821,6 +984,7 @@ class YCAgentsTUIApp(App):
         self.rebuild_runtime()
         self.clear_transcript()
         self.refresh_status()
+        self.schedule_sidebar_refresh()
 
     def switch_session(self, session_id):
         if self.session_store is None:
@@ -836,6 +1000,7 @@ class YCAgentsTUIApp(App):
         self.rebuild_runtime()
         self.reload_transcript()
         self.refresh_status()
+        self.schedule_sidebar_refresh()
 
     def add_workspace(self, path):
         if self.workspace_store is None:
@@ -853,6 +1018,7 @@ class YCAgentsTUIApp(App):
         self.rebuild_runtime()
         self.reload_transcript()
         self.refresh_status()
+        self.schedule_sidebar_refresh()
 
     def switch_workspace(self, workspace_id):
         if self.workspace_store is None:
@@ -870,6 +1036,7 @@ class YCAgentsTUIApp(App):
         self.rebuild_runtime()
         self.reload_transcript()
         self.refresh_status()
+        self.schedule_sidebar_refresh()
 
     def request_confirmation(self, action, target, message):
         self.pending_confirmation = {
@@ -907,6 +1074,7 @@ class YCAgentsTUIApp(App):
         self.rebuild_runtime()
         self.reload_transcript()
         self.refresh_status()
+        self.schedule_sidebar_refresh()
 
     def delete_workspace(self, path_or_id=None):
         if self.workspace_store is None:
@@ -919,6 +1087,7 @@ class YCAgentsTUIApp(App):
         self.rebuild_runtime()
         self.reload_transcript()
         self.refresh_status()
+        self.schedule_sidebar_refresh()
 
     def rebuild_runtime(self):
         if self.session is None:
@@ -970,6 +1139,7 @@ class YCAgentsTUIApp(App):
             self.selected_suggestion_index + delta
         ) % len(self.filtered_suggestions)
         self.keep_selected_suggestion_visible()
+        self.update_prompt_from_selected_suggestion()
         self.redraw_command_suggestions()
 
     def keep_selected_suggestion_visible(self):
@@ -985,10 +1155,28 @@ class YCAgentsTUIApp(App):
             return
 
         suggestion = self.filtered_suggestions[self.selected_suggestion_index]
-        if self.prompt is not None:
-            self.prompt.value = suggestion.completion or suggestion.command
-            self.move_prompt_cursor_to_end()
+        self.update_prompt_from_suggestion(suggestion)
         self.hide_command_suggestions()
+
+    def update_prompt_from_selected_suggestion(self):
+        if not self.filtered_suggestions:
+            return
+
+        suggestion = self.filtered_suggestions[self.selected_suggestion_index]
+        self.update_prompt_from_suggestion(suggestion)
+
+    def update_prompt_from_suggestion(self, suggestion):
+        if self.prompt is None:
+            return
+
+        value = suggestion.completion or suggestion.command
+        prevent = getattr(self.prompt, "prevent", None)
+        if callable(prevent):
+            with self.prompt.prevent(Input.Changed):
+                self.prompt.value = value
+        else:
+            self.prompt.value = value
+        self.move_prompt_cursor_to_end()
 
     def move_prompt_cursor_to_end(self):
         if self.prompt is None:
