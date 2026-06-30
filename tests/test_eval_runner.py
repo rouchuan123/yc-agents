@@ -61,6 +61,42 @@ def test_load_cases_accepts_trace_expectations(tmp_path):
     assert cases[0].forbidden_tools == ["web_search"]
 
 
+def test_load_cases_accepts_eval_case_2_metadata(tmp_path):
+    path = tmp_path / "cases.jsonl"
+    path.write_text(
+        json.dumps(
+            {
+                "id": "code-review-chain-001",
+                "category": "project_audit",
+                "judge_mode": "real_smoke",
+                "input": "审查项目架构链路",
+                "expected_skill": "code-review",
+                "expected_keywords": ["架构"],
+                "expected_output_sections": ["已读取文件", "关键链路"],
+                "expected_state_steps": ["run_started", "model_called", "run_finished"],
+                "expected_verification": True,
+                "failure_notes": "检查 code-review 是否留下证据链。",
+            },
+            ensure_ascii=False,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    cases = load_cases(path)
+
+    assert cases[0].judge_mode == "real_smoke"
+    assert cases[0].expected_skill == "code-review"
+    assert cases[0].expected_output_sections == ["已读取文件", "关键链路"]
+    assert cases[0].expected_state_steps == [
+        "run_started",
+        "model_called",
+        "run_finished",
+    ]
+    assert cases[0].expected_verification is True
+    assert cases[0].failure_notes == "检查 code-review 是否留下证据链。"
+
+
 class FakeRuntime:
     def run(self, user_input):
         return f"接口问题 技术路线 output for {user_input}"
@@ -148,3 +184,70 @@ def test_run_cases_records_eval_results_when_runtime_has_analytics():
     assert len(results) == 1
     assert runtime.analytics_recorder.eval_results[0]["case_id"] == "case-1"
     assert runtime.analytics_recorder.eval_results[0]["run_id"] == runtime.last_run_id
+
+
+class FakeRichRuntime:
+    def __init__(self, run_dir):
+        self.last_run_id = "run-rich-1"
+        self.last_run_dir = run_dir
+        self.last_trace_events = [
+            {
+                "event_type": "skill_selected",
+                "payload": {"selected_skill": "code-review"},
+            },
+            {
+                "event_type": "tool_called",
+                "payload": {"tool_name": "workspace_files"},
+            },
+        ]
+        run_dir.mkdir(parents=True)
+        (run_dir / "state.json").write_text(
+            json.dumps(
+                {
+                    "current_step": "run_finished",
+                    "status": "finished",
+                    "history": [
+                        {"step": "run_started", "status": "running"},
+                        {"step": "model_called", "status": "running"},
+                        {
+                            "step": "run_finished",
+                            "status": "finished",
+                            "details": {"verification": {"passed": True}},
+                        },
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
+
+    def run(self, user_input):
+        return "## 已读取文件\n\nREADME.md\n\n## 关键链路\n\nCLI 到 runtime。"
+
+
+def test_run_cases_includes_eval_case_2_metrics(tmp_path):
+    case = EvalCase(
+        id="case-rich-1",
+        category="project_audit",
+        input="审查项目",
+        expected_keywords=["README"],
+        required_tools=["workspace_files"],
+        expected_trace_events=["skill_selected", "tool_called"],
+        expected_skill="code-review",
+        expected_output_sections=["已读取文件", "关键链路"],
+        expected_state_steps=["run_started", "model_called", "run_finished"],
+        expected_verification=True,
+        judge_mode="real_smoke",
+        failure_notes="用于展示完整证据链。",
+    )
+
+    results = run_cases(FakeRichRuntime(tmp_path / "run-rich-1"), [case])
+
+    result = results[0]
+    assert result["judge_mode"] == "real_smoke"
+    assert result["expected_skill"] == "code-review"
+    assert result["skill_success"] is True
+    assert result["output_sections_success"] is True
+    assert result["state_steps_success"] is True
+    assert result["verification_success"] is True
+    assert result["failure_notes"] == "用于展示完整证据链。"

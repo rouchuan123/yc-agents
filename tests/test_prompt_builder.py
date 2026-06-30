@@ -105,6 +105,28 @@ def test_observation_messages_require_final_answer_json_after_tools():
     assert "If another tool is needed" in system_prompt
 
 
+def test_observation_messages_keep_tool_protocol_after_tool_result():
+    messages = make_builder().observation_messages(
+        user_input="read README after listing files",
+        memory={"session": [], "summary": "", "profile": {}},
+        workspace_context={
+            "path": "C:/project",
+            "available_tools": ["workspace_files", "file_reader", "code_search"],
+        },
+        observation={
+            "tool_call": {"tool_name": "workspace_files"},
+            "tool_result": {"files": [{"path": "README.md"}]},
+        },
+    )
+
+    system_prompt = messages[0]["content"]
+    assert "Tool protocol:" in system_prompt
+    assert "file_reader schema:" in system_prompt
+    assert '{"file_path":"yc_agents/tools/file_reader.py"}' in system_prompt
+    assert "Do not call file_reader with files, paths, or relative_path" in system_prompt
+    assert '"operation":"read_range"' in system_prompt
+
+
 def test_protocol_repair_messages_include_expected_schema_and_bad_examples():
     messages = make_builder().protocol_repair_messages(
         raw_text='{"type":"plain_answer","content":"hi"}',

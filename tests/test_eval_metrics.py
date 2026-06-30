@@ -3,10 +3,14 @@ from yc_agents.eval.metrics import (
     citation_precision,
     classify_tool_events,
     conflict_awareness_success,
+    expected_verification_success,
     forbidden_tool_success,
     keyword_success,
     noise_resistance_score,
+    output_sections_success,
     retrieval_hit,
+    skill_success,
+    state_steps_success,
     tool_success,
     tool_event_counts,
     trace_event_success,
@@ -38,6 +42,37 @@ def test_trace_event_success_checks_required_events():
 
     assert trace_event_success(trace_events, ["tool_called"])
     assert not trace_event_success(trace_events, ["tool_failed"])
+
+
+def test_skill_success_checks_selected_skill_event():
+    trace_events = [
+        {"event_type": "skill_selected", "payload": {"selected_skill": "code-review"}},
+    ]
+
+    assert skill_success(trace_events, "code-review")
+    assert not skill_success(trace_events, "eval-writer")
+    assert skill_success(trace_events, None)
+
+
+def test_output_sections_success_checks_required_sections():
+    output = "## 已读取文件\n\nREADME.md\n\n## 关键链路\n\nCLI -> runtime"
+
+    assert output_sections_success(output, ["已读取文件", "关键链路"])
+    assert not output_sections_success(output, ["测试缺口"])
+
+
+def test_state_steps_success_checks_checkpoint_history():
+    state = {
+        "history": [
+            {"step": "run_started"},
+            {"step": "model_called"},
+            {"step": "run_finished"},
+        ]
+    }
+
+    assert state_steps_success(state, ["run_started", "run_finished"])
+    assert not state_steps_success(state, ["missing_step"])
+    assert state_steps_success(None, [])
 
 
 def test_forbidden_tool_success_fails_when_forbidden_tool_called():
@@ -122,6 +157,22 @@ def test_verification_success_reads_report():
     assert verification_success({"passed": True}) is True
     assert verification_success({"passed": False}) is False
     assert verification_success(None) is False
+
+
+def test_expected_verification_success_reads_state_checkpoint():
+    state = {
+        "history": [
+            {
+                "step": "run_finished",
+                "details": {"verification": {"passed": True}},
+            }
+        ]
+    }
+
+    assert expected_verification_success(state, True)
+    assert not expected_verification_success(state, False)
+    assert expected_verification_success(None, None)
+    assert not expected_verification_success(None, True)
 
 
 def test_average_empty_is_zero():

@@ -109,6 +109,7 @@ class PromptBuilder:
                     [
                         self._core_identity(),
                         self._workspace_protocol(),
+                        self._tool_protocol(),
                         self._runtime_json_protocol(),
                         self._truthfulness_protocol(),
                         self._project_instruction_section(),
