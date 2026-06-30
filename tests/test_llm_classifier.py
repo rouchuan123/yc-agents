@@ -16,6 +16,21 @@ class FakeLLM:
         return self.response
 
 
+class FakeJSONLLM:
+    def __init__(self, response):
+        self.response = response
+        self.think_calls = []
+        self.think_json_calls = []
+
+    def think(self, messages):
+        self.think_calls.append(messages)
+        return self.response
+
+    def think_json(self, messages):
+        self.think_json_calls.append(messages)
+        return self.response
+
+
 class TestLLMIntentClassifier(unittest.TestCase):
     def test_classify_returns_skill_selection_json(self):
         llm = FakeLLM(
@@ -53,6 +68,25 @@ class TestLLMIntentClassifier(unittest.TestCase):
 
         with self.assertRaises(InvalidModelJSONError):
             LLMIntentClassifier(llm).classify("hello", [])
+
+    def test_classify_prefers_think_json_for_protocol_output(self):
+        llm = FakeJSONLLM(
+            json.dumps(
+                {
+                    "type": "skill_selection",
+                    "selected_skill": None,
+                    "confidence": 0.1,
+                    "reason": "No skill needed",
+                },
+                ensure_ascii=False,
+            )
+        )
+
+        result = LLMIntentClassifier(llm).classify("hello", [])
+
+        self.assertIsNone(result["selected_skill"])
+        self.assertEqual(len(llm.think_json_calls), 1)
+        self.assertEqual(llm.think_calls, [])
 
 
 if __name__ == "__main__":

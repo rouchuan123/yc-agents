@@ -77,6 +77,7 @@ class TestProviderConfig(unittest.TestCase):
                 "context_window": None,
                 "max_output_tokens": None,
                 "request_defaults": {},
+                "json_request_defaults": {},
                 "has_api_key": True,
                 "capabilities": {
                     "provider": "modelscope",
@@ -134,6 +135,9 @@ class TestProviderConfig(unittest.TestCase):
             context_window=64000,
             max_output_tokens=4096,
             request={"max_tokens": 4096, "temperature": 0.2},
+            structured_output_request={
+                "response_format": {"type": "json_object"},
+            },
         )
 
         config = ProviderConfig.from_ycore(settings)
@@ -146,6 +150,10 @@ class TestProviderConfig(unittest.TestCase):
         self.assertEqual(config.context_window, 64000)
         self.assertEqual(config.max_output_tokens, 4096)
         self.assertEqual(config.request_defaults, {"max_tokens": 4096, "temperature": 0.2})
+        self.assertEqual(
+            config.json_request_defaults,
+            {"response_format": {"type": "json_object"}},
+        )
 
 
 if __name__ == "__main__":

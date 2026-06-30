@@ -29,6 +29,43 @@ class FakeLLM:
         yield from self.responses.pop(0)
 
 
+class FencedSelectionThenFinalLLM:
+    def __init__(self):
+        self.calls = []
+
+    def think_json(self, messages, **kwargs):
+        self.calls.append(("think_json", messages))
+        if len(self.calls) == 1:
+            return (
+                "```json\n"
+                '{"type":"skill_selection","selected_skill":null,"confidence":0.1,"reason":"simple question"}'
+                "\n```"
+            )
+        return '{"type":"final_answer","content":"I am YCore."}'
+
+    def think(self, messages, **kwargs):
+        self.calls.append(("think", messages))
+        return '{"type":"final_answer","content":"fallback"}'
+
+
+class MiMoShapedLLM:
+    def __init__(self):
+        self.calls = 0
+
+    def think_json(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return (
+                "```json\n"
+                '{"type":"skill_selection","selected_skill":null,"confidence":0.1,"reason":"simple identity question"}'
+                "\n```"
+            )
+        return '{"type":"final_answer","content":"I am YCore running on the configured model provider."}'
+
+    def think(self, messages, **kwargs):
+        return self.think_json(messages, **kwargs)
+
+
 class FakeRAGSearchTool:
     def __init__(self):
         self.calls = []
@@ -92,6 +129,37 @@ class FakeIntentRouter:
 
 
 class TestSkillRuntimeAgent(unittest.TestCase):
+    def test_runtime_agent_accepts_fenced_skill_selection_and_answers_with_final_answer_json(self):
+        agent = SkillRuntimeAgent(
+            FencedSelectionThenFinalLLM(),
+            session_memory=SessionMemory(),
+        )
+
+        response = agent.run("what model are you")
+
+        self.assertEqual(json.loads(response)["type"], "final_answer")
+        self.assertEqual(json.loads(response)["content"], "I am YCore.")
+
+    def test_runtime_agent_prefers_think_json_for_protocol_turns(self):
+        llm = FencedSelectionThenFinalLLM()
+        agent = SkillRuntimeAgent(llm, session_memory=SessionMemory())
+
+        agent.run("what model are you")
+
+        self.assertEqual([call[0] for call in llm.calls], ["think_json", "think_json"])
+
+    def test_mimo_shaped_fenced_skill_selection_regression_returns_final_answer_json(self):
+        agent = SkillRuntimeAgent(MiMoShapedLLM(), session_memory=SessionMemory())
+
+        response = agent.run("what model are you")
+
+        data = json.loads(response)
+        self.assertEqual(data["type"], "final_answer")
+        self.assertEqual(
+            data["content"],
+            "I am YCore running on the configured model provider.",
+        )
+
     def test_run_includes_workspace_context_in_model_prompts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -398,7 +466,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             )
             self.assertEqual(assistant_message["process_entries"][2]["type"], "tool_result")
 
-    def test_observation_prompt_allows_follow_up_tool_call_or_plain_final_answer(self):
+    def test_observation_prompt_requires_follow_up_tool_call_or_final_answer_json(self):
         llm = FakeLLM(
             [
                 json.dumps(
@@ -425,10 +493,11 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
         system_prompt = llm.messages[0][0]["content"]
         self.assertIn("tool_call", system_prompt)
-        self.assertIn("answer directly in natural language", system_prompt)
-        self.assertIn("Do not wrap final answers in JSON", system_prompt)
+        self.assertIn("return final_answer JSON", system_prompt)
+        self.assertIn("Do not wrap final answers in Markdown fences", system_prompt)
+        self.assertNotIn("answer directly in natural language", system_prompt)
+        self.assertNotIn("Do not wrap final answers in JSON", system_prompt)
         self.assertIn("If another tool is needed", system_prompt)
-        self.assertNotIn("Return only valid final_answer JSON", system_prompt)
 
     def test_tool_protocol_tells_model_to_put_progress_in_message_field(self):
         builder = PromptBuilder()
@@ -453,7 +522,8 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
         self.assertIn('"message"', prompt)
         self.assertIn("visible progress", prompt)
-        self.assertIn("answer directly in natural language", prompt)
+        self.assertIn("return final_answer JSON", prompt)
+        self.assertNotIn("answer directly in natural language", prompt)
 
     def test_run_retries_when_skill_execution_repeats_skill_selection(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

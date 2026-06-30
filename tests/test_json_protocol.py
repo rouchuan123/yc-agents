@@ -109,6 +109,26 @@ class TestJSONProtocol(unittest.TestCase):
         self.assertEqual(preface, "")
         self.assertEqual(data["type"], "tool_call")
 
+    def test_extract_model_json_allows_expected_type_only(self):
+        _preface, data = extract_model_json(
+            '{"type":"final_answer","content":"ok"}',
+            allowed_types={"final_answer"},
+        )
+
+        self.assertEqual(data["type"], "final_answer")
+
+    def test_extract_model_json_rejects_skill_selection_in_runtime_phase(self):
+        with self.assertRaises(InvalidModelJSONError) as caught:
+            extract_model_json(
+                (
+                    '{"type":"skill_selection","selected_skill":null,'
+                    '"confidence":0.1,"reason":"no skill"}'
+                ),
+                allowed_types={"tool_call", "final_answer"},
+            )
+
+        self.assertIn("Unsupported model JSON type", str(caught.exception))
+
 
 if __name__ == "__main__":
     unittest.main()

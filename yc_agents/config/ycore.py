@@ -82,6 +82,7 @@ class ModelProviderSettings:
     context_window: int | None = None
     max_output_tokens: int | None = None
     request: dict | None = None
+    structured_output_request: dict | None = None
 
 
 def _deep_merge(base, override):
@@ -215,6 +216,10 @@ class YCoreConfig:
 
         provider = providers[provider_id]
         model_entry = self.model_entry(provider_id, model_id)
+        structured = model_entry.get("structuredOutput") or {}
+        structured_request = {}
+        if structured.get("enabled"):
+            structured_request = dict(structured.get("request") or {})
         api_key = self._resolve_secret(provider, "apiKey", "apiKeyEnv")
         timeout = int(self.data.get("runtime", {}).get("modelTimeoutSeconds", 60))
         return ModelProviderSettings(
@@ -227,6 +232,7 @@ class YCoreConfig:
             context_window=model_entry.get("contextWindow"),
             max_output_tokens=model_entry.get("maxOutputTokens"),
             request=dict(model_entry.get("request") or {}),
+            structured_output_request=structured_request,
         )
 
     def resolve_web_search_api_key(self):

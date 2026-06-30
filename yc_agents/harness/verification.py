@@ -1,17 +1,33 @@
 from pathlib import Path
 
-from yc_agents.harness.json_protocol import ALLOWED_MESSAGE_TYPES
+from yc_agents.harness.json_protocol import (
+    ALLOWED_MESSAGE_TYPES,
+    InvalidModelJSONError,
+    extract_model_json,
+)
 
 
 class VerificationGate:
     def verify_final_output(self, content):
-        passed = bool(content and str(content).strip())
+        non_empty = bool(content and str(content).strip())
+        not_control_json = self._final_output_not_control_json(content)
+        passed = non_empty and not_control_json["passed"]
 
-        return self._result(
-            "final_output_non_empty",
-            passed,
-            "Final output is not empty" if passed else "Final output is empty",
-        )
+        return {
+            "passed": passed,
+            "checks": [
+                {
+                    "name": "final_output_non_empty",
+                    "passed": non_empty,
+                    "message": (
+                        "Final output is not empty"
+                        if non_empty
+                        else "Final output is empty"
+                    ),
+                },
+                not_control_json,
+            ],
+        }
 
     def verify_json_message(self, data):
         message_type = data.get("type") if isinstance(data, dict) else None
@@ -26,6 +42,28 @@ class VerificationGate:
                 else f"JSON message type is not allowed: {message_type}"
             ),
         )
+
+    def _final_output_not_control_json(self, content):
+        try:
+            _preface, data = extract_model_json(str(content or ""))
+        except InvalidModelJSONError:
+            return {
+                "name": "final_output_not_control_json",
+                "passed": True,
+                "message": "Final output is regular user-visible text",
+            }
+
+        message_type = data.get("type")
+        is_control = message_type in {"skill_selection", "tool_call"}
+        return {
+            "name": "final_output_not_control_json",
+            "passed": not is_control,
+            "message": (
+                "Final output is user-visible text"
+                if not is_control
+                else f"Final output still contains control JSON: {message_type}"
+            ),
+        }
 
     def verify_trace_events(self, events):
         has_invalid_json = any(

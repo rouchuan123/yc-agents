@@ -118,6 +118,43 @@ class TestYCAgentsLLM(unittest.TestCase):
         self.assertEqual(call["max_tokens"], 4096)
         self.assertEqual(call["temperature"], 0.7)
 
+    def test_think_json_applies_structured_output_defaults(self):
+        config = ProviderConfig(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            api_key="secret-key",
+            base_url="https://api.deepseek.com",
+            request_defaults={"temperature": 0.2},
+            json_request_defaults={"response_format": {"type": "json_object"}},
+        )
+        client = SuccessfulClient()
+        llm = YCAgentsLLM(config=config, client=client)
+
+        llm.think_json([{"role": "user", "content": "return json"}])
+
+        call = client.chat.completions.calls[0]
+        self.assertEqual(call["temperature"], 0.2)
+        self.assertEqual(call["response_format"], {"type": "json_object"})
+
+    def test_think_json_kwargs_override_structured_output_defaults(self):
+        config = ProviderConfig(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            api_key="secret-key",
+            base_url="https://api.deepseek.com",
+            json_request_defaults={"response_format": {"type": "json_object"}},
+        )
+        client = SuccessfulClient()
+        llm = YCAgentsLLM(config=config, client=client)
+
+        llm.think_json(
+            [{"role": "user", "content": "return json"}],
+            response_format={"type": "text"},
+        )
+
+        call = client.chat.completions.calls[0]
+        self.assertEqual(call["response_format"], {"type": "text"})
+
     def test_think_wraps_provider_error_without_leaking_api_key(self):
         config = ProviderConfig(
             provider="deepseek",

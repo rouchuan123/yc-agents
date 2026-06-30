@@ -29,8 +29,9 @@ class LLMIntentClassifier:
                 ),
             },
         ]
-        raw_text = self.llm.think(messages)
-        result = parse_model_json(raw_text)
+        think_json = getattr(self.llm, "think_json", None)
+        raw_text = think_json(messages) if callable(think_json) else self.llm.think(messages)
+        result = parse_model_json(raw_text, allowed_types={"skill_selection"})
 
         if result["type"] != "skill_selection":
             raise InvalidModelJSONError(

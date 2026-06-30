@@ -2,7 +2,10 @@ import json
 
 from yc_agents.agents.skill_agent import SkillAgent
 from yc_agents.harness.context_manager import ContextManager
-from yc_agents.harness.json_protocol import InvalidModelJSONError, parse_model_json
+from yc_agents.harness.json_protocol import (
+    InvalidModelJSONError,
+    extract_model_json,
+)
 from yc_agents.memory.session import SessionMemory
 from yc_agents.prompts.builder import PromptBuilder
 from yc_agents.skills.loader import SkillLoader
@@ -58,7 +61,7 @@ class SkillRuntimeAgent:
         selection_text = self.skill_agent.select_skill(selection_context)
 
         try:
-            selection = parse_model_json(selection_text)
+            selection = self._parse_skill_selection(selection_text)
         except InvalidModelJSONError:
             return self._final_answer_json(selection_text)
 
@@ -91,7 +94,7 @@ class SkillRuntimeAgent:
         selection_text = self.skill_agent.select_skill(selection_context)
 
         try:
-            selection = parse_model_json(selection_text)
+            selection = self._parse_skill_selection(selection_text)
         except InvalidModelJSONError:
             yield self._final_answer_json(selection_text)
             return
@@ -127,7 +130,7 @@ class SkillRuntimeAgent:
         return registry
 
     def _plain_answer(self, user_input, memory_context=None):
-        return self.llm.think(
+        return self._think_protocol_json(
             self._build_plain_answer_messages(user_input, memory_context)
         )
 
@@ -138,13 +141,7 @@ class SkillRuntimeAgent:
         )
 
     def _stream_plain_answer(self, user_input, memory_context=None):
-        stream_think = getattr(self.llm, "stream_think", None)
-
-        if not callable(stream_think):
-            yield self._plain_answer(user_input, memory_context)
-            return
-
-        yield from stream_think(
+        yield from self._stream_protocol_json(
             self._build_plain_answer_messages(user_input, memory_context)
         )
 
@@ -185,7 +182,7 @@ class SkillRuntimeAgent:
             workspace_context=self.workspace_context,
         )
         messages = self.prompt_builder.skill_execution_messages(context)
-        response = self.llm.think(messages)
+        response = self._think_protocol_json(messages)
 
         if self._is_repeated_skill_selection(response):
             return self._retry_skill_execution(user_input, context)
@@ -199,12 +196,6 @@ class SkillRuntimeAgent:
         selection,
         memory_context=None,
     ):
-        stream_think = getattr(self.llm, "stream_think", None)
-
-        if not callable(stream_think):
-            yield self._answer_with_skill(user_input, selected_skill, selection, memory_context)
-            return
-
         memory = memory_context or self.context_manager.build_memory_context()
         rag_results = self._load_rag_results(user_input, selected_skill)
         context = self.context_manager.build_skill_execution_context(
@@ -217,7 +208,7 @@ class SkillRuntimeAgent:
         )
         messages = self.prompt_builder.skill_execution_messages(context)
 
-        yield from stream_think(messages)
+        yield from self._stream_protocol_json(messages)
 
     def _discover_candidate_skills(self, registry, user_input):
         skills = list(registry.skills.values())
@@ -244,7 +235,10 @@ class SkillRuntimeAgent:
 
     def _is_repeated_skill_selection(self, response):
         try:
-            data = parse_model_json(response)
+            _preface, data = extract_model_json(
+                response,
+                allowed_types={"skill_selection"},
+            )
         except InvalidModelJSONError:
             return False
 
@@ -255,7 +249,7 @@ class SkillRuntimeAgent:
             user_input=user_input,
             context=context,
         )
-        return self.llm.think(messages)
+        return self._think_protocol_json(messages)
 
     def _load_memory_context(self):
         return self.context_manager.build_memory_context(
@@ -306,7 +300,43 @@ class SkillRuntimeAgent:
             workspace_context=self.workspace_context,
             observation=observation,
         )
+        return self._think_protocol_json(messages)
+
+    def run_with_protocol_error(self, user_input, error, expectation=None):
+        allowed_types = set((expectation or {}).get("allowed_types") or ["tool_call", "final_answer"])
+        raw_text = getattr(error, "raw_text", "")
+        messages = self.prompt_builder.protocol_repair_messages(
+            raw_text=raw_text,
+            error_message=str(error),
+            allowed_types=allowed_types,
+        )
+        return self._think_protocol_json(messages)
+
+    def _think_protocol_json(self, messages):
+        think_json = getattr(self.llm, "think_json", None)
+        if callable(think_json):
+            return think_json(messages)
         return self.llm.think(messages)
+
+    def _stream_protocol_json(self, messages):
+        stream_think_json = getattr(self.llm, "stream_think_json", None)
+        if callable(stream_think_json):
+            yield from stream_think_json(messages)
+            return
+
+        stream_think = getattr(self.llm, "stream_think", None)
+        if callable(stream_think):
+            yield from stream_think(messages)
+            return
+
+        yield self._think_protocol_json(messages)
+
+    def _parse_skill_selection(self, text):
+        _preface, selection = extract_model_json(
+            text,
+            allowed_types={"skill_selection"},
+        )
+        return selection
 
     def _load_rag_results(self, user_input, selected_skill):
         if self.rag_search_tool is None:

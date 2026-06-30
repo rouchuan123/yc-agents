@@ -32,6 +32,14 @@
               "max_tokens": 4096,
               "temperature": 0.2,
               "top_p": 0.95
+            },
+            "structuredOutput": {
+              "enabled": true,
+              "request": {
+                "response_format": {
+                  "type": "json_object"
+                }
+              }
             }
           }
         ]
@@ -50,6 +58,10 @@
               "max_completion_tokens": 4096,
               "temperature": 1.0,
               "top_p": 0.95
+            },
+            "structuredOutput": {
+              "enabled": false,
+              "request": {}
             }
           }
         ]

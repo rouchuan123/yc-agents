@@ -297,6 +297,14 @@ class TestYCoreConfig(unittest.TestCase):
                                                 "max_tokens": 4096,
                                                 "temperature": 0.2,
                                             },
+                                            "structuredOutput": {
+                                                "enabled": True,
+                                                "request": {
+                                                    "response_format": {
+                                                        "type": "json_object"
+                                                    }
+                                                },
+                                            },
                                         }
                                     ],
                                 }
@@ -319,6 +327,10 @@ class TestYCoreConfig(unittest.TestCase):
             self.assertEqual(
                 settings.request,
                 {"max_tokens": 4096, "temperature": 0.2},
+            )
+            self.assertEqual(
+                settings.structured_output_request,
+                {"response_format": {"type": "json_object"}},
             )
 
     def test_safe_dict_masks_secret_values(self):

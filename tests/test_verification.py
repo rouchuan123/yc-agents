@@ -20,6 +20,25 @@ class TestVerificationGate(unittest.TestCase):
 
         self.assertFalse(result["passed"])
 
+    def test_verify_final_output_fails_for_skill_selection_json_as_final_output(self):
+        gate = VerificationGate()
+
+        result = gate.verify_final_output(
+            "```json\n"
+            '{"type":"skill_selection","selected_skill":null,"confidence":0.1,"reason":"no skill"}'
+            "\n```"
+        )
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["checks"][1]["name"], "final_output_not_control_json")
+
+    def test_verify_final_output_allows_regular_markdown_answer(self):
+        gate = VerificationGate()
+
+        result = gate.verify_final_output("## Answer\n\nYCore is running normally.")
+
+        self.assertTrue(result["passed"])
+
     def test_verify_json_message_passes_for_allowed_type(self):
         gate = VerificationGate()
 
