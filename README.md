@@ -98,6 +98,8 @@ If the global `ycore.json` is missing, YCore fails with a clear error. It does n
 
 Model parameters are stored under `models.providers.<provider>.models[]`. `contextWindow` is YCore metadata for context display and budgeting; `maxOutputTokens` is semantic metadata; `request` contains default OpenAI-compatible API request parameters such as `max_tokens`, `temperature`, and `top_p`. Per-call keyword arguments still override `request` defaults.
 
+`structuredOutput` is optional per model. When enabled, YCore applies its `request` fields only to protocol JSON calls such as skill selection, tool calls, final answers, and JSON repair. It is intended for provider JSON mode settings such as `{"response_format":{"type":"json_object"}}`. It does not enable function calling.
+
 Default runtime policy retries once when the model output is not valid protocol JSON; if the retry is still invalid, the current run fails.
 
 ## 快速开始

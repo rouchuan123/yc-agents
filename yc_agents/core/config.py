@@ -14,6 +14,7 @@ class ProviderConfig:
     context_window: int | None = None
     max_output_tokens: int | None = None
     request_defaults: dict = field(default_factory=dict)
+    json_request_defaults: dict = field(default_factory=dict)
     capabilities: dict = field(default_factory=dict)
 
     def __post_init__(self):
@@ -70,6 +71,7 @@ class ProviderConfig:
             context_window=settings.context_window,
             max_output_tokens=settings.max_output_tokens,
             request_defaults=dict(settings.request or {}),
+            json_request_defaults=dict(settings.structured_output_request or {}),
             capabilities=get_provider_capabilities(settings.provider),
         )
 
@@ -113,6 +115,7 @@ class ProviderConfig:
             "context_window": self.context_window,
             "max_output_tokens": self.max_output_tokens,
             "request_defaults": dict(self.request_defaults),
+            "json_request_defaults": dict(self.json_request_defaults),
             "has_api_key": bool(self.api_key),
             "capabilities": dict(self.capabilities),
         }

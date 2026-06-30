@@ -14,7 +14,7 @@ class InvalidModelJSONError(ValueError):
         self.raw_text = raw_text
 
 
-def parse_model_json(text):
+def parse_model_json(text, allowed_types=None):
     try:
         data = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -23,29 +23,32 @@ def parse_model_json(text):
             raw_text=text,
         ) from exc
 
-    _validate_base_message(data, text)
+    _validate_base_message(data, text, allowed_types=allowed_types)
 
     if data["type"] == "tool_call":
         _validate_tool_call(data, text)
 
+    if data["type"] == "final_answer":
+        _validate_final_answer(data, text)
+
     return data
 
 
-def extract_model_json(text):
+def extract_model_json(text, allowed_types=None):
     raw_text = str(text or "")
     stripped = raw_text.strip()
     if not stripped:
         raise InvalidModelJSONError("Model output is empty", raw_text=raw_text)
 
     try:
-        return "", parse_model_json(stripped)
+        return "", parse_model_json(stripped, allowed_types=allowed_types)
     except InvalidModelJSONError:
         pass
 
     fenced = _extract_fenced_json(stripped)
     if fenced is not None:
         preface, candidate = fenced
-        return preface, parse_model_json(candidate)
+        return preface, parse_model_json(candidate, allowed_types=allowed_types)
 
     start = stripped.find("{")
     if start < 0:
@@ -65,7 +68,7 @@ def extract_model_json(text):
 
     candidate = stripped[start : start + end]
     preface = stripped[:start].strip()
-    return preface, parse_model_json(candidate)
+    return preface, parse_model_json(candidate, allowed_types=allowed_types)
 
 
 def _extract_fenced_json(text):
@@ -90,7 +93,7 @@ def _extract_fenced_json(text):
     return preface, candidate
 
 
-def _validate_base_message(data, raw_text):
+def _validate_base_message(data, raw_text, allowed_types=None):
     if not isinstance(data, dict):
         raise InvalidModelJSONError("Model JSON must be an object", raw_text=raw_text)
 
@@ -102,7 +105,8 @@ def _validate_base_message(data, raw_text):
             raw_text=raw_text,
         )
 
-    if message_type not in ALLOWED_MESSAGE_TYPES:
+    effective_allowed = set(allowed_types or ALLOWED_MESSAGE_TYPES)
+    if message_type not in effective_allowed:
         raise InvalidModelJSONError(
             f"Unsupported model JSON type: {message_type}",
             raw_text=raw_text,
@@ -125,5 +129,19 @@ def _validate_tool_call(data, raw_text):
     if not isinstance(data["arguments"], dict):
         raise InvalidModelJSONError(
             "tool_call arguments must be an object",
+            raw_text=raw_text,
+        )
+
+
+def _validate_final_answer(data, raw_text):
+    if "content" not in data:
+        raise InvalidModelJSONError(
+            "final_answer JSON must include content",
+            raw_text=raw_text,
+        )
+
+    if not isinstance(data["content"], str):
+        raise InvalidModelJSONError(
+            "final_answer content must be a string",
             raw_text=raw_text,
         )

@@ -17,6 +17,27 @@ class FakeLLM:
         )
 
 
+class FakeJSONLLM(FakeLLM):
+    def __init__(self):
+        super().__init__()
+        self.think_calls = 0
+        self.think_json_calls = 0
+
+    def think(self, messages):
+        self.think_calls += 1
+        return super().think(messages)
+
+    def think_json(self, messages):
+        self.think_json_calls += 1
+        self.messages = messages
+        return (
+            '{"type":"skill_selection",'
+            '"selected_skill":null,'
+            '"confidence":0.1,'
+            '"reason":"No skill needed"}'
+        )
+
+
 class TestSkillAgent(unittest.TestCase):
     def test_select_skill_returns_model_json_text(self):
         llm = FakeLLM()
@@ -38,6 +59,22 @@ class TestSkillAgent(unittest.TestCase):
 
         self.assertIn('"type":"skill_selection"', result)
         self.assertIn('"selected_skill":"code-review"', result)
+
+    def test_select_skill_prefers_think_json(self):
+        llm = FakeJSONLLM()
+        agent = SkillAgent(llm)
+
+        result = agent.select_skill(
+            {
+                "task": "skill_selection",
+                "user_input": "hello",
+                "skills": [],
+            }
+        )
+
+        self.assertIn('"selected_skill":null', result)
+        self.assertEqual(llm.think_json_calls, 1)
+        self.assertEqual(llm.think_calls, 0)
 
     def test_select_skill_sends_context_to_llm(self):
         llm = FakeLLM()

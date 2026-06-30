@@ -20,6 +20,8 @@ from yc_agents.harness.verification import VerificationGate
 
 
 PLAIN_ANSWER_ALLOWED_TOOLS = ["workspace_files", "file_reader"]
+RUNTIME_RESPONSE_TYPES = {"tool_call", "final_answer"}
+FINAL_AFTER_TOOL_TYPES = {"tool_call", "final_answer"}
 
 
 class YCAgentRuntime:
@@ -297,7 +299,11 @@ class YCAgentRuntime:
             if invalid_error is not None:
                 if invalid_attempts < self.invalid_json_retry_count:
                     invalid_attempts += 1
-                    response = self._retry_after_invalid_json(user_input, invalid_error)
+                    response = self._retry_after_invalid_json(
+                        user_input,
+                        invalid_error,
+                        expectation=self._runtime_expectation(),
+                    )
                     trace.record("model_called")
                     continue
                 if self.fail_on_invalid_json:
@@ -309,7 +315,10 @@ class YCAgentRuntime:
 
     def _handle_json_response_once(self, trace, user_input, response, policy, process_entries):
         try:
-            preface, data = extract_model_json(response)
+            preface, data = extract_model_json(
+                response,
+                allowed_types=RUNTIME_RESPONSE_TYPES,
+            )
         except InvalidModelJSONError as exc:
             trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
             return response, exc
@@ -332,19 +341,18 @@ class YCAgentRuntime:
         if data["type"] == "final_answer":
             return data.get("content", ""), None
 
-        if data["type"] == "skill_selection":
-            trace.record("skill_selected", {
-                "selected_skill": data.get("selected_skill"),
-                "confidence": data.get("confidence"),
-                "reason": data.get("reason"),
-            })
-
         return response, None
 
-    def _retry_after_invalid_json(self, user_input, error):
+    def _runtime_expectation(self):
+        return {"allowed_types": sorted(RUNTIME_RESPONSE_TYPES)}
+
+    def _retry_after_invalid_json(self, user_input, error, expectation=None):
         retry = getattr(self.agent, "run_with_protocol_error", None)
         if callable(retry):
-            return retry(user_input, error)
+            try:
+                return retry(user_input, error, expectation=expectation)
+            except TypeError:
+                return retry(user_input, error)
 
         return self.agent.run(
             user_input
@@ -394,18 +402,19 @@ class YCAgentRuntime:
         trace.record("model_called")
 
         try:
-            preface, final_data = extract_model_json(final_response)
+            preface, final_data = extract_model_json(
+                final_response,
+                allowed_types=FINAL_AFTER_TOOL_TYPES,
+            )
         except InvalidModelJSONError as exc:
-            if self._looks_like_tool_call_response(final_response):
-                trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
-                if self.fail_on_invalid_json:
-                    raise exc
-            else:
-                self._emit_process_entry(
-                    trace,
-                    process_entries,
-                    assistant_step_entry(final_response),
-                )
+            trace.record("invalid_model_json", {"error": str(exc), "raw_text": exc.raw_text})
+            if self.fail_on_invalid_json:
+                raise exc
+            self._emit_process_entry(
+                trace,
+                process_entries,
+                assistant_step_entry(final_response),
+            )
             return final_response
 
         self._emit_process_entry(

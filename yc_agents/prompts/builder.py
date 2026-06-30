@@ -32,6 +32,7 @@ class PromptBuilder:
                         self._core_identity(),
                         self._workspace_protocol(),
                         self._tool_protocol(),
+                        self._runtime_json_protocol(),
                         self._truthfulness_protocol(),
                         self._project_instruction_section(),
                     ]
@@ -61,6 +62,7 @@ class PromptBuilder:
                         self._core_identity(),
                         self._workspace_protocol(),
                         self._tool_protocol(),
+                        self._runtime_json_protocol(),
                         self._truthfulness_protocol(),
                         self._project_instruction_section(),
                         self._skill_execution_protocol(),
@@ -80,6 +82,7 @@ class PromptBuilder:
                 "content": self._compose_system_prompt(
                     [
                         self._core_identity(),
+                        self._runtime_json_protocol(),
                         self._project_instruction_section(),
                         self._retry_protocol(),
                     ]
@@ -106,6 +109,7 @@ class PromptBuilder:
                     [
                         self._core_identity(),
                         self._workspace_protocol(),
+                        self._runtime_json_protocol(),
                         self._truthfulness_protocol(),
                         self._project_instruction_section(),
                         self._observation_protocol(),
@@ -121,6 +125,32 @@ class PromptBuilder:
                         "recent_messages": memory.get("session", []),
                         "workspace": workspace_context or {},
                         "observation": observation,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ]
+
+    def protocol_repair_messages(self, raw_text, error_message, allowed_types):
+        allowed = sorted(allowed_types)
+        return [
+            {
+                "role": "system",
+                "content": self._compose_system_prompt(
+                    [
+                        "You are YCore's JSON protocol repairer.",
+                        self._protocol_repair_protocol(allowed),
+                    ]
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "error": error_message,
+                        "allowed_types": allowed,
+                        "raw_text": raw_text,
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -214,9 +244,25 @@ class PromptBuilder:
         return (
             "Skill selection protocol:\n"
             "- Choose the best skill for the user's request from the provided skills.\n"
-            "- Return only valid JSON. Do not return Markdown or extra explanation.\n"
+            "- Return only valid JSON. Do not return Markdown fences or extra explanation.\n"
             "- If no skill fits, set selected_skill to null with a low confidence.\n"
+            '- Valid no-skill example: {"type":"skill_selection","selected_skill":null,"confidence":0.1,"reason":"No skill is needed for a simple greeting."}\n'
+            '- Valid selected-skill example: {"type":"skill_selection","selected_skill":"code-review","confidence":0.9,"reason":"The user asks for a code review."}\n'
             '- JSON format: {"type":"skill_selection","selected_skill":"skill-name-or-null","confidence":0.0,"reason":"selection reason"}'
+        )
+
+    def _runtime_json_protocol(self):
+        return (
+            "Runtime JSON protocol:\n"
+            "- Return only valid JSON. Do not return Markdown fences or extra explanation outside JSON.\n"
+            "- Do not return plain natural language outside JSON.\n"
+            "- Unsupported type: plain_answer. Use final_answer instead.\n"
+            "- If no tool is needed, return final_answer JSON.\n"
+            "- If a tool is needed, return tool_call JSON.\n"
+            '- final_answer example: {"type":"final_answer","content":"Hello, I am YCore."}\n'
+            '- tool_call example: {"type":"tool_call","message":"I will inspect the workspace files first.","tool_name":"workspace_files","arguments":{"pattern":"*"},"reason":"List workspace files"}\n'
+            "- Do not output this bad form: ```json\\n{...}\\n```\n"
+            '- Do not output this bad form: {"type":"plain_answer","content":"..."}'
         )
 
     def _skill_execution_protocol(self):
@@ -225,7 +271,7 @@ class PromptBuilder:
             "- Follow the selected skill instructions when answering the user.\n"
             "- Use only tools allowed by the runtime and selected skill context.\n"
             "- If a tool is needed, return only valid tool_call JSON.\n"
-            "- If no tool is needed, answer directly in natural language."
+            "- If no tool is needed, return final_answer JSON."
         )
 
     def _retry_protocol(self):
@@ -234,7 +280,7 @@ class PromptBuilder:
             "- Skill selection is already complete; execute the selected_skill.\n"
             "- Do not return skill_selection JSON again.\n"
             "- If a tool is needed, return only valid tool_call JSON.\n"
-            "- If no tool is needed, answer directly in natural language."
+            "- If no tool is needed, return final_answer JSON."
         )
 
     def _observation_protocol(self):
@@ -243,7 +289,25 @@ class PromptBuilder:
             "- You have received one tool execution observation.\n"
             "- If another tool is needed to complete the user's request, return only valid tool_call JSON.\n"
             '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
-            "- If the task is complete, answer directly in natural language.\n"
-            "- Do not wrap final answers in JSON.\n"
-            '- tool_call format: {"type":"tool_call","message":"I will read README next to understand the project.","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}'
+            "- If the task is complete, return final_answer JSON.\n"
+            "- Do not wrap final answers in Markdown fences.\n"
+            '- tool_call format: {"type":"tool_call","message":"I will read README next to understand the project.","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
+            '- final_answer format: {"type":"final_answer","content":"The answer for the user."}'
+        )
+
+    def _protocol_repair_protocol(self, allowed_types):
+        examples = [
+            'Bad: hello\nGood: {"type":"final_answer","content":"hello"}',
+            'Bad: {"type":"plain_answer","content":"hi"}\nGood: {"type":"final_answer","content":"hi"}',
+            'Bad: ```json\n{"type":"final_answer","content":"hi"}\n```\nGood: {"type":"final_answer","content":"hi"}',
+            'Bad: {"type":"final_answer","content":"He said "hi"."}\nGood: {"type":"final_answer","content":"He said \\"hi\\"."}',
+        ]
+        return (
+            "Repair protocol:\n"
+            f"- Allowed types for this repair: {', '.join(allowed_types)}.\n"
+            "- Return only one valid JSON object.\n"
+            "- Do not return Markdown fences.\n"
+            "- Do not explain the repair.\n"
+            "- plain_answer is unsupported; convert it to final_answer when final_answer is allowed.\n"
+            + "\n".join(examples)
         )

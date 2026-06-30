@@ -39,6 +39,20 @@ def test_plain_answer_messages_include_project_instructions_in_order():
     assert ".ycore/YCORE.md" in system_prompt
 
 
+def test_plain_answer_messages_require_final_answer_json():
+    messages = make_builder().plain_answer_messages(
+        user_input="hello",
+        memory={"session": [], "summary": "", "profile": {}},
+        workspace_context={"path": "C:/project"},
+    )
+
+    system_prompt = messages[0]["content"]
+    assert '{"type":"final_answer","content":"Hello' in system_prompt
+    assert "Do not return plain natural language outside JSON" in system_prompt
+    assert "plain_answer" in system_prompt
+    assert "unsupported" in system_prompt.lower()
+
+
 def test_core_prompt_is_generic_not_word_or_old_domain_specific():
     messages = make_builder().plain_answer_messages(
         user_input="hello",
@@ -75,7 +89,7 @@ def test_skill_execution_messages_include_selected_skill_context_as_user_json():
     assert "Review instructions" in messages[1]["content"]
 
 
-def test_observation_messages_allow_plain_final_answer_after_tools():
+def test_observation_messages_require_final_answer_json_after_tools():
     messages = make_builder().observation_messages(
         user_input="list files",
         memory={"session": [], "summary": "", "profile": {}},
@@ -84,10 +98,26 @@ def test_observation_messages_allow_plain_final_answer_after_tools():
     )
 
     system_prompt = messages[0]["content"]
-    assert "tool_call" in system_prompt
-    assert "answer directly in natural language" in system_prompt
+    assert "If the task is complete, return final_answer JSON" in system_prompt
+    assert "Do not wrap final answers in Markdown fences" in system_prompt
+    assert "Do not wrap final answers in JSON" not in system_prompt
+    assert "answer directly in natural language" not in system_prompt
     assert "If another tool is needed" in system_prompt
-    assert "Do not wrap final answers in JSON" in system_prompt
+
+
+def test_protocol_repair_messages_include_expected_schema_and_bad_examples():
+    messages = make_builder().protocol_repair_messages(
+        raw_text='{"type":"plain_answer","content":"hi"}',
+        error_message="Unsupported model JSON type: plain_answer",
+        allowed_types={"final_answer"},
+    )
+
+    system_prompt = messages[0]["content"]
+    user_payload = json.loads(messages[1]["content"])
+    assert "JSON protocol repairer" in system_prompt
+    assert "plain_answer is unsupported" in system_prompt
+    assert '{"type":"final_answer","content":"hi"}' in system_prompt
+    assert user_payload["allowed_types"] == ["final_answer"]
 
 
 def test_tool_protocol_documents_exact_file_reader_schema():

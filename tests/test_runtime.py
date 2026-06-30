@@ -6,6 +6,8 @@ from pathlib import Path
 from yc_agents.harness.json_protocol import InvalidModelJSONError
 from yc_agents.harness.runtime import ResearchAgentHarness, YCAgentRuntime
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
+from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
+from yc_agents.memory.session import SessionMemory
 from yc_agents.tools.base import BaseTool
 from yc_agents.tools.registry import ToolRegistry
 
@@ -97,10 +99,14 @@ class FakeToolCallAgent:
 
 class FakeToolThenPlainFinalAgent(FakeToolCallAgent):
     def run_with_observation(self, user_input, observation):
-        return (
-            "## Project review\n\n"
-            "The tool result is enough to answer now, so this final response "
-            "should not need to be escaped inside JSON."
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": (
+                    "## Project review\n\n"
+                    "The tool result is enough to answer now."
+                ),
+            }
         )
 
 
@@ -259,6 +265,66 @@ class FakeSkillSelectionAgent:
         )
 
 
+class FakeRuntimeSkillSelectionThenFinalAgent:
+    def __init__(self):
+        self.repairs = []
+
+    def run(self, user_input):
+        return json.dumps(
+            {
+                "type": "skill_selection",
+                "selected_skill": None,
+                "confidence": 0.1,
+                "reason": "wrong phase",
+            }
+        )
+
+    def run_with_protocol_error(self, user_input, error, expectation=None):
+        self.repairs.append(
+            {
+                "error": str(error),
+                "expectation": expectation,
+            }
+        )
+        return json.dumps({"type": "final_answer", "content": "repaired"})
+
+
+class FakeMalformedPlainAnswerThenRepairAgent:
+    def __init__(self):
+        self.repairs = []
+
+    def run(self, user_input):
+        return '{"type":"plain_answer","content":"I am not the "model"."}'
+
+    def run_with_protocol_error(self, user_input, error, expectation=None):
+        self.repairs.append((str(error), expectation))
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": 'I am not the "model"; I am YCore.',
+            }
+        )
+
+
+class DeepSeekShapedRepairLLM:
+    def __init__(self):
+        self.calls = 0
+
+    def think_json(self, messages, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            return (
+                '{"type":"skill_selection","selected_skill":null,'
+                '"confidence":0.1,"reason":"simple identity question"}'
+            )
+        if self.calls == 2:
+            return "Hello! I am YCore."
+        return '{"type":"final_answer","content":"Hello! I am YCore."}'
+
+    def think(self, messages, **kwargs):
+        return self.think_json(messages, **kwargs)
+
+
 class FakeInvalidJSONAgent:
     def run(self, user_input):
         return "I think code-review is useful"
@@ -275,7 +341,7 @@ class FakeInvalidThenFinalAgent:
             return "not json"
         return json.dumps({"type": "final_answer", "content": "recovered"})
 
-    def run_with_protocol_error(self, user_input, error):
+    def run_with_protocol_error(self, user_input, error, expectation=None):
         return self.run(user_input)
 
     def remember_structured_turn(self, user_input, response, process_entries):
@@ -291,7 +357,7 @@ class FakeAlwaysInvalidAgent:
         self.calls += 1
         return "still not json"
 
-    def run_with_protocol_error(self, user_input, error):
+    def run_with_protocol_error(self, user_input, error, expectation=None):
         return self.run(user_input)
 
     def remember_structured_turn(self, user_input, response, process_entries):
@@ -441,7 +507,7 @@ class TestYCAgentRuntime(unittest.TestCase):
 
         self.assertEqual(response, "tool handled")
 
-    def test_runtime_allows_plain_final_answer_after_tool_observation(self):
+    def test_runtime_accepts_final_answer_json_after_tool_observation(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             registry = ToolRegistry()
             registry.register(FakeTool())
@@ -459,13 +525,13 @@ class TestYCAgentRuntime(unittest.TestCase):
             trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
 
             self.assertIn("## Project review", response)
-            self.assertIn("should not need to be escaped inside JSON", response)
+            self.assertIn("The tool result is enough to answer now.", response)
             self.assertNotIn(
                 "invalid_model_json",
                 [event["event_type"] for event in trace["events"]],
             )
 
-    def test_runtime_allows_truncated_final_answer_json_after_tool_observation(self):
+    def test_runtime_rejects_truncated_final_answer_json_after_tool_observation(self):
         registry = ToolRegistry()
         registry.register(FakeTool())
         runtime = YCAgentRuntime(
@@ -476,10 +542,8 @@ class TestYCAgentRuntime(unittest.TestCase):
             fail_on_invalid_json=True,
         )
 
-        response = runtime.run("trigger tool")
-
-        self.assertIn("## Project review", response)
-        self.assertIn("provider truncated", response)
+        with self.assertRaises(InvalidModelJSONError):
+            runtime.run("trigger tool")
 
     def test_runtime_still_rejects_malformed_tool_call_after_observation(self):
         registry = ToolRegistry()
@@ -641,20 +705,57 @@ class TestYCAgentRuntime(unittest.TestCase):
             self.assertEqual(state["current_step"], "run_failed")
             self.assertEqual(trace["events"][-1]["event_type"], "run_failed")
 
-    def test_runtime_records_skill_selected_for_valid_json(self):
-        with tempfile.TemporaryDirectory() as tmp_dir:
-            runtime = YCAgentRuntime(
-                FakeSkillSelectionAgent(),
-                expects_json=True,
-                output_root=Path(tmp_dir),
-            )
+    def test_runtime_rejects_skill_selection_response_and_repairs_to_final_answer(self):
+        agent = FakeRuntimeSkillSelectionThenFinalAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            invalid_json_retry_count=1,
+            fail_on_invalid_json=True,
+        )
 
-            runtime.run("review this project")
+        response = runtime.run("hello")
 
-            run_dir = next(Path(tmp_dir).iterdir())
-            trace = json.loads((run_dir / "trace.json").read_text(encoding="utf-8"))
-            event_types = [event["event_type"] for event in trace["events"]]
-            self.assertIn("skill_selected", event_types)
+        self.assertEqual(response, "repaired")
+        self.assertEqual(
+            agent.repairs[0]["expectation"]["allowed_types"],
+            ["final_answer", "tool_call"],
+        )
+
+    def test_runtime_repairs_malformed_plain_answer_json(self):
+        agent = FakeMalformedPlainAnswerThenRepairAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            invalid_json_retry_count=1,
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("what model are you")
+
+        self.assertIn('I am not the "model"', response)
+        self.assertTrue(agent.repairs)
+
+    def test_deepseek_shaped_plain_text_runtime_response_repairs_to_final_answer(self):
+        llm = DeepSeekShapedRepairLLM()
+        agent = SkillRuntimeAgent(llm, session_memory=SessionMemory())
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            invalid_json_retry_count=1,
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("what model are you")
+
+        self.assertEqual(response, "Hello! I am YCore.")
+        self.assertEqual(llm.calls, 3)
+        self.assertEqual(
+            [event["event_type"] for event in runtime.last_trace_events].count(
+                "invalid_model_json"
+            ),
+            1,
+        )
 
     def test_runtime_records_invalid_model_json(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
