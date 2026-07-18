@@ -124,7 +124,7 @@
     "expectsJson": true,
     "toolCalling": "json-protocol",
     "modelTimeoutSeconds": 60,
-    "maxToolCalls": 12,
+    "maxToolCalls": 30,
     "toolTimeoutSeconds": 30,
     "invalidJsonRetryCount": 2,
     "providerRetryCount": 1,
