@@ -8,6 +8,7 @@ from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.memory.session import SessionMemory
 from yc_agents.prompts.builder import PromptBuilder
 from yc_agents.prompts.project_instructions import ProjectInstruction
+from yc_agents.skills.definition import SkillDefinition
 from yc_agents.tools.base import BaseTool
 from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
@@ -458,13 +459,17 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(assistant_message["content"], "项目分析完成。")
             self.assertEqual(
                 assistant_message["process_entries"][0]["content"],
+                "我将使用 code-review 进行处理。",
+            )
+            self.assertEqual(
+                assistant_message["process_entries"][1]["content"],
                 "我先保存一份分析笔记。",
             )
             self.assertEqual(
-                assistant_message["process_entries"][1]["tool_name"],
+                assistant_message["process_entries"][2]["tool_name"],
                 "markdown_writer",
             )
-            self.assertEqual(assistant_message["process_entries"][2]["type"], "tool_result")
+            self.assertEqual(assistant_message["process_entries"][3]["type"], "tool_result")
 
     def test_observation_prompt_requires_follow_up_tool_call_or_final_answer_json(self):
         llm = FakeLLM(
@@ -498,6 +503,74 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         self.assertNotIn("answer directly in natural language", system_prompt)
         self.assertNotIn("Do not wrap final answers in JSON", system_prompt)
         self.assertIn("If another tool is needed", system_prompt)
+
+    def test_observation_prompt_keeps_full_selected_skill_context(self):
+        llm = FakeLLM([json.dumps({"type": "final_answer", "content": "done"})])
+        agent = SkillRuntimeAgent(llm)
+        agent._set_skill_tool_context(
+            SkillDefinition(
+                name="code-review",
+                description="Review a local project.",
+                allowed_tools=["workspace_files", "file_reader"],
+                body="Read the project, trace a critical path, then report evidence.",
+            )
+        )
+
+        agent.run_with_observation(
+            "review this project",
+            {
+                "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                "tool_result": {"files": [{"path": "README.md"}]},
+                "execution_history": [],
+            },
+        )
+
+        payload = json.loads(llm.messages[0][1]["content"])
+        selected_skill = payload["execution_context"]["selected_skill"]
+        self.assertEqual(selected_skill["name"], "code-review")
+        self.assertEqual(
+            selected_skill["body"],
+            "Read the project, trace a critical path, then report evidence.",
+        )
+        self.assertEqual(
+            payload["execution_context"]["allowed_tools"],
+            ["workspace_files", "file_reader"],
+        )
+
+    def test_verification_revision_keeps_skill_context_and_execution_history(self):
+        llm = FakeLLM([json.dumps({"type": "final_answer", "content": "revised"})])
+        agent = SkillRuntimeAgent(llm)
+        agent._set_skill_tool_context(
+            SkillDefinition(
+                name="code-review",
+                description="Review a local project.",
+                allowed_tools=["workspace_files", "file_reader"],
+                body="Read evidence and report findings by severity.",
+            )
+        )
+        history = [
+            {
+                "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                "tool_result": {"ok": True, "files": ["README.md"]},
+            }
+        ]
+
+        response = agent.run_with_verification_feedback(
+            "review this project",
+            "",
+            {"passed": False, "checks": [{"message": "Final output is empty"}]},
+            execution_history=history,
+        )
+
+        payload = json.loads(llm.messages[0][1]["content"])
+        self.assertEqual(json.loads(response)["content"], "revised")
+        self.assertEqual(payload["execution_context"]["selected_skill"]["name"], "code-review")
+        self.assertEqual(
+            payload["execution_context"]["selected_skill"]["body"],
+            "Read evidence and report findings by severity.",
+        )
+        self.assertEqual(payload["execution_context"]["allowed_tools"], ["workspace_files", "file_reader"])
+        self.assertEqual(payload["execution_history"], history)
 
     def test_tool_protocol_tells_model_to_put_progress_in_message_field(self):
         builder = PromptBuilder()
@@ -677,10 +750,10 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                 allowed_tools=["workspace_files", "markdown_writer"],
             )
 
-            with self.assertRaises(Exception) as caught:
-                runtime.run("review this project")
+            response = runtime.run("review this project")
 
-            self.assertIn("Tool is not allowed: markdown_writer", str(caught.exception))
+            self.assertIn("任务未能完整完成", response)
+            self.assertIn("Tool is not allowed: markdown_writer", response)
 
     def test_plain_answer_only_allows_minimal_workspace_tools(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -718,10 +791,10 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                 allowed_tools=["workspace_files", "file_reader", "markdown_writer"],
             )
 
-            with self.assertRaises(Exception) as caught:
-                runtime.run("hello")
+            response = runtime.run("hello")
 
-            self.assertIn("Tool is not allowed: markdown_writer", str(caught.exception))
+            self.assertIn("任务未能完整完成", response)
+            self.assertIn("Tool is not allowed: markdown_writer", response)
 
     def test_runtime_records_unknown_tool_declared_by_skill_without_failing(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

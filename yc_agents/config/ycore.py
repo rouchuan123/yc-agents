@@ -54,7 +54,12 @@ DEFAULT_CONFIG = {
         "modelTimeoutSeconds": 60,
         "maxToolCalls": 12,
         "toolTimeoutSeconds": 30,
-        "invalidJsonRetryCount": 1,
+        "invalidJsonRetryCount": 2,
+        "providerRetryCount": 1,
+        "providerRetryBackoffSeconds": 1,
+        "toolExecutionRetryCount": 1,
+        "verificationRetryCount": 1,
+        "maxRecoveryAttempts": 4,
         "failOnInvalidJson": True,
     },
     "analytics": {

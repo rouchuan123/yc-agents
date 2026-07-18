@@ -356,6 +356,22 @@ class YCAgentsTUIApp(App):
         if event_type == "tool_loop_stopped":
             return f"Stopped repeated {tool_name} calls."
 
+        if event_type == "recovery_attempt":
+            kind = payload.get("kind", "recovery")
+            attempt = payload.get("attempt", "")
+            limit = payload.get("limit", "")
+            suffix = f" {attempt}/{limit}" if attempt and limit else ""
+            return f"Retrying {kind}{suffix}."
+
+        if event_type == "recovery_succeeded":
+            return f"Recovered {payload.get('kind', 'run')}."
+
+        if event_type == "recovery_exhausted":
+            return f"Recovery exhausted: {payload.get('kind', 'run')}."
+
+        if event_type == "run_stopped":
+            return f"Run stopped: {payload.get('error_type', 'error')}."
+
         return ""
 
     def _active_workspace_path(self):

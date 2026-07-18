@@ -43,6 +43,7 @@ class SkillRuntimeAgent:
         self.workspace_context = workspace_context or {}
         self.intent_router = intent_router
         self.current_selected_skill_name = None
+        self.current_selected_skill = None
         self.current_skill_allowed_tools = []
         self.current_turn_is_plain_answer = True
         self.plain_answer_allowed_tools = ["workspace_files", "file_reader"]
@@ -155,17 +156,26 @@ class SkillRuntimeAgent:
 
     def _set_plain_tool_context(self):
         self.current_selected_skill_name = None
+        self.current_selected_skill = None
         self.current_skill_allowed_tools = list(self.plain_answer_allowed_tools)
         self.current_turn_is_plain_answer = True
 
     def _set_skill_tool_context(self, selected_skill):
         self.current_selected_skill_name = selected_skill.name
+        self.current_selected_skill = selected_skill.to_dict()
         self.current_skill_allowed_tools = list(selected_skill.allowed_tools)
         self.current_turn_is_plain_answer = False
 
     def current_turn_tool_context(self):
         return {
             "selected_skill": self.current_selected_skill_name,
+            "allowed_tools": list(self.current_skill_allowed_tools),
+            "plain_answer": self.current_turn_is_plain_answer,
+        }
+
+    def current_turn_execution_context(self):
+        return {
+            "selected_skill": self.current_selected_skill,
             "allowed_tools": list(self.current_skill_allowed_tools),
             "plain_answer": self.current_turn_is_plain_answer,
         }
@@ -299,16 +309,44 @@ class SkillRuntimeAgent:
             memory=memory,
             workspace_context=self.workspace_context,
             observation=observation,
+            execution_context=self.current_turn_execution_context(),
         )
         return self._think_protocol_json(messages)
 
-    def run_with_protocol_error(self, user_input, error, expectation=None):
+    def run_with_protocol_error(
+        self,
+        user_input,
+        error,
+        expectation=None,
+        execution_history=None,
+        stage=None,
+    ):
         allowed_types = set((expectation or {}).get("allowed_types") or ["tool_call", "final_answer"])
         raw_text = getattr(error, "raw_text", "")
         messages = self.prompt_builder.protocol_repair_messages(
             raw_text=raw_text,
             error_message=str(error),
             allowed_types=allowed_types,
+            execution_context=self.current_turn_execution_context(),
+            execution_history=execution_history or [],
+            stage=stage,
+        )
+        return self._think_protocol_json(messages)
+
+    def run_with_verification_feedback(
+        self,
+        user_input,
+        response,
+        verification,
+        execution_history=None,
+    ):
+        messages = self.prompt_builder.verification_revision_messages(
+            user_input=user_input,
+            response=response,
+            verification=verification,
+            execution_context=self.current_turn_execution_context(),
+            execution_history=execution_history or [],
+            workspace_context=self.workspace_context,
         )
         return self._think_protocol_json(messages)
 

@@ -75,7 +75,12 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
             "expectsJson": True,
             "maxToolCalls": 7,
             "toolTimeoutSeconds": 11,
+            "toolExecutionRetryCount": 3,
             "invalidJsonRetryCount": 1,
+            "providerRetryCount": 2,
+            "providerRetryBackoffSeconds": 0.25,
+            "verificationRetryCount": 2,
+            "maxRecoveryAttempts": 6,
             "failOnInvalidJson": True,
         },
         "analytics": {
@@ -368,6 +373,12 @@ class TestCLIRuntimeFactory(unittest.TestCase):
 
             self.assertEqual(runtime.invalid_json_retry_count, 1)
             self.assertTrue(runtime.fail_on_invalid_json)
+            self.assertEqual(runtime.tool_policy.max_retries, 3)
+            self.assertEqual(runtime.recovery_policy.protocol_retries, 1)
+            self.assertEqual(runtime.recovery_policy.provider_retries, 2)
+            self.assertEqual(runtime.recovery_policy.provider_backoff_seconds, 0.25)
+            self.assertEqual(runtime.recovery_policy.verification_retries, 2)
+            self.assertEqual(runtime.recovery_policy.max_attempts, 6)
 
     def test_build_cli_runtime_attaches_intent_router(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
