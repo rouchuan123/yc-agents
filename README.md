@@ -9,8 +9,17 @@
 
 YCore 不把业务方向写死在全局 Prompt 中，具体落地方向由 Skill 决定。安装什么 Skill，就验证什么类型的 Agent Workflow；全局 Runtime 只负责受控执行、上下文注入、工具调用、过程留痕，以及结果评测与验证。
 
+## 📷 界面预览
+
+### 项目审查结果
+
+![YCore 项目审查结果](docs/images/review-result.png)
+
+YCore 根据本地代码证据输出项目亮点、风险分级和测试缺口。
+
 ## 📋 目录
 
+- [界面预览](#-界面预览)
 - [项目定位](#-项目定位)
 - [核心能力](#-核心能力)
 - [默认-Skill](#-默认-skill)
@@ -45,6 +54,12 @@ YCore 用于验证一套通用 Agent Harness 能否稳定支撑不同领域的 S
 - 🧾 **运行留痕**：在当前 Workspace 的 `.ycore/runs/` 保存输入、输出、Trace 与 State。
 - 📊 **运行分析**：可选 SQLite Analytics，记录运行元数据、工具事件、Verification 与 Eval 结果。
 - ✅ **结果验证**：使用 Eval Runner 和 VerificationGate 将“模型说完成”转换为可检查证据。
+
+### Skill 驱动的执行过程
+
+![YCore Skill 执行过程](docs/images/skill-execution.png)
+
+Agent 会显示当前使用的 Skill、工具调用和结果摘要，完整过程可以展开查看。
 
 ## 🧠 默认 Skill
 
@@ -118,6 +133,12 @@ python main.py
 ## 🖥️ CLI 使用
 
 YCore 使用 Textual TUI：顶部显示当前工作区、模型、估算上下文占用、Git 分支和 Session 编号；左侧为 Workspace 与 Sessions 工作台；中间显示对话、Assistant 回复和可折叠执行过程；底部提供输入框与 `/command` 补全。
+
+### 命令补全
+
+![YCore CLI 命令补全](docs/images/command-palette.png)
+
+在输入框中输入 `/`，即可查看 Session、Workspace 和运行控制命令。
 
 | 命令 | 说明 |
 | --- | --- |
