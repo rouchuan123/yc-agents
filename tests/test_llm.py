@@ -1,5 +1,8 @@
 import unittest
 
+import httpx
+from openai import APIStatusError, APITimeoutError
+
 from yc_agents.core.config import ProviderConfig
 from yc_agents.core.exceptions import LLMCallError
 from yc_agents.core.llm import YCAgentsLLM
@@ -174,6 +177,51 @@ class TestYCAgentsLLM(unittest.TestCase):
         self.assertIn("模型调用失败", message)
         self.assertNotIn("secret-key", message)
         self.assertIsInstance(context.exception.__cause__, RuntimeError)
+        self.assertFalse(context.exception.retryable)
+        self.assertEqual(context.exception.cause_type, "RuntimeError")
+
+    def test_timeout_error_is_marked_retryable(self):
+        llm = YCAgentsLLM(
+            config=ProviderConfig(
+                provider="deepseek",
+                model="deepseek-chat",
+                api_key="secret-key",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            client=SuccessfulClient(),
+        )
+        provider_error = APITimeoutError(
+            request=httpx.Request("POST", "https://api.deepseek.com/v1/chat/completions")
+        )
+
+        with self.assertRaises(LLMCallError) as context:
+            llm._raise_call_error(provider_error)
+
+        self.assertTrue(context.exception.retryable)
+        self.assertEqual(context.exception.cause_type, "APITimeoutError")
+
+    def test_provider_4xx_is_not_marked_retryable(self):
+        llm = YCAgentsLLM(
+            config=ProviderConfig(
+                provider="deepseek",
+                model="deepseek-chat",
+                api_key="secret-key",
+                base_url="https://api.deepseek.com/v1",
+            ),
+            client=SuccessfulClient(),
+        )
+        request = httpx.Request("POST", "https://api.deepseek.com/v1/chat/completions")
+        provider_error = APIStatusError(
+            "bad request",
+            response=httpx.Response(400, request=request),
+            body=None,
+        )
+
+        with self.assertRaises(LLMCallError) as context:
+            llm._raise_call_error(provider_error)
+
+        self.assertFalse(context.exception.retryable)
+        self.assertEqual(context.exception.status_code, 400)
 
     def test_stream_think_yields_delta_content(self):
         config = ProviderConfig(

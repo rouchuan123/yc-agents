@@ -7,6 +7,7 @@ from yc_agents.config.ycore import YCoreConfig
 from yc_agents.core.config import ProviderConfig
 from yc_agents.core.llm import YCAgentsLLM
 from yc_agents.harness.permissions import HumanApprovalGate
+from yc_agents.harness.recovery import RecoveryPolicy
 from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
@@ -93,6 +94,16 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
     tool_policy = ToolExecutionPolicy(
         max_calls=int(runtime_config.get("maxToolCalls", 12)),
         timeout_seconds=int(runtime_config.get("toolTimeoutSeconds", 30)),
+        max_retries=int(runtime_config.get("toolExecutionRetryCount", 1)),
+    )
+    recovery_policy = RecoveryPolicy(
+        protocol_retries=int(runtime_config.get("invalidJsonRetryCount", 2)),
+        provider_retries=int(runtime_config.get("providerRetryCount", 1)),
+        verification_retries=int(runtime_config.get("verificationRetryCount", 1)),
+        max_attempts=int(runtime_config.get("maxRecoveryAttempts", 4)),
+        provider_backoff_seconds=float(
+            runtime_config.get("providerRetryBackoffSeconds", 1)
+        ),
     )
     agent = SkillRuntimeAgent(
         llm,
@@ -193,6 +204,7 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
         approval_gate=HumanApprovalGate(),
         output_root=session.runs_path,
         tool_policy=tool_policy,
+        recovery_policy=recovery_policy,
         invalid_json_retry_count=int(runtime_config.get("invalidJsonRetryCount", 0)),
         fail_on_invalid_json=bool(runtime_config.get("failOnInvalidJson", False)),
         analytics_recorder=analytics_recorder,

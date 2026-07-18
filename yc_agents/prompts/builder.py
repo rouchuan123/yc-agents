@@ -101,7 +101,14 @@ class PromptBuilder:
             },
         ]
 
-    def observation_messages(self, user_input, memory, workspace_context, observation):
+    def observation_messages(
+        self,
+        user_input,
+        memory,
+        workspace_context,
+        observation,
+        execution_context=None,
+    ):
         return [
             {
                 "role": "system",
@@ -125,6 +132,11 @@ class PromptBuilder:
                         "memory": memory,
                         "recent_messages": memory.get("session", []),
                         "workspace": workspace_context or {},
+                        "execution_context": execution_context or {
+                            "selected_skill": None,
+                            "allowed_tools": [],
+                            "plain_answer": True,
+                        },
                         "observation": observation,
                     },
                     ensure_ascii=False,
@@ -133,7 +145,15 @@ class PromptBuilder:
             },
         ]
 
-    def protocol_repair_messages(self, raw_text, error_message, allowed_types):
+    def protocol_repair_messages(
+        self,
+        raw_text,
+        error_message,
+        allowed_types,
+        execution_context=None,
+        execution_history=None,
+        stage=None,
+    ):
         allowed = sorted(allowed_types)
         return [
             {
@@ -152,6 +172,47 @@ class PromptBuilder:
                         "error": error_message,
                         "allowed_types": allowed,
                         "raw_text": raw_text,
+                        "stage": stage,
+                        "execution_context": execution_context or {},
+                        "execution_history": execution_history or [],
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+            },
+        ]
+
+    def verification_revision_messages(
+        self,
+        user_input,
+        response,
+        verification,
+        execution_context,
+        execution_history,
+        workspace_context,
+    ):
+        return [
+            {
+                "role": "system",
+                "content": self._compose_system_prompt(
+                    [
+                        self._core_identity(),
+                        self._truthfulness_protocol(),
+                        self._project_instruction_section(),
+                        self._verification_revision_protocol(),
+                    ]
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "user_input": user_input,
+                        "current_response": response,
+                        "verification": verification,
+                        "execution_context": execution_context or {},
+                        "execution_history": execution_history or [],
+                        "workspace": workspace_context or {},
                     },
                     ensure_ascii=False,
                     indent=2,
@@ -287,12 +348,16 @@ class PromptBuilder:
     def _observation_protocol(self):
         return (
             "Observation protocol:\n"
-            "- You have received one tool execution observation.\n"
+            "- observation contains the latest tool call and result.\n"
+            "- observation.execution_history contains earlier observations in chronological order.\n"
+            "- Continue following execution_context.selected_skill when a skill is active.\n"
+            "- Treat successful calls in execution_history as known evidence.\n"
+            "- Never repeat a successful tool call with the same or equivalent arguments.\n"
+            "- Continue with an unexamined file or the next required workflow step.\n"
             "- If another tool is needed to complete the user's request, return only valid tool_call JSON.\n"
             '- Put user-visible progress text in the optional "message" field of the tool_call JSON; do not write progress outside the JSON.\n'
             "- If the task is complete, return final_answer JSON.\n"
             "- Do not wrap final answers in Markdown fences.\n"
-            '- tool_call format: {"type":"tool_call","message":"I will read README next to understand the project.","tool_name":"workspace_files","arguments":{},"reason":"why this tool is needed"}\n'
             '- final_answer format: {"type":"final_answer","content":"The answer for the user."}'
         )
 
@@ -302,6 +367,7 @@ class PromptBuilder:
             'Bad: {"type":"plain_answer","content":"hi"}\nGood: {"type":"final_answer","content":"hi"}',
             'Bad: ```json\n{"type":"final_answer","content":"hi"}\n```\nGood: {"type":"final_answer","content":"hi"}',
             'Bad: {"type":"final_answer","content":"He said "hi"."}\nGood: {"type":"final_answer","content":"He said \\"hi\\"."}',
+            'Bad: {"tool_call":{"tool_name":"file_reader","arguments":{"file_path":"README.md"}}}\nGood: {"type":"tool_call","tool_name":"file_reader","arguments":{"file_path":"README.md"},"reason":"Read project context"}',
         ]
         return (
             "Repair protocol:\n"
@@ -311,4 +377,14 @@ class PromptBuilder:
             "- Do not explain the repair.\n"
             "- plain_answer is unsupported; convert it to final_answer when final_answer is allowed.\n"
             + "\n".join(examples)
+        )
+
+    def _verification_revision_protocol(self):
+        return (
+            "Verification revision protocol:\n"
+            "- Revise current_response only to address failed verification checks.\n"
+            "- Preserve supported facts from execution_history and selected skill context.\n"
+            "- Do not request or call tools during this revision.\n"
+            "- Return only one final_answer JSON object.\n"
+            '- JSON format: {"type":"final_answer","content":"Revised user-visible answer"}'
         )

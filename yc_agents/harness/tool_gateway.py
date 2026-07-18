@@ -128,6 +128,9 @@ class ToolGateway:
             if failure is None:
                 return result, attempts, None
 
+            if failure[0] not in {"timeout", "io_error", "execution_error"}:
+                return None, attempts, failure
+
             if attempts >= max_attempts:
                 return None, attempts, failure
 
@@ -152,6 +155,14 @@ class ToolGateway:
         except TimeoutError:
             future.cancel()
             return None, ("timeout", f"Tool timed out after {self.policy.timeout_seconds}s")
+        except PermissionError as exc:
+            return None, ("permission_error", str(exc))
+        except FileNotFoundError as exc:
+            return None, ("not_found", str(exc))
+        except ValueError as exc:
+            return None, ("invalid_operation", str(exc))
+        except OSError as exc:
+            return None, ("io_error", str(exc))
         except Exception as exc:
             return None, ("execution_error", str(exc))
         finally:

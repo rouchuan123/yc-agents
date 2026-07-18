@@ -67,6 +67,30 @@ class SlowTool(BaseTool):
         return "too late"
 
 
+class PermissionFailingTool(BaseTool):
+    name = "permission_failing"
+    description = "A tool that is denied by the operating system."
+
+    def __init__(self):
+        self.calls = 0
+
+    def run(self):
+        self.calls += 1
+        raise PermissionError("access denied")
+
+
+class MissingFileTool(BaseTool):
+    name = "missing_file"
+    description = "A tool that cannot find its input file."
+
+    def __init__(self):
+        self.calls = 0
+
+    def run(self):
+        self.calls += 1
+        raise FileNotFoundError("missing.txt")
+
+
 class FakeTrace:
     def __init__(self):
         self.events = []
@@ -340,6 +364,40 @@ class TestToolGateway(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_type"], "timeout")
+
+    def test_gateway_does_not_retry_permission_failure(self):
+        registry = ToolRegistry()
+        tool = PermissionFailingTool()
+        registry.register(tool)
+        gateway = ToolGateway(
+            registry,
+            allowed_tools=[tool.name],
+            policy=ToolExecutionPolicy(max_retries=2),
+        )
+
+        result = gateway.run_tool(tool.name)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "permission_error")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(tool.calls, 1)
+
+    def test_gateway_does_not_retry_missing_file_failure(self):
+        registry = ToolRegistry()
+        tool = MissingFileTool()
+        registry.register(tool)
+        gateway = ToolGateway(
+            registry,
+            allowed_tools=[tool.name],
+            policy=ToolExecutionPolicy(max_retries=2),
+        )
+
+        result = gateway.run_tool(tool.name)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "not_found")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(tool.calls, 1)
 
     def test_tool_gateway_records_denied_event(self):
         events = []

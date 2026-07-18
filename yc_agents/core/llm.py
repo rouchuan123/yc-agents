@@ -1,4 +1,10 @@
-from openai import OpenAI #创建 API 客户端
+from openai import (
+    APIConnectionError,
+    APIStatusError,
+    APITimeoutError,
+    OpenAI,
+    RateLimitError,
+)
 
 from yc_agents.core.config import ProviderConfig
 from yc_agents.core.exceptions import LLMCallError
@@ -44,9 +50,7 @@ class YCAgentsLLM:
                 self._request_kwargs(kwargs),
             )
         except Exception as exc:
-            raise LLMCallError(
-                f"模型调用失败 provider={self.provider} model={self.model}: {exc.__class__.__name__}"
-            ) from exc
+            self._raise_call_error(exc)
 
         return response.choices[0].message.content
 
@@ -57,9 +61,7 @@ class YCAgentsLLM:
                 self._request_kwargs(kwargs, json_mode=True),
             )
         except Exception as exc:
-            raise LLMCallError(
-                f"妯″瀷璋冪敤澶辫触 provider={self.provider} model={self.model}: {exc.__class__.__name__}"
-            ) from exc
+            self._raise_call_error(exc)
 
         return response.choices[0].message.content
 
@@ -69,9 +71,7 @@ class YCAgentsLLM:
             request_kwargs["stream"] = True
             response = self._create_completion(messages, request_kwargs)
         except Exception as exc:
-            raise LLMCallError(
-                f"妯″瀷璋冪敤澶辫触 provider={self.provider} model={self.model}: {exc.__class__.__name__}"
-            ) from exc
+            self._raise_call_error(exc)
 
         yield from self._stream_content(response)
 
@@ -81,9 +81,7 @@ class YCAgentsLLM:
             request_kwargs["stream"] = True
             response = self._create_completion(messages, request_kwargs)
         except Exception as exc:
-            raise LLMCallError(
-                f"濡€崇€风拫鍐暏婢惰精瑙?provider={self.provider} model={self.model}: {exc.__class__.__name__}"
-            ) from exc
+            self._raise_call_error(exc)
 
         yield from self._stream_content(response)
 
@@ -99,5 +97,26 @@ class YCAgentsLLM:
 
             if content:
                 yield content
+
+    def _raise_call_error(self, exc):
+        status_code = getattr(exc, "status_code", None)
+        retryable = isinstance(
+            exc,
+            (APIConnectionError, APITimeoutError, RateLimitError),
+        ) or (
+            isinstance(exc, APIStatusError)
+            and isinstance(status_code, int)
+            and status_code >= 500
+        )
+        raise LLMCallError(
+            (
+                "模型调用失败 "
+                f"provider={self.provider} model={self.model}: "
+                f"{exc.__class__.__name__}"
+            ),
+            retryable=retryable,
+            status_code=status_code,
+            cause_type=exc.__class__.__name__,
+        ) from exc
     
     

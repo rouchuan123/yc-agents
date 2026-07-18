@@ -127,11 +127,53 @@ def test_observation_messages_keep_tool_protocol_after_tool_result():
     assert '"operation":"read_range"' in system_prompt
 
 
+def test_observation_messages_include_execution_context_and_anti_repeat_rules():
+    messages = make_builder().observation_messages(
+        user_input="review this project",
+        memory={"session": [], "summary": "", "profile": {}},
+        workspace_context={"path": "C:/project"},
+        execution_context={
+            "selected_skill": {
+                "name": "code-review",
+                "body": "Inspect evidence before reporting findings.",
+            },
+            "allowed_tools": ["workspace_files", "file_reader"],
+            "plain_answer": False,
+        },
+        observation={
+            "tool_call": {"tool_name": "file_reader", "arguments": {"file_path": "README.md"}},
+            "tool_result": {"ok": True, "text": "project"},
+            "execution_history": [
+                {
+                    "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                    "tool_result": {"ok": True, "files": ["README.md"]},
+                }
+            ],
+        },
+    )
+
+    system_prompt = messages[0]["content"]
+    payload = json.loads(messages[1]["content"])
+    assert payload["execution_context"]["selected_skill"]["name"] == "code-review"
+    assert "Inspect evidence before reporting findings." in messages[1]["content"]
+    assert len(payload["observation"]["execution_history"]) == 1
+    assert "Never repeat a successful tool call" in system_prompt
+    assert "I will read README next" not in system_prompt
+
+
 def test_protocol_repair_messages_include_expected_schema_and_bad_examples():
     messages = make_builder().protocol_repair_messages(
         raw_text='{"type":"plain_answer","content":"hi"}',
         error_message="Unsupported model JSON type: plain_answer",
         allowed_types={"final_answer"},
+        execution_context={"selected_skill": {"name": "code-review"}},
+        execution_history=[
+            {
+                "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                "tool_result": {"ok": True},
+            }
+        ],
+        stage="tool_follow_up",
     )
 
     system_prompt = messages[0]["content"]
@@ -140,6 +182,35 @@ def test_protocol_repair_messages_include_expected_schema_and_bad_examples():
     assert "plain_answer is unsupported" in system_prompt
     assert '{"type":"final_answer","content":"hi"}' in system_prompt
     assert user_payload["allowed_types"] == ["final_answer"]
+    assert user_payload["execution_context"]["selected_skill"]["name"] == "code-review"
+    assert user_payload["execution_history"][0]["tool_call"]["tool_name"] == "workspace_files"
+    assert user_payload["stage"] == "tool_follow_up"
+
+
+def test_verification_revision_messages_preserve_context_and_forbid_tools():
+    messages = make_builder().verification_revision_messages(
+        user_input="review project",
+        response="unsupported claim",
+        verification={"passed": False, "checks": [{"name": "evidence", "passed": False}]},
+        execution_context={
+            "selected_skill": {"name": "code-review", "instructions": "Inspect evidence."},
+            "allowed_tools": ["workspace_files"],
+        },
+        execution_history=[
+            {
+                "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                "tool_result": {"ok": True, "files": ["README.md"]},
+            }
+        ],
+        workspace_context={"path": "C:/project"},
+    )
+
+    system_prompt = messages[0]["content"]
+    payload = json.loads(messages[1]["content"])
+    assert "Do not request or call tools" in system_prompt
+    assert "Return only one final_answer JSON object" in system_prompt
+    assert payload["execution_context"]["selected_skill"]["name"] == "code-review"
+    assert payload["execution_history"][0]["tool_result"]["files"] == ["README.md"]
 
 
 def test_tool_protocol_documents_exact_file_reader_schema():

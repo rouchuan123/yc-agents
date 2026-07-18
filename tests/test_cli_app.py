@@ -327,6 +327,37 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         self.assertEqual(status.context_limit, 64000)
 
+    def test_format_runtime_event_distinguishes_recovery_states(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+        self.assertEqual(
+            app.format_runtime_event(
+                {
+                    "event_type": "recovery_attempt",
+                    "payload": {"kind": "provider", "attempt": 1, "limit": 2},
+                }
+            ),
+            "Retrying provider 1/2.",
+        )
+        self.assertEqual(
+            app.format_runtime_event(
+                {"event_type": "recovery_succeeded", "payload": {"kind": "protocol"}}
+            ),
+            "Recovered protocol.",
+        )
+        self.assertEqual(
+            app.format_runtime_event(
+                {"event_type": "recovery_exhausted", "payload": {"kind": "verification"}}
+            ),
+            "Recovery exhausted: verification.",
+        )
+        self.assertEqual(
+            app.format_runtime_event(
+                {"event_type": "run_stopped", "payload": {"error_type": "permission_error"}}
+            ),
+            "Run stopped: permission_error.",
+        )
+
     def test_message_input_calls_runtime_and_records_turns(self):
         runtime = FakeRuntime()
         app = YCAgentsTUIApp(runtime, status_collector=FakeStatusCollector())

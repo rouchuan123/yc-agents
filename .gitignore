@@ -44,6 +44,8 @@ Thumbs.db
 docs/superpowers/
 rules/
 docs/interview-notes.md
+docs/面试/
+docs/开发规则.md
 
 # Local git worktrees
 .worktrees/
