@@ -16,25 +16,37 @@ class CLIStatus:
     context_source: str = "estimated"
 
     def first_row(self, width=100):
-        left = "YCore"
-        right = f"Session {self.session_id}"
-
-        if width <= len(left) + len(right) + 1:
-            return middle_truncate(f"{left} {right}", width)
-
-        return f"{left}{' ' * (width - len(left) - len(right))}{right}"
+        context = format_context_usage(
+            self.context_used,
+            self.context_limit,
+            self.context_source,
+        ).split(" (", 1)[0]
+        left = f"YCore  {self.workspace}"
+        right = f"Context {context}"
+        return _align_sides(left, right, width)
 
     def second_row(self, width=100):
-        parts = [
-            f"Workspace {middle_truncate(str(self.workspace), 36)}",
-            f"Model {middle_truncate(self.model, 24)}",
-            f"Context {format_context_usage(self.context_used, self.context_limit, self.context_source)}",
-            f"Branch {middle_truncate(self.branch, 24)}",
-        ]
-        return middle_truncate("   ".join(parts), width)
+        left = f"{self.model}  |  {self.branch}"
+        right = f"Session {self.session_id}"
+        return _align_sides(left, right, width)
 
     def summary(self, width=100):
-        return f"{self.first_row(width)}\n{self.second_row(width)}"
+        return self.first_row(width)
+
+    def prompt_meta(self, width=100):
+        return self.second_row(width)
+
+
+def _align_sides(left, right, width):
+    width = max(0, int(width or 0))
+    if width == 0:
+        return ""
+    if width <= len(right) + 1:
+        return middle_truncate(right, width)
+
+    left_width = width - len(right) - 1
+    visible_left = middle_truncate(left, left_width)
+    return f"{visible_left}{' ' * (width - len(visible_left) - len(right))}{right}"
 
 
 class StatusCollector:

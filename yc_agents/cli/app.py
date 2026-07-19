@@ -27,115 +27,12 @@ from yc_agents.cli.sidebar import SidebarListItem, build_session_entries, build_
 from yc_agents.cli.sessions import CLISessionStore
 from yc_agents.cli.status import StatusCollector
 from yc_agents.cli.suggestions import CommandSuggestionRegistry
+from yc_agents.cli.theme import YCORE_TCSS
 from yc_agents.cli.workspaces import WorkspaceStore
 
 
 class YCAgentsTUIApp(App):
-    CSS = """
-    Screen {
-        layout: vertical;
-        background: #0b1020;
-        color: $text;
-    }
-
-    #status {
-        dock: top;
-        height: 2;
-        padding: 0 1;
-        background: #0f172a;
-        color: $text;
-    }
-
-    #workbench {
-        height: 1fr;
-    }
-
-    #sidebar {
-        width: 34;
-        min-width: 28;
-        padding: 0 1;
-        border-right: solid #334155;
-        background: #0f172a;
-    }
-
-    #sidebar.hidden {
-        display: none;
-    }
-
-    .sidebar-title {
-        height: 1;
-        margin-top: 1;
-        color: $accent;
-        text-style: bold;
-    }
-
-    #workspace-list {
-        height: 7;
-        margin-bottom: 1;
-    }
-
-    #session-list {
-        height: 1fr;
-    }
-
-    #main-pane {
-        width: 1fr;
-        height: 1fr;
-    }
-
-    #chat-box {
-        height: 1fr;
-        border: tall #2563eb;
-        background: #0b1020;
-    }
-
-    #transcript {
-        height: 1fr;
-        border: none;
-    }
-
-    #processing-elapsed {
-        height: 1;
-        padding: 0 1;
-        color: $text-muted;
-        background: #0f172a;
-    }
-
-    #selection-list {
-        height: auto;
-        max-height: 10;
-        padding: 0 1;
-        background: #111827;
-        color: $text;
-    }
-
-    #selection-list.hidden {
-        display: none;
-    }
-
-    #command-suggestions {
-        height: 8;
-        max-height: 8;
-        padding: 0 1;
-        background: #111827;
-        color: $text-muted;
-    }
-
-    #prompt-area {
-        height: auto;
-        background: #0f172a;
-    }
-
-    #prompt {
-        background: #0f172a;
-    }
-
-    #prompt > .input--cursor {
-        background: transparent;
-        color: $accent;
-        text-style: underline;
-    }
-    """
+    CSS = YCORE_TCSS
 
     BINDINGS = [
         ("ctrl+b", "toggle_sidebar", "Sidebar"),
@@ -179,6 +76,7 @@ class YCAgentsTUIApp(App):
         self.command_suggestions = None
         self.prompt_area = None
         self.prompt = None
+        self.prompt_meta = None
         self.workspace_store = workspace_store
         self.workspace = workspace
         self.session_store = session_store
@@ -194,7 +92,7 @@ class YCAgentsTUIApp(App):
         self.suggestion_registry = suggestion_registry or CommandSuggestionRegistry()
         self.filtered_suggestions = []
         self.selected_suggestion_index = 0
-        self.command_suggestion_window_size = 8
+        self.command_suggestion_window_size = 5
         self.command_suggestion_scroll_offset = 0
         self.command_suggestions_visible = False
         self.selection_list_visible = False
@@ -223,17 +121,19 @@ class YCAgentsTUIApp(App):
         self.command_suggestions = Static("", id="command-suggestions")
         self.command_suggestions.display = False
         self.prompt = Input(
-            placeholder="Type a message, or use /status /stop /skills /clear /exit",
+            placeholder="Ask YCore anything...",
             id="prompt",
         )
+        self.prompt_meta = Static(self.render_prompt_meta(), id="prompt-meta")
         self.prompt_area = Vertical(
-            self.command_suggestions,
             self.prompt,
+            self.prompt_meta,
             id="prompt-area",
         )
         self.main_pane = Vertical(
             Vertical(self.transcript, self.elapsed_status, id="chat-box"),
             self.selection_list,
+            self.command_suggestions,
             self.prompt_area,
             id="main-pane",
         )
@@ -244,6 +144,7 @@ class YCAgentsTUIApp(App):
 
     async def on_mount(self):
         await self.refresh_sidebar()
+        self._refresh_chrome_for_width(self.size.width)
         if self.prompt is not None:
             self.prompt.focus()
 
@@ -281,6 +182,9 @@ class YCAgentsTUIApp(App):
 
     def render_status(self, width=100):
         return self.status_collector.collect().summary(width=width)
+
+    def render_prompt_meta(self, width=100):
+        return self.status_collector.collect().prompt_meta(width=width)
 
     def attach_runtime_event_callback(self):
         for attribute in ("event_callback", "tool_event_callback"):
@@ -401,8 +305,27 @@ class YCAgentsTUIApp(App):
 
     def action_toggle_sidebar(self):
         self.sidebar_visible = not self.sidebar_visible
-        if self.sidebar is not None:
-            self.sidebar.display = self.sidebar_visible
+        self._sync_sidebar_visibility()
+
+    def on_resize(self, event):
+        self._sync_sidebar_visibility(width=event.size.width)
+        self._refresh_chrome_for_width(event.size.width)
+
+    def _sync_sidebar_visibility(self, width=None):
+        if self.sidebar is None:
+            return
+        current_width = width if width is not None else self.size.width
+        self.sidebar.display = self.sidebar_visible and current_width >= 96
+
+    def _refresh_chrome_for_width(self, width):
+        width = max(40, int(width or 0))
+        if self.status_widget is not None:
+            self.status_widget.update(self.render_status(width=max(20, width - 4)))
+
+        if self.prompt_meta is not None:
+            sidebar_width = 28 if self.sidebar is not None and self.sidebar.display else 0
+            prompt_width = max(20, width - sidebar_width - 10)
+            self.prompt_meta.update(self.render_prompt_meta(width=prompt_width))
 
     def _copy_selected_text(self):
         selected_text = self.screen.get_selected_text()
@@ -911,7 +834,12 @@ class YCAgentsTUIApp(App):
             self.transcript.scroll_end(animate=False)
 
     def build_turn_widgets(self, speaker, content):
-        speaker_widget = Static(Text(str(speaker), style="bold"))
+        kind = self._turn_kind(speaker)
+        label = "YCore" if kind == "assistant" else str(speaker)
+        speaker_widget = Static(
+            Text(label, style="bold"),
+            classes=f"turn-label turn-{kind}-label",
+        )
 
         if speaker == "Assistant" and self._is_structured_assistant_content(content):
             process_entries = list(content.get("process_entries") or [])
@@ -921,19 +849,39 @@ class YCAgentsTUIApp(App):
                 TextualMarkdown(self._render_process_entries_text(process_entries)),
                 title=self._process_title(content),
                 collapsed=collapsed,
+                classes="process-block",
             )
             widgets = [speaker_widget, process]
             if final_content:
-                widgets.append(TextualMarkdown(final_content))
-            widgets.append(Static(""))
+                widgets.append(
+                    TextualMarkdown(
+                        final_content,
+                        classes="turn-body turn-assistant-body",
+                    )
+                )
+            widgets.append(Static("", classes="turn-gap"))
             return widgets
 
         if speaker == "Assistant":
-            body = TextualMarkdown(str(content))
+            body = TextualMarkdown(
+                str(content),
+                classes="turn-body turn-assistant-body",
+            )
         else:
-            body = Static(str(content))
+            body = Static(str(content), classes=f"turn-body turn-{kind}-body")
 
-        return [speaker_widget, body, Static("")]
+        return [speaker_widget, body, Static("", classes="turn-gap")]
+
+    @staticmethod
+    def _turn_kind(speaker):
+        normalized = str(speaker).strip().lower()
+        if normalized == "you":
+            return "user"
+        if normalized == "assistant":
+            return "assistant"
+        if normalized == "error":
+            return "error"
+        return "system"
 
     def _transcript_text(self):
         blocks = []
@@ -954,8 +902,8 @@ class YCAgentsTUIApp(App):
     def _process_title(self, content):
         entries = list(content.get("process_entries") or [])
         if content.get("process_running"):
-            return "执行过程：实时展开中"
-        return f"执行过程：{len(entries)} 条记录，点击展开"
+            return f"正在执行 · {len(entries)} 条记录"
+        return f"执行过程 · {len(entries)} 条记录"
 
     def _render_process_entries_text(self, entries):
         lines = []
@@ -964,16 +912,24 @@ class YCAgentsTUIApp(App):
             if entry_type == "assistant_step":
                 lines.append(str(entry.get("content", "")))
             elif entry_type == "tool_call":
-                lines.append(f"Tool: {entry.get('summary', '')}")
+                lines.append(f"调用工具 · {entry.get('summary', '')}")
             elif entry_type == "tool_result":
                 tool_name = entry.get("tool_name", "tool")
-                lines.append(f"Tool: Finished {tool_name}. {entry.get('summary', '')}")
+                lines.append(f"{tool_name} 完成 · {entry.get('summary', '')}")
             else:
                 lines.append(str(entry.get("summary") or entry.get("content") or entry))
         return "\n\n".join(line for line in lines if line)
 
     def render_turn(self, speaker, content):
-        speaker_line = Text(str(speaker), style="bold")
+        kind = self._turn_kind(speaker)
+        label = "YCore" if kind == "assistant" else str(speaker)
+        label_style = {
+            "assistant": "bold #bb9af7",
+            "error": "bold #f7768e",
+            "system": "bold #7aa2f7",
+            "user": "bold #e1e1e1",
+        }[kind]
+        speaker_line = Text(label, style=label_style)
 
         if speaker == "Assistant" and self._is_structured_assistant_content(content):
             process_entries = list(content.get("process_entries") or [])
@@ -1004,8 +960,7 @@ class YCAgentsTUIApp(App):
             self.elapsed_status.update("")
 
     def refresh_status(self):
-        if self.status_widget is not None:
-            self.status_widget.update(self.render_status())
+        self._refresh_chrome_for_width(self.size.width)
 
     async def refresh_sidebar(self):
         if self.sidebar is None:

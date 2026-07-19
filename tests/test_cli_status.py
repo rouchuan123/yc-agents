@@ -39,7 +39,7 @@ class TestCLIFormatting(unittest.TestCase):
 
 
 class TestCLIStatus(unittest.TestCase):
-    def test_status_formats_second_row(self):
+    def test_status_formats_prompt_metadata(self):
         status = CLIStatus(
             workspace=Path(r"E:\code\yc-agents"),
             model="deepseek-chat",
@@ -49,12 +49,13 @@ class TestCLIStatus(unittest.TestCase):
             session_id="session-1234",
         )
 
-        self.assertEqual(
-            status.second_row(width=120),
-            r"Workspace E:\code\yc-agents   Model deepseek-chat   Context ~1.6k/8k (20.00%)   Branch feature/new-cli",
-        )
+        result = status.prompt_meta(width=120)
 
-    def test_status_first_row_places_session_on_right(self):
+        self.assertTrue(result.startswith("deepseek-chat  |  feature/new-cli"))
+        self.assertTrue(result.endswith("Session session-1234"))
+        self.assertEqual(len(result), 120)
+
+    def test_status_first_row_places_context_on_right(self):
         status = CLIStatus(
             workspace=Path("."),
             model="m",
@@ -67,8 +68,24 @@ class TestCLIStatus(unittest.TestCase):
         result = status.first_row(width=40)
 
         self.assertTrue(result.startswith("YCore"))
-        self.assertTrue(result.endswith("Session session-1234"))
+        self.assertTrue(result.endswith("Context 0/8k"))
         self.assertEqual(len(result), 40)
+
+    def test_status_summary_is_single_line(self):
+        status = CLIStatus(
+            workspace=Path(r"E:\code\yc-agents"),
+            model="deepseek-chat",
+            context_used=1600,
+            context_limit=8000,
+            branch="main",
+            session_id="session-1234",
+        )
+
+        summary = status.summary(width=80)
+
+        self.assertNotIn("\n", summary)
+        self.assertIn(r"E:\code\yc-agents", summary)
+        self.assertTrue(summary.endswith("Context ~1.6k/8k"))
 
     def test_status_collector_uses_injected_sources(self):
         collector = StatusCollector(

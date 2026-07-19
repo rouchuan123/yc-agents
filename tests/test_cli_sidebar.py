@@ -104,6 +104,6 @@ def test_render_sidebar_entry_uses_active_marker_and_truncates_detail():
 
     rendered = render_sidebar_entry(entry, detail_width=18)
 
-    assert rendered.startswith("* yc-agents")
+    assert rendered.startswith("> yc-agents")
     assert "..." in rendered
     assert len(rendered.splitlines()) == 2
