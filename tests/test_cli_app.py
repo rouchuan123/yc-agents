@@ -327,6 +327,16 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         self.assertEqual(status.context_limit, 64000)
 
+    def test_context_details_renders_estimated_fallback(self):
+        runtime = FakeRuntime()
+        runtime.context_limit = 1_000_000
+        app = YCAgentsTUIApp(runtime, status_collector=FakeStatusCollector())
+
+        details = app.render_context_details()
+
+        self.assertIn("Context: 0/1000k (0.00%)", details)
+        self.assertIn("Source: estimated", details)
+
     def test_format_runtime_event_distinguishes_recovery_states(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 
@@ -1243,6 +1253,7 @@ class TestYCAgentsTUIApp(unittest.TestCase):
                 "/workspace delete",
                 "/workspace delete <path-or-id>",
                 "/status",
+                "/context",
                 "/stop",
                 "/skills",
                 "/clear",

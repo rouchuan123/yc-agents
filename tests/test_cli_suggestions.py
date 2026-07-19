@@ -26,6 +26,7 @@ class TestCommandSuggestionRegistry(unittest.TestCase):
                 "/workspace delete",
                 "/workspace delete <path-or-id>",
                 "/status",
+                "/context",
                 "/stop",
                 "/skills",
                 "/clear",

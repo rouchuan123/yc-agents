@@ -26,6 +26,9 @@ class TestCLICommands(unittest.TestCase):
         self.assertEqual(command.action, "status")
         self.assertEqual(command.content, "")
 
+    def test_context_command(self):
+        self.assertEqual(parse_cli_input("/context").action, "context")
+
     def test_stop_command(self):
         command = parse_cli_input("/stop")
 

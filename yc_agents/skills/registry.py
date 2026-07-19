@@ -30,7 +30,6 @@ class SkillRegistry:
             {
                 "name": skill.name,
                 "description": skill.description,
-                "allowed_tools": skill.allowed_tools,
             }
             for skill in self.skills.values()
         ]

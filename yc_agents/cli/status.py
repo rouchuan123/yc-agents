@@ -13,6 +13,7 @@ class CLIStatus:
     context_limit: int
     branch: str
     session_id: str
+    context_source: str = "estimated"
 
     def first_row(self, width=100):
         left = "YCore"
@@ -27,7 +28,7 @@ class CLIStatus:
         parts = [
             f"Workspace {middle_truncate(str(self.workspace), 36)}",
             f"Model {middle_truncate(self.model, 24)}",
-            f"Context {format_context_usage(self.context_used, self.context_limit)}",
+            f"Context {format_context_usage(self.context_used, self.context_limit, self.context_source)}",
             f"Branch {middle_truncate(self.branch, 24)}",
         ]
         return middle_truncate("   ".join(parts), width)
@@ -42,6 +43,7 @@ class StatusCollector:
         workspace_provider=None,
         model_provider=None,
         context_provider=None,
+        context_source_provider=None,
         branch_provider=None,
         session_id=None,
         context_limit=8000,
@@ -49,6 +51,7 @@ class StatusCollector:
         self.workspace_provider = workspace_provider or (lambda: Path.cwd())
         self.model_provider = model_provider or (lambda: "unknown")
         self.context_provider = context_provider or (lambda: 0)
+        self.context_source_provider = context_source_provider or (lambda: "estimated")
         self.branch_provider = branch_provider or (lambda: "no-git")
         self.session_provider = session_id if callable(session_id) else None
         self.session_id = None if callable(session_id) else (session_id or f"session-{uuid4().hex[:8]}")
@@ -60,6 +63,7 @@ class StatusCollector:
             model=self._safe_model(),
             context_used=self._safe_context_used(),
             context_limit=self.context_limit,
+            context_source=self._safe_context_source(),
             branch=self._safe_branch(),
             session_id=self._safe_session_id(),
         )
@@ -85,6 +89,13 @@ class StatusCollector:
             return 0
 
         return max(0, used)
+
+    def _safe_context_source(self):
+        try:
+            source = str(self.context_source_provider() or "estimated")
+        except Exception:
+            return "estimated"
+        return source if source in {"provider", "estimated"} else "estimated"
 
     def _safe_branch(self):
         try:

@@ -48,11 +48,10 @@ def test_skill_summary_includes_discovery_metadata():
     )
     skill.inputs = ["project_files"]
     skill.outputs = ["review_note"]
-    skill.allowed_tools = ["workspace_files", "file_reader"]
 
     summary = skill.to_summary()
 
     assert summary["triggers"] == ["代码审查"]
     assert summary["inputs"] == ["project_files"]
     assert summary["outputs"] == ["review_note"]
-    assert summary["allowed_tools"] == ["workspace_files", "file_reader"]
+    assert "allowed_tools" not in summary

@@ -1,6 +1,7 @@
 import json
 
 from yc_agents.harness.json_protocol import InvalidModelJSONError, parse_model_json
+from yc_agents.core.llm_call import invoke_llm
 
 
 class LLMIntentClassifier:
@@ -30,7 +31,11 @@ class LLMIntentClassifier:
             },
         ]
         think_json = getattr(self.llm, "think_json", None)
-        raw_text = think_json(messages) if callable(think_json) else self.llm.think(messages)
+        raw_text = (
+            invoke_llm(think_json, messages, usage_kind="auxiliary")
+            if callable(think_json)
+            else invoke_llm(self.llm.think, messages, usage_kind="auxiliary")
+        )
         result = parse_model_json(raw_text, allowed_types={"skill_selection"})
 
         if result["type"] != "skill_selection":
@@ -54,5 +59,4 @@ class LLMIntentClassifier:
         return {
             "name": skill.name,
             "description": skill.description,
-            "allowed_tools": skill.allowed_tools,
         }

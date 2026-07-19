@@ -16,15 +16,8 @@ class TestSkillLoader(unittest.TestCase):
             ["code-review", "eval-writer", "ycore-analytics"],
         )
         self.assertTrue(all("中文" in skill.body for skill in skills))
-        tools_by_skill = {skill.name: set(skill.allowed_tools) for skill in skills}
-        self.assertIn("workspace_files", tools_by_skill["code-review"])
-        self.assertIn("file_reader", tools_by_skill["code-review"])
-        self.assertIn("workspace_files", tools_by_skill["eval-writer"])
-        self.assertIn("file_reader", tools_by_skill["eval-writer"])
-        self.assertIn(
-            "mcp_sqlite_query_readonly",
-            tools_by_skill["ycore-analytics"],
-        )
+        self.assertTrue(all(skill.allowed_tools == [] for skill in skills))
+        self.assertTrue(all("allowed_tools" not in skill.to_dict() for skill in skills))
 
     def test_code_review_skill_requires_deep_evidence_based_review(self):
         loader = SkillLoader("skills")
@@ -90,14 +83,12 @@ class TestSkillLoader(unittest.TestCase):
             with self.subTest(marker=marker):
                 self.assertIn(marker, skill.body)
 
-    def test_code_review_skill_allows_review_evidence_tools(self):
+    def test_code_review_skill_describes_review_evidence_tools_without_permissions(self):
         loader = SkillLoader("skills")
 
         skill = loader.load_one(Path("skills") / "code-review")
 
-        for tool_name in ["git_inspector", "code_search", "verification_runner"]:
-            with self.subTest(tool_name=tool_name):
-                self.assertIn(tool_name, skill.allowed_tools)
+        self.assertEqual(skill.allowed_tools, [])
 
         required_markers = [
             "项目体检模式",

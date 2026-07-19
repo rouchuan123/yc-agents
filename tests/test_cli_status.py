@@ -23,13 +23,19 @@ class TestCLIFormatting(unittest.TestCase):
         self.assertEqual(middle_truncate("abcdef", 3), "abc")
 
     def test_format_context_usage_labels_estimate(self):
-        self.assertEqual(format_context_usage(1600, 8000), "20% / 8k est")
+        self.assertEqual(format_context_usage(1600, 8000), "~1.6k/8k (20.00%)")
+
+    def test_format_context_usage_labels_provider_value_as_exact(self):
+        self.assertEqual(
+            format_context_usage(9200, 1_000_000, "provider"),
+            "9.2k/1000k (0.92%)",
+        )
 
     def test_format_context_usage_clamps_percent(self):
-        self.assertEqual(format_context_usage(12000, 8000), "100% / 8k est")
+        self.assertEqual(format_context_usage(12000, 8000), "~12k/8k (100.00%)")
 
     def test_format_context_usage_handles_empty_limit(self):
-        self.assertEqual(format_context_usage(10, 0), "0% / 0 est")
+        self.assertEqual(format_context_usage(10, 0), "0/0")
 
 
 class TestCLIStatus(unittest.TestCase):
@@ -45,7 +51,7 @@ class TestCLIStatus(unittest.TestCase):
 
         self.assertEqual(
             status.second_row(width=120),
-            r"Workspace E:\code\yc-agents   Model deepseek-chat   Context 20% / 8k est   Branch feature/new-cli",
+            r"Workspace E:\code\yc-agents   Model deepseek-chat   Context ~1.6k/8k (20.00%)   Branch feature/new-cli",
         )
 
     def test_status_first_row_places_session_on_right(self):

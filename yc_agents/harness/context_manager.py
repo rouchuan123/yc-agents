@@ -22,7 +22,6 @@ class ContextManager:
             "user_input": user_input,
             "workspace": workspace_context or {},
             "memory": memory,
-            "recent_messages": memory["session"],
             "skills": [
                 self._summarize_skill(skill)
                 for skill in skills
@@ -55,7 +54,6 @@ class ContextManager:
             "user_input": user_input,
             "workspace": workspace_context or {},
             "memory": memory,
-            "recent_messages": memory["session"],
             "selected_skill": selected_skill.to_dict(),
             "selection": selection,
             "rag_results": rag_results or [],
@@ -79,11 +77,14 @@ class ContextManager:
         compression_threshold=None,
     ):
         if memory_context is not None:
-            return {
+            result = {
                 "session": memory_context.get("session", []),
                 "summary": memory_context.get("summary", ""),
                 "profile": memory_context.get("profile", {}),
             }
+            if "retrieved" in memory_context:
+                result["retrieved"] = memory_context.get("retrieved", [])
+            return result
 
         session_messages = session or []
         summary_text = self._maybe_compress_summary(
@@ -97,6 +98,7 @@ class ContextManager:
             "session": session_messages,
             "summary": summary_text,
             "profile": profile or {},
+            "retrieved": [],
         }
 
     def _maybe_compress_summary(
@@ -125,5 +127,4 @@ class ContextManager:
         return {
             "name": skill.name,
             "description": skill.description,
-            "allowed_tools": skill.allowed_tools,
         }

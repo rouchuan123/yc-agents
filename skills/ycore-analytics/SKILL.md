@@ -19,10 +19,6 @@ outputs:
   - analytics_summary
   - failure_analysis
   - eval_summary
-allowed_tools:
-  - mcp_sqlite_list_tables
-  - mcp_sqlite_describe_table
-  - mcp_sqlite_query_readonly
 examples:
   - 最近 20 次 Agent 运行情况怎么样？
   - 哪些工具最近最容易失败？

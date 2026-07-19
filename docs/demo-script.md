@@ -58,8 +58,8 @@ E:\code\Ycore-demo\.ycore\runs\session_20260630_ea86176d\
 1. CLI 接收中文请求。
 2. `SkillRuntimeAgent` 根据技能摘要选择 `code-review`。
 3. `PromptBuilder` 注入 workspace、记忆、项目指令和选中 Skill。
-4. 模型按 allowed tools 发起 `workspace_files`、`file_reader`、`code_search` 或 `verification_runner` 调用。
-5. `ToolGateway` 校验工具权限和参数。
+4. 模型从 `ycore.json` 已启用的全局工具中选择 `workspace_files`、`file_reader`、`code_search` 或 `verification_runner`。
+5. `ToolGateway` 校验工具启用状态、参数和审批策略。
 6. runtime 写入 `.ycore/runs/<session_id>/<run_id>/trace.json`、`state.json` 和 `final_output.md`。
 
 ## 场景二：eval-writer 设计 eval
@@ -96,7 +96,7 @@ E:\code\Ycore-demo\.ycore\runs\session_20260630_ea86176d\
 
 ## 五分钟讲解稿
 
-YCore 是一个面向中文用户的通用本地 Agent Harness。它不把某个业务流程写进全局 prompt，而是把通用运行边界做扎实：Skill 选择、工作区上下文、项目指令、工具权限、trace、state、eval 和 verification。具体落地方向由 Skill 决定。
+YCore 是一个面向中文用户的通用本地 Agent Harness。它不把某个业务流程写进全局 prompt，而是把通用运行边界做扎实：Skill 选择、工作区上下文、项目指令、全局工具开关、trace、state、eval 和 verification。具体落地方向由 Skill 决定，工具启用只由 `ycore.json` 决定。
 
 当前我先用 `code-review` 和 `eval-writer` 做验证：前者证明 Harness 能支撑本地项目审查类 workflow，后者证明评测方案可以拆成 deterministic eval、真实模型 smoke eval 和人工 rubric。未来加入其他领域 Skill 时，复用的是同一套运行时、工具网关、trace 和 eval 框架。
 
@@ -104,7 +104,7 @@ YCore 是一个面向中文用户的通用本地 Agent Harness。它不把某个
 
 ## 常见追问
 
-- Skill 如何声明 allowed tools？
+- 如何在 `ycore.json tools.entries` 中启用或关闭全局工具？
 - 项目根 `YCORE.md` 和本地 `.ycore/YCORE.md` 谁优先？
 - 工具调用失败时 runtime 如何记录和恢复？
 - eval 为什么可以不依赖大模型？

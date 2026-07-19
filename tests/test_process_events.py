@@ -79,6 +79,19 @@ class TestProcessEvents(unittest.TestCase):
             "写入 outputs/report.md：120 字节。",
         )
 
+    def test_workspace_write_summary_uses_operation_path_and_bytes(self):
+        result = {
+            "path": "src/app.py",
+            "operation": "replace",
+            "bytes": 240,
+            "exists": True,
+        }
+
+        self.assertEqual(
+            summarize_tool_result("workspace_write", result),
+            "replace src/app.py：240 字节。",
+        )
+
     def test_failure_summary_uses_error_message(self):
         result = {
             "ok": False,

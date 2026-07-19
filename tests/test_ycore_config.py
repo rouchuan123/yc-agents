@@ -160,6 +160,45 @@ class TestYCoreConfig(unittest.TestCase):
             self.assertEqual(config.analytics_data()["maxRows"], 100)
             self.assertEqual(config.source_path, workspace_override)
 
+    def test_workspace_tool_entries_override_enabled_state(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / ".ycore").mkdir()
+            global_config = root / "global-ycore.json"
+            global_config.write_text(
+                json.dumps(
+                    {
+                        "tools": {
+                            "entries": {
+                                "workspace_files": {"enabled": True},
+                                "web_search": {"enabled": True},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (workspace / ".ycore" / "ycore.json").write_text(
+                json.dumps(
+                    {
+                        "tools": {
+                            "entries": {
+                                "web_search": {"enabled": False},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = YCoreConfig.load(workspace, global_path=global_config)
+
+            self.assertIn("workspace_files", config.enabled_tools())
+            self.assertNotIn("web_search", config.enabled_tools())
+            self.assertFalse(config.tool_entries()["web_search"]["enabled"])
+
     def test_workspace_dot_ycore_models_merge_by_id(self):
         with TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

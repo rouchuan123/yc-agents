@@ -13,6 +13,8 @@ from yc_agents.tools.base import BaseTool
 from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.markdown_writer import MarkdownWriterTool
 from yc_agents.tools.registry import ToolRegistry
+from yc_agents.tools.web_search import WebSearchTool
+from yc_agents.tools.workspace_write import WorkspaceWriteTool
 
 
 class FakeLLM:
@@ -82,6 +84,24 @@ class WorkspaceFilesStubTool(BaseTool):
 
     def run(self, pattern="*"):
         return {"files": [{"path": "app.py"}]}
+
+
+class FakeWebSearchProvider:
+    name = "fake-search"
+
+    def __init__(self):
+        self.calls = []
+
+    def search(self, **kwargs):
+        self.calls.append(kwargs)
+        return {
+            "ok": True,
+            "tool": "web_search",
+            "provider": self.name,
+            "query": kwargs["query"],
+            "answer": "Found open source Git tools.",
+            "results": [],
+        }
 
 
 def write_skill(skills_dir, name="code-review", allowed_tools=None):
@@ -316,7 +336,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(saved[-1]["content"], "最终分析")
             self.assertEqual(saved[-1]["process_entries"][0]["content"], "我先看文件。")
 
-    def test_run_includes_rag_results_when_selected_skill_allows_rag_search(self):
+    def test_selected_skill_does_not_trigger_rag_search_automatically(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"
             write_skill(skills_dir, allowed_tools=["rag_search"])
@@ -344,12 +364,9 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
             answer_context = llm.messages[1][1]["content"]
             self.assertEqual(response, "RAG-backed answer")
-            self.assertEqual(
-                rag_tool.calls,
-                [{"query": "summarize architecture and risks", "top_k": 3}],
-            )
+            self.assertEqual(rag_tool.calls, [])
             self.assertIn("rag_results", answer_context)
-            self.assertIn("report-standard", answer_context)
+            self.assertNotIn("report-standard", answer_context)
 
     def test_runtime_handles_markdown_writer_tool_call_and_final_answer(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -506,7 +523,10 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
     def test_observation_prompt_keeps_full_selected_skill_context(self):
         llm = FakeLLM([json.dumps({"type": "final_answer", "content": "done"})])
-        agent = SkillRuntimeAgent(llm)
+        agent = SkillRuntimeAgent(
+            llm,
+            workspace_context={"available_tools": ["workspace_files", "file_reader"]},
+        )
         agent._set_skill_tool_context(
             SkillDefinition(
                 name="code-review",
@@ -533,13 +553,16 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             "Read the project, trace a critical path, then report evidence.",
         )
         self.assertEqual(
-            payload["execution_context"]["allowed_tools"],
+            payload["execution_context"]["available_tools"],
             ["workspace_files", "file_reader"],
         )
 
     def test_verification_revision_keeps_skill_context_and_execution_history(self):
         llm = FakeLLM([json.dumps({"type": "final_answer", "content": "revised"})])
-        agent = SkillRuntimeAgent(llm)
+        agent = SkillRuntimeAgent(
+            llm,
+            workspace_context={"available_tools": ["workspace_files", "file_reader"]},
+        )
         agent._set_skill_tool_context(
             SkillDefinition(
                 name="code-review",
@@ -569,7 +592,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             payload["execution_context"]["selected_skill"]["body"],
             "Read evidence and report findings by severity.",
         )
-        self.assertEqual(payload["execution_context"]["allowed_tools"], ["workspace_files", "file_reader"])
+        self.assertEqual(payload["execution_context"]["available_tools"], ["workspace_files", "file_reader"])
         self.assertEqual(payload["execution_history"], history)
 
     def test_tool_protocol_tells_model_to_put_progress_in_message_field(self):
@@ -712,7 +735,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertTrue(router.calls)
 
 
-    def test_runtime_denies_global_tool_not_allowed_by_selected_skill(self):
+    def test_selected_skill_can_use_any_globally_enabled_tool(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             skills_dir = root / "skills"
@@ -735,7 +758,13 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                                 "file_name": "blocked",
                                 "content": "blocked",
                             },
-                            "reason": "should be denied",
+                            "reason": "save review",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "final_answer",
+                            "content": "saved",
                         }
                     ),
                 ]
@@ -752,10 +781,10 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
             response = runtime.run("review this project")
 
-            self.assertIn("任务未能完整完成", response)
-            self.assertIn("Tool is not allowed: markdown_writer", response)
+            self.assertEqual(response, "saved")
+            self.assertTrue((root / "outputs" / "blocked.md").exists())
 
-    def test_plain_answer_only_allows_minimal_workspace_tools(self):
+    def test_plain_answer_can_use_any_globally_enabled_tool(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             llm = FakeLLM(
@@ -779,6 +808,12 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                             "reason": "should be denied in plain answer",
                         }
                     ),
+                    json.dumps(
+                        {
+                            "type": "final_answer",
+                            "content": "saved",
+                        }
+                    ),
                 ]
             )
             agent = SkillRuntimeAgent(llm)
@@ -793,10 +828,113 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
             response = runtime.run("hello")
 
-            self.assertIn("任务未能完整完成", response)
-            self.assertIn("Tool is not allowed: markdown_writer", response)
+            self.assertEqual(response, "saved")
+            self.assertTrue((root / "outputs" / "plain.md").exists())
 
-    def test_runtime_records_unknown_tool_declared_by_skill_without_failing(self):
+    def test_plain_answer_allows_globally_enabled_web_search(self):
+        llm = FakeLLM(
+            [
+                json.dumps(
+                    {
+                        "type": "skill_selection",
+                        "selected_skill": None,
+                        "confidence": 0.1,
+                        "reason": "plain web search",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "tool_call",
+                        "tool_name": "web_search",
+                        "arguments": {
+                            "query": "open source Git tools",
+                            "max_results": 5,
+                        },
+                        "reason": "search current web information",
+                    }
+                ),
+                json.dumps(
+                    {
+                        "type": "final_answer",
+                        "content": "Found open source Git tools.",
+                    }
+                ),
+            ]
+        )
+        provider = FakeWebSearchProvider()
+        registry = ToolRegistry()
+        registry.register(WebSearchTool(provider=provider))
+        agent = SkillRuntimeAgent(llm)
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["web_search"],
+        )
+
+        response = runtime.run("帮我搜搜有什么开源的 Git 工具")
+
+        self.assertEqual(response, "Found open source Git tools.")
+        self.assertEqual(provider.calls[0]["query"], "open source Git tools")
+
+    def test_selected_skill_can_use_globally_enabled_workspace_write(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            skills_dir = root / "skills"
+            write_skill(skills_dir, allowed_tools=["workspace_files"])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "edit requested",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "tool_call",
+                            "tool_name": "workspace_write",
+                            "arguments": {
+                                "file_path": "notes.txt",
+                                "operation": "create",
+                                "content": "created by agent\n",
+                            },
+                            "reason": "create requested workspace file",
+                        }
+                    ),
+                    json.dumps(
+                        {
+                            "type": "final_answer",
+                            "content": "Created notes.txt.",
+                        }
+                    ),
+                ]
+            )
+            registry = ToolRegistry()
+            registry.register(WorkspaceWriteTool(root))
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                workspace_context={"available_tools": ["workspace_write"]},
+            )
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["workspace_write"],
+            )
+
+            response = runtime.run("Create notes.txt in the workspace")
+
+            self.assertEqual(response, "Created notes.txt.")
+            self.assertEqual(
+                (root / "notes.txt").read_text(encoding="utf-8"),
+                "created by agent\n",
+            )
+
+    def test_runtime_ignores_legacy_unknown_tool_declared_by_skill(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             skills_dir = root / "skills"
@@ -842,10 +980,9 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(response, "done")
             missing_events = [
                 event for event in runtime.last_trace_events
-                if event["event_type"] == "skill_allowed_tool_missing"
+                if event["event_type"] == "enabled_tool_missing"
             ]
-            self.assertEqual(len(missing_events), 1)
-            self.assertEqual(missing_events[0]["payload"]["tool_name"], "ghost_tool")
+            self.assertEqual(missing_events, [])
 
     def test_runtime_can_read_python_file_through_file_reader_tool_call(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

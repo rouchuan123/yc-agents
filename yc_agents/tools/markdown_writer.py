@@ -15,7 +15,7 @@ class MarkdownWriterTool(BaseTool):
     )
 
     def __init__(self, output_dir="outputs"):
-        self.output_dir = Path(output_dir)
+        self.output_dir = Path(output_dir).resolve()
 
     def run(self, file_name, content):
         if content is None:
@@ -45,7 +45,14 @@ class MarkdownWriterTool(BaseTool):
         if ".." in relative_path.parts:
             raise ValueError("file_name must not contain '..'")
 
+        protected_parts = {part.lower() for part in relative_path.parts}
+        if protected_parts & {".git", ".ycore"}:
+            raise PermissionError("Writing .git or .ycore internal files is not allowed")
+
         if relative_path.suffix.lower() != ".md":
             relative_path = Path(str(relative_path) + ".md")
 
-        return self.output_dir / relative_path
+        resolved = (self.output_dir / relative_path).resolve()
+        if resolved != self.output_dir and self.output_dir not in resolved.parents:
+            raise PermissionError(f"Path escapes output directory: {file_name}")
+        return resolved

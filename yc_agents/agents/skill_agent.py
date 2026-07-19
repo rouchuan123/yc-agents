@@ -1,4 +1,5 @@
 from yc_agents.prompts.builder import PromptBuilder
+from yc_agents.core.llm_call import invoke_llm
 
 
 class SkillAgent:
@@ -10,5 +11,5 @@ class SkillAgent:
         messages = self.prompt_builder.skill_selection_messages(context)
         think_json = getattr(self.llm, "think_json", None)
         if callable(think_json):
-            return think_json(messages)
-        return self.llm.think(messages)
+            return invoke_llm(think_json, messages, usage_kind="auxiliary")
+        return invoke_llm(self.llm.think, messages, usage_kind="auxiliary")
