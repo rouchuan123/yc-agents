@@ -54,9 +54,9 @@ def build_session_entries(session_store, current_session):
     return entries
 
 
-def render_sidebar_entry(entry, detail_width=26):
-    marker = "*" if entry.active else " "
-    title = middle_truncate(entry.title, 28)
+def render_sidebar_entry(entry, detail_width=20):
+    marker = ">" if entry.active else " "
+    title = middle_truncate(entry.title, 22)
     if not entry.detail:
         return f"{marker} {title}"
     detail = middle_truncate(entry.detail, detail_width)
@@ -66,4 +66,5 @@ def render_sidebar_entry(entry, detail_width=26):
 class SidebarListItem(ListItem):
     def __init__(self, entry):
         self.entry = entry
-        super().__init__(Label(render_sidebar_entry(entry)))
+        classes = "sidebar-entry active" if entry.active else "sidebar-entry"
+        super().__init__(Label(render_sidebar_entry(entry)), classes=classes)

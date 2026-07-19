@@ -307,11 +307,14 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 
         status = app.render_status(width=100)
+        prompt_meta = app.render_prompt_meta(width=100)
 
         self.assertIn("YCore", status)
-        self.assertIn("Session session-1234", status)
-        self.assertIn("Model gpt-test", status)
-        self.assertIn("Branch feature/new-cli", status)
+        self.assertIn(r"E:\code\yc-agents", status)
+        self.assertIn("Context ~1.6k/8k", status)
+        self.assertIn("gpt-test", prompt_meta)
+        self.assertIn("feature/new-cli", prompt_meta)
+        self.assertIn("Session session-1234", prompt_meta)
 
     def test_default_status_collector_uses_runtime_context_limit(self):
         runtime = FakeRuntime()
@@ -410,9 +413,9 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         self.assertIsInstance(renderable, Group)
         renderables = list(renderable.renderables)
         self.assertIsInstance(renderables[0], Text)
-        self.assertEqual(str(renderables[0]), "Assistant")
+        self.assertEqual(str(renderables[0]), "YCore")
         self.assertIsInstance(renderables[1], Markdown)
-        self.assertIn("执行过程：2 条记录，点击展开", str(renderables[1].markup))
+        self.assertIn("执行过程 · 2 条记录", str(renderables[1].markup))
         self.assertTrue(any(isinstance(item, Markdown) for item in renderables[2:]))
 
     def test_render_running_structured_assistant_process_is_expanded(self):
@@ -430,7 +433,7 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         collapsible = list(renderable.renderables)[1]
 
         self.assertIsInstance(collapsible, Markdown)
-        self.assertIn("执行过程：实时展开中", str(collapsible.markup))
+        self.assertIn("正在执行 · 1 条记录", str(collapsible.markup))
 
     def test_runtime_stream_is_used_when_available(self):
         runtime = StreamingRuntime()
@@ -531,8 +534,9 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
                 self.assertNotIn(None, root_widget_ids)
                 self.assertIs(app.prompt_area.parent, app.main_pane)
-                self.assertIs(app.command_suggestions.parent, app.prompt_area)
+                self.assertIs(app.command_suggestions.parent, app.main_pane)
                 self.assertIs(app.prompt.parent, app.prompt_area)
+                self.assertIs(app.prompt_meta.parent, app.prompt_area)
 
         asyncio.run(run_app())
 
@@ -540,11 +544,14 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 
         self.assertIn("#sidebar", app.CSS)
-        self.assertIn("width: 34", app.CSS)
+        self.assertIn("width: 28", app.CSS)
         self.assertIn("#main-pane", app.CSS)
         self.assertIn("#prompt-area", app.CSS)
         self.assertIn("#chat-box", app.CSS)
         self.assertIn("#prompt", app.CSS)
+        self.assertIn("#prompt-meta", app.CSS)
+        self.assertIn("background: #141414", app.CSS)
+        self.assertNotIn("#0b1020", app.CSS)
         prompt_css = app.CSS.split("#prompt {", 1)[1].split("}", 1)[0]
         self.assertNotIn("dock:", prompt_css)
         self.assertNotIn("gradient", app.CSS.lower())
@@ -675,7 +682,36 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         self.assertFalse(app.prompt.compact)
         self.assertIn("#prompt > .input--cursor", app.CSS)
-        self.assertIn("text-style: underline", app.CSS)
+        self.assertIn("background: #e1e1e1", app.CSS)
+        self.assertIn("text-style: none", app.CSS)
+
+    def test_turn_widgets_use_semantic_visual_classes(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+        user_widgets = app.build_turn_widgets("You", "hello")
+        assistant_widgets = app.build_turn_widgets("Assistant", "answer")
+
+        self.assertTrue(user_widgets[0].has_class("turn-user-label"))
+        self.assertTrue(user_widgets[1].has_class("turn-user-body"))
+        self.assertEqual(str(assistant_widgets[0].content), "YCore")
+        self.assertTrue(assistant_widgets[0].has_class("turn-assistant-label"))
+        self.assertTrue(assistant_widgets[1].has_class("turn-assistant-body"))
+
+    def test_narrow_layout_auto_hides_sidebar_and_restores_it(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        list(app.compose())
+
+        app._sync_sidebar_visibility(width=80)
+        app._refresh_chrome_for_width(width=80)
+        self.assertFalse(app.sidebar.display)
+        self.assertEqual(len(str(app.status_widget.content)), 76)
+        self.assertEqual(len(str(app.prompt_meta.content)), 70)
+
+        app._sync_sidebar_visibility(width=120)
+        app._refresh_chrome_for_width(width=120)
+        self.assertTrue(app.sidebar.display)
+        self.assertEqual(len(str(app.status_widget.content)), 116)
+        self.assertEqual(len(str(app.prompt_meta.content)), 82)
 
     def test_prompt_content_line_remains_visible_in_workbench(self):
         async def run_app():
@@ -788,7 +824,8 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         asyncio.run(app.handle_cli_input("/status"))
 
         self.assertEqual(app.transcript_entries[0][0], "Status")
-        self.assertIn("Workspace", app.transcript_entries[0][1])
+        self.assertIn(r"E:\code\yc-agents", app.transcript_entries[0][1])
+        self.assertIn("Context ~1.6k/8k", app.transcript_entries[0][1])
 
     def test_status_command_reports_running_task(self):
         async def run_app():
@@ -1312,6 +1349,26 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app.update_command_suggestions("/")
 
         self.assertTrue(app.command_suggestions.display)
+
+    def test_command_suggestions_expand_above_prompt_without_clipping(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+            async with app.run_test(size=(120, 36)) as pilot:
+                app.prompt.value = "/"
+                await pilot.pause()
+
+                lines = str(app.command_suggestions.content).splitlines()
+                suggestions = app.command_suggestions.region
+                prompt = app.prompt_area.region
+
+                self.assertEqual(len(lines), 5)
+                self.assertTrue(app.command_suggestions.display)
+                self.assertLessEqual(suggestions.bottom, prompt.y)
+                self.assertLessEqual(prompt.bottom, app.screen.region.bottom)
+                self.assertGreaterEqual(suggestions.height, len(lines))
+
+        asyncio.run(run_app())
 
     def test_tab_completion_uses_selected_suggestion(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
