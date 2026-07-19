@@ -22,6 +22,7 @@ DEFAULT_SUGGESTIONS = [
     CommandSuggestion("/workspace delete", "删除工作区"),
     CommandSuggestion("/workspace delete <path-or-id>", "删除指定工作区状态", "/workspace delete "),
     CommandSuggestion("/status", "查看状态"),
+    CommandSuggestion("/context", "查看上下文与 Token 用量"),
     CommandSuggestion("/stop", "停止当前运行"),
     CommandSuggestion("/skills", "查看可用技能"),
     CommandSuggestion("/clear", "清空屏幕"),

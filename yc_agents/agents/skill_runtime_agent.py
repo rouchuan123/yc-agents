@@ -1,6 +1,7 @@
 import json
 
 from yc_agents.agents.skill_agent import SkillAgent
+from yc_agents.core.llm_call import invoke_llm
 from yc_agents.harness.context_manager import ContextManager
 from yc_agents.harness.json_protocol import (
     InvalidModelJSONError,
@@ -22,6 +23,11 @@ class SkillRuntimeAgent:
         profile_memory=None,
         memory_compressor=None,
         compression_threshold=None,
+        memory_config=None,
+        context_limit=8000,
+        max_output_tokens=0,
+        long_term_memory=None,
+        session_id=None,
         rag_search_tool=None,
         rag_top_k=3,
         workspace_context=None,
@@ -38,20 +44,26 @@ class SkillRuntimeAgent:
         self.profile_memory = profile_memory
         self.memory_compressor = memory_compressor
         self.compression_threshold = compression_threshold
+        self.memory_config = dict(memory_config or {})
+        self.context_limit = int(context_limit or 8000)
+        self.max_output_tokens = int(max_output_tokens or 0)
+        self.long_term_memory = long_term_memory
+        self.session_id = session_id
         self.rag_search_tool = rag_search_tool
         self.rag_top_k = rag_top_k
         self.workspace_context = workspace_context or {}
         self.intent_router = intent_router
         self.current_selected_skill_name = None
         self.current_selected_skill = None
-        self.current_skill_allowed_tools = []
         self.current_turn_is_plain_answer = True
-        self.plain_answer_allowed_tools = ["workspace_files", "file_reader"]
+        self.available_tools = list(
+            self.workspace_context.get("available_tools") or []
+        )
 
     def run(self, user_input):
         registry = self._load_registry()
         skills = self._discover_candidate_skills(registry, user_input)
-        memory_context = self._load_memory_context()
+        memory_context = self._load_memory_context(user_input, skills)
 
         selection_context = self.context_manager.build_skill_selection_context(
             user_input,
@@ -84,7 +96,7 @@ class SkillRuntimeAgent:
     def stream(self, user_input):
         registry = self._load_registry()
         skills = self._discover_candidate_skills(registry, user_input)
-        memory_context = self._load_memory_context()
+        memory_context = self._load_memory_context(user_input, skills)
 
         selection_context = self.context_manager.build_skill_selection_context(
             user_input,
@@ -157,38 +169,35 @@ class SkillRuntimeAgent:
     def _set_plain_tool_context(self):
         self.current_selected_skill_name = None
         self.current_selected_skill = None
-        self.current_skill_allowed_tools = list(self.plain_answer_allowed_tools)
         self.current_turn_is_plain_answer = True
 
     def _set_skill_tool_context(self, selected_skill):
         self.current_selected_skill_name = selected_skill.name
         self.current_selected_skill = selected_skill.to_dict()
-        self.current_skill_allowed_tools = list(selected_skill.allowed_tools)
         self.current_turn_is_plain_answer = False
 
     def current_turn_tool_context(self):
         return {
             "selected_skill": self.current_selected_skill_name,
-            "allowed_tools": list(self.current_skill_allowed_tools),
+            "available_tools": list(self.available_tools),
             "plain_answer": self.current_turn_is_plain_answer,
         }
 
     def current_turn_execution_context(self):
         return {
             "selected_skill": self.current_selected_skill,
-            "allowed_tools": list(self.current_skill_allowed_tools),
+            "available_tools": list(self.available_tools),
             "plain_answer": self.current_turn_is_plain_answer,
         }
 
     def _answer_with_skill(self, user_input, selected_skill, selection, memory_context=None):
         memory = memory_context or self.context_manager.build_memory_context()
-        rag_results = self._load_rag_results(user_input, selected_skill)
         context = self.context_manager.build_skill_execution_context(
             user_input=user_input,
             selected_skill=selected_skill,
             selection=selection,
             memory_context=memory,
-            rag_results=rag_results,
+            rag_results=[],
             workspace_context=self.workspace_context,
         )
         messages = self.prompt_builder.skill_execution_messages(context)
@@ -207,13 +216,12 @@ class SkillRuntimeAgent:
         memory_context=None,
     ):
         memory = memory_context or self.context_manager.build_memory_context()
-        rag_results = self._load_rag_results(user_input, selected_skill)
         context = self.context_manager.build_skill_execution_context(
             user_input=user_input,
             selected_skill=selected_skill,
             selection=selection,
             memory_context=memory,
-            rag_results=rag_results,
+            rag_results=[],
             workspace_context=self.workspace_context,
         )
         messages = self.prompt_builder.skill_execution_messages(context)
@@ -261,14 +269,59 @@ class SkillRuntimeAgent:
         )
         return self._think_protocol_json(messages)
 
-    def _load_memory_context(self):
+    def _load_memory_context(self, user_input="", skills=None):
+        messages = self._load_memory_messages()
+        summary = self._load_summary_memory()
+        if self.memory_compressor is not None:
+            additional = {
+                "user_input": user_input,
+                "workspace": self.workspace_context,
+                "skills": [
+                    self.context_manager._summarize_skill(skill)
+                    for skill in (skills or [])
+                ],
+            }
+            result = self.memory_compressor.compact_if_needed(
+                messages,
+                summary,
+                active_max_tokens=int(
+                    self.memory_config.get("activeContextMaxTokens", 64_000)
+                ),
+                context_limit=self.context_limit,
+                trigger_percent=int(
+                    self.memory_config.get("compactionTriggerPercent", 80)
+                ),
+                target_percent=int(
+                    self.memory_config.get("compactionTargetPercent", 50)
+                ),
+                max_output_tokens=self.max_output_tokens,
+                additional_tokens=len(json.dumps(additional, ensure_ascii=False)) // 4,
+            )
+            messages = result["messages"]
+            summary = result["summary"]
+            if result["compacted"]:
+                self.session_memory.replace(messages)
         return self.context_manager.build_memory_context(
-            session=self._load_memory_messages(),
-            summary=self._load_summary_memory(),
-            profile=self._load_profile_memory(),
-            memory_compressor=self.memory_compressor,
-            compression_threshold=self.compression_threshold,
+            memory_context={
+                "session": messages,
+                "summary": summary,
+                "profile": self._load_profile_memory(),
+                "retrieved": self._retrieve_long_term_memory(user_input),
+            }
         )
+
+    def _retrieve_long_term_memory(self, user_input):
+        if self.long_term_memory is None or not str(user_input or "").strip():
+            return []
+        try:
+            return self.long_term_memory.search(
+                user_input,
+                top_k=int(self.memory_config.get("retrieveTopK", 6)),
+                token_budget=int(self.memory_config.get("retrievalTokenBudget", 4_000)),
+                exclude_session_id=self.session_id,
+            )
+        except Exception:
+            return []
 
     def _load_summary_memory(self):
         if self.summary_memory is None:
@@ -286,7 +339,9 @@ class SkillRuntimeAgent:
         self.session_memory.load()
         self.session_memory.add_message("user", user_input)
         self.session_memory.add_message("assistant", response)
-        return self.session_memory.save()
+        path = self.session_memory.save()
+        self._persist_long_term_memory()
+        return path
 
     def remember_structured_turn(self, user_input, response, process_entries=None):
         self.session_memory.load()
@@ -300,10 +355,24 @@ class SkillRuntimeAgent:
             )
         else:
             self.session_memory.add_message("assistant", response)
-        return self.session_memory.save()
+        path = self.session_memory.save()
+        self._persist_long_term_memory()
+        return path
+
+    def _persist_long_term_memory(self):
+        if self.long_term_memory is None or not self.session_id:
+            return None
+        summary = self._load_summary_memory()
+        path = self.long_term_memory.write_session_log(
+            self.session_id,
+            self.session_memory.get_messages(),
+            summary,
+        )
+        self.long_term_memory.maybe_dream(current_session_id=self.session_id)
+        return path
 
     def run_with_observation(self, user_input, observation):
-        memory = self._load_memory_context()
+        memory = self._load_memory_context(user_input)
         messages = self.prompt_builder.observation_messages(
             user_input=user_input,
             memory=memory,
@@ -331,7 +400,7 @@ class SkillRuntimeAgent:
             execution_history=execution_history or [],
             stage=stage,
         )
-        return self._think_protocol_json(messages)
+        return self._think_protocol_json(messages, usage_kind="auxiliary")
 
     def run_with_verification_feedback(
         self,
@@ -348,13 +417,13 @@ class SkillRuntimeAgent:
             execution_history=execution_history or [],
             workspace_context=self.workspace_context,
         )
-        return self._think_protocol_json(messages)
+        return self._think_protocol_json(messages, usage_kind="auxiliary")
 
-    def _think_protocol_json(self, messages):
+    def _think_protocol_json(self, messages, usage_kind="primary"):
         think_json = getattr(self.llm, "think_json", None)
         if callable(think_json):
-            return think_json(messages)
-        return self.llm.think(messages)
+            return invoke_llm(think_json, messages, usage_kind=usage_kind)
+        return invoke_llm(self.llm.think, messages, usage_kind=usage_kind)
 
     def _stream_protocol_json(self, messages):
         stream_think_json = getattr(self.llm, "stream_think_json", None)
@@ -375,12 +444,3 @@ class SkillRuntimeAgent:
             allowed_types={"skill_selection"},
         )
         return selection
-
-    def _load_rag_results(self, user_input, selected_skill):
-        if self.rag_search_tool is None:
-            return []
-
-        if "rag_search" not in selected_skill.allowed_tools:
-            return []
-
-        return self.rag_search_tool.run(user_input, top_k=self.rag_top_k)

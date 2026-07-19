@@ -70,6 +70,12 @@ def summarize_tool_result(tool_name, result):
         bytes_written = result.get("bytes", 0)
         return f"写入 {path}：{bytes_written} 字节。"
 
+    if tool_name == "workspace_write" and isinstance(result, dict):
+        path = result.get("path", "")
+        operation = result.get("operation", "write")
+        bytes_written = result.get("bytes", 0)
+        return f"{operation} {path}：{bytes_written} 字节。"
+
     if tool_name == "rag_search":
         if isinstance(result, list):
             return f"返回 {len(result)} 条相关片段。"

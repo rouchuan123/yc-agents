@@ -24,6 +24,9 @@ def parse_cli_input(text):
     if normalized == "/status":
         return CLICommand("status", "")
 
+    if normalized == "/context":
+        return CLICommand("context", "")
+
     if normalized == "/stop":
         return CLICommand("stop", "")
 

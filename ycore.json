@@ -86,21 +86,25 @@
   },
   "tools": {
     "profile": "coding",
-    "allow": [
-      "workspace_files",
-      "file_reader",
-      "markdown_writer",
-      "rag_search",
-      "web_search",
-      "git_inspector",
-      "code_search",
-      "verification_runner",
-      "command_reader"
-    ],
+    "entries": {
+      "workspace_files": {"enabled": true},
+      "file_reader": {"enabled": true},
+      "workspace_write": {"enabled": true},
+      "markdown_writer": {"enabled": true},
+      "rag_search": {"enabled": true},
+      "web_search": {"enabled": true},
+      "git_inspector": {"enabled": true},
+      "code_search": {"enabled": true},
+      "verification_runner": {"enabled": true},
+      "command_reader": {"enabled": true},
+      "memory_search": {"enabled": true},
+      "mcp_sqlite_list_tables": {"enabled": true},
+      "mcp_sqlite_describe_table": {"enabled": true},
+      "mcp_sqlite_query_readonly": {"enabled": true}
+    },
     "web": {
       "search": {
         "provider": "tavily",
-        "enabled": true,
         "apiKeyEnv": "TAVILY_API_KEY"
       }
     }
@@ -147,6 +151,23 @@
     "retentionRuns": 1000
   },
   "memory": {
-    "compressionThreshold": 12
+    "enabled": true,
+    "compressionThreshold": 12,
+    "activeContextMaxTokens": 64000,
+    "compactionTriggerPercent": 80,
+    "compactionTargetPercent": 50,
+    "retrieveTopK": 6,
+    "retrievalTokenBudget": 4000,
+    "minScore": 0.2,
+    "sessionHalfLifeDays": 30,
+    "embedding": {
+      "enabled": false
+    },
+    "dream": {
+      "enabled": false,
+      "minSessions": 5,
+      "minHours": 24,
+      "maxInputTokens": 32000
+    }
   }
 }

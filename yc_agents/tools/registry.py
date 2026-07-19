@@ -26,10 +26,22 @@ class ToolRegistry:
         return tool.run(*args, **kwargs)
 
     def list_tools(self):
-        return [
-            {
+        tools = []
+        for tool in self.tools.values():
+            item = {
                 "name": tool.name,
                 "description": tool.description,
             }
-            for tool in self.tools.values()
-        ]
+            schema = getattr(tool, "schema", None)
+            if schema is not None:
+                item["parameters"] = [
+                    {
+                        "name": field.name,
+                        "type": field.type,
+                        "required": field.required,
+                        "default": field.default,
+                    }
+                    for field in schema.fields
+                ]
+            tools.append(item)
+        return tools

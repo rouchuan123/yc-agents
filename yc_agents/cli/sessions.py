@@ -24,6 +24,7 @@ class CLISession:
     messages_path: Path
     summary_path: Path
     profile_path: Path
+    usage_path: Path
     runs_path: Path
     updated_at: str
     message_count: int = 0
@@ -81,6 +82,9 @@ class CLISessionStore:
             shutil.rmtree(target.path)
         if target.runs_path.exists():
             shutil.rmtree(target.runs_path)
+        memory_log = self.workspace.ycore_dir / "memory" / "sessions" / f"{target.id}.md"
+        if memory_log.exists():
+            memory_log.unlink()
 
         remaining = self.list_sessions()
         if remaining:
@@ -160,6 +164,7 @@ class CLISessionStore:
             messages_path=messages_path,
             summary_path=path / "summary.md",
             profile_path=path / "profile.json",
+            usage_path=path / "usage.json",
             runs_path=self.runs_dir / metadata["id"],
             updated_at=metadata.get("updated_at", ""),
             message_count=message_count,

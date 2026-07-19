@@ -5,17 +5,22 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-DEFAULT_ALLOWED_TOOLS = [
-    "workspace_files",
-    "file_reader",
-    "markdown_writer",
-    "rag_search",
-    "web_search",
-    "git_inspector",
-    "code_search",
-    "verification_runner",
-    "command_reader",
-]
+DEFAULT_TOOL_ENTRIES = {
+    "workspace_files": {"enabled": True},
+    "file_reader": {"enabled": True},
+    "workspace_write": {"enabled": True},
+    "markdown_writer": {"enabled": True},
+    "rag_search": {"enabled": True},
+    "web_search": {"enabled": True},
+    "git_inspector": {"enabled": True},
+    "code_search": {"enabled": True},
+    "verification_runner": {"enabled": True},
+    "command_reader": {"enabled": True},
+    "memory_search": {"enabled": True},
+    "mcp_sqlite_list_tables": {"enabled": True},
+    "mcp_sqlite_describe_table": {"enabled": True},
+    "mcp_sqlite_query_readonly": {"enabled": True},
+}
 
 
 DEFAULT_CONFIG = {
@@ -38,11 +43,10 @@ DEFAULT_CONFIG = {
     },
     "tools": {
         "profile": "coding",
-        "allow": list(DEFAULT_ALLOWED_TOOLS),
+        "entries": copy.deepcopy(DEFAULT_TOOL_ENTRIES),
         "web": {
             "search": {
                 "provider": "tavily",
-                "enabled": True,
                 "apiKeyEnv": "TAVILY_API_KEY",
             }
         },
@@ -72,7 +76,24 @@ DEFAULT_CONFIG = {
         "maxRows": 100,
         "retentionRuns": 1000,
     },
-    "memory": {"compressionThreshold": 12},
+    "memory": {
+        "enabled": True,
+        "compressionThreshold": 12,
+        "activeContextMaxTokens": 64000,
+        "compactionTriggerPercent": 80,
+        "compactionTargetPercent": 50,
+        "retrieveTopK": 6,
+        "retrievalTokenBudget": 4000,
+        "minScore": 0.2,
+        "sessionHalfLifeDays": 30,
+        "embedding": {"enabled": False},
+        "dream": {
+            "enabled": False,
+            "minSessions": 5,
+            "minHours": 24,
+            "maxInputTokens": 32000,
+        },
+    },
 }
 
 
@@ -169,12 +190,35 @@ class YCoreConfig:
             )
 
         source_paths = []
-        data = copy.deepcopy(DEFAULT_CONFIG)
-        for path in cls._config_search_paths(root, global_config):
+        source_configs = []
+        search_paths = cls._config_search_paths(root, global_config)
+        for path in search_paths:
             if path.exists():
-                source_data = json.loads(path.read_text(encoding="utf-8"))
-                data = _deep_merge(data, source_data)
-                source_paths.append(path)
+                source_configs.append(
+                    (path, json.loads(path.read_text(encoding="utf-8")))
+                )
+
+        entries_declared = any(
+            isinstance(source_data.get("tools", {}).get("entries"), dict)
+            for _path, source_data in source_configs
+        )
+        data = copy.deepcopy(DEFAULT_CONFIG)
+        for path, source_data in source_configs:
+            data = _deep_merge(data, source_data)
+            source_paths.append(path)
+
+        if not entries_declared:
+            legacy_allow = data.get("tools", {}).get("allow")
+            if isinstance(legacy_allow, list):
+                legacy_names = [str(name) for name in legacy_allow]
+                enabled_names = set(legacy_names)
+                known_names = list(
+                    dict.fromkeys([*legacy_names, *DEFAULT_TOOL_ENTRIES])
+                )
+                data.setdefault("tools", {})["entries"] = {
+                    name: {"enabled": name in enabled_names}
+                    for name in known_names
+                }
 
         return cls(
             root,
@@ -251,8 +295,22 @@ class YCoreConfig:
                 return dict(model)
         return {}
 
+    def tool_entries(self):
+        entries = self.data.get("tools", {}).get("entries") or {}
+        return {
+            str(name): dict(settings) if isinstance(settings, dict) else {"enabled": bool(settings)}
+            for name, settings in entries.items()
+        }
+
+    def enabled_tools(self):
+        return [
+            name
+            for name, settings in self.tool_entries().items()
+            if bool(settings.get("enabled", False))
+        ]
+
     def allowed_tools(self):
-        return list(self.data.get("tools", {}).get("allow") or DEFAULT_ALLOWED_TOOLS)
+        return self.enabled_tools()
 
     def skills_dirs(self):
         return list(self.data.get("skills", {}).get("dirs") or ["skills"])

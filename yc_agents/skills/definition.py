@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 class SkillDefinition:
     name: str
     description: str
-    allowed_tools: list[str] = field(default_factory=list)
+    allowed_tools: list[str] = field(default_factory=list)  # Legacy metadata; never enforced.
     triggers: list[str] = field(default_factory=list)
     inputs: list[str] = field(default_factory=list)
     outputs: list[str] = field(default_factory=list)
@@ -20,7 +20,6 @@ class SkillDefinition:
         return {
             "name": self.name,
             "description": self.description,
-            "allowed_tools": self.allowed_tools,
             "triggers": self.triggers,
             "inputs": self.inputs,
             "outputs": self.outputs,
@@ -39,5 +38,4 @@ class SkillDefinition:
             "triggers": self.triggers,
             "inputs": self.inputs,
             "outputs": self.outputs,
-            "allowed_tools": self.allowed_tools,
         }

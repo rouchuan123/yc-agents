@@ -1,4 +1,5 @@
 import asyncio
+import json
 import subprocess
 import time
 from contextlib import suppress
@@ -20,6 +21,7 @@ from textual.widgets import (
 )
 
 from yc_agents.cli.commands import parse_cli_input
+from yc_agents.cli.formatting import format_context_usage
 from yc_agents.cli.runtime_factory import build_cli_runtime
 from yc_agents.cli.sidebar import SidebarListItem, build_session_entries, build_workspace_entries
 from yc_agents.cli.sessions import CLISessionStore
@@ -474,6 +476,10 @@ class YCAgentsTUIApp(App):
             self.append_turn("Status", self.render_runtime_status())
             return
 
+        if command.action == "context":
+            self.append_turn("Context", self.render_context_details())
+            return
+
         if command.action == "stop":
             await self.stop_current_run()
             return
@@ -618,6 +624,56 @@ class YCAgentsTUIApp(App):
             if self.current_run_input:
                 lines.append(f"Task: {self.current_run_input}")
 
+        return "\n".join(lines)
+
+    def render_context_details(self):
+        limit = max(0, int(getattr(self.runtime, "context_limit", 0) or 0))
+        ledger = _runtime_usage_ledger(self.runtime)
+        snapshot = getattr(ledger, "current_context", None)
+        if snapshot is None:
+            used = _estimate_runtime_context(self.runtime)
+            source = "estimated"
+            model = getattr(getattr(getattr(self.runtime, "agent", None), "llm", None), "model", "unknown")
+            updated_at = "-"
+            usage = None
+        else:
+            used = snapshot.total_tokens
+            source = snapshot.source
+            model = snapshot.model
+            updated_at = snapshot.updated_at
+            usage = snapshot.usage
+
+        lines = [
+            f"Context: {format_context_usage(used, limit, source)}",
+            f"Source: {source}",
+            f"Model: {model}",
+            f"Updated: {updated_at}",
+        ]
+        if usage is not None:
+            lines.extend(
+                [
+                    f"Input: {_format_detail_tokens(usage.input_tokens)}",
+                    f"Output: {_format_detail_tokens(usage.output_tokens)}",
+                    f"Cached: {_format_detail_tokens(usage.cached_tokens)}",
+                    f"Reasoning: {_format_detail_tokens(usage.reasoning_tokens)}",
+                ]
+            )
+        if ledger is not None:
+            totals = ledger.session_totals
+            lines.extend(
+                [
+                    "Session usage:",
+                    f"  Input: {_format_detail_tokens(totals.input_tokens)}",
+                    f"  Output: {_format_detail_tokens(totals.output_tokens)}",
+                    f"  Total: {_format_detail_tokens(totals.total_tokens)}",
+                    f"  Calls: {ledger.primary_calls} primary, {ledger.auxiliary_calls} auxiliary",
+                ]
+            )
+        sections = _estimated_context_sections(self.runtime)
+        if sections:
+            lines.append("Estimated request breakdown:")
+            for name, tokens in sections.items():
+                lines.append(f"  {name}: {_format_detail_tokens(tokens)} estimated")
         return "\n".join(lines)
 
     def render_skills(self):
@@ -1387,7 +1443,8 @@ def build_default_status_collector(runtime, workspace_provider=None, session_pro
     return StatusCollector(
         workspace_provider=workspace_provider or (lambda: Path.cwd()),
         model_provider=lambda: getattr(getattr(runtime, "agent", None), "llm", None).model,
-        context_provider=lambda: _estimate_runtime_context(runtime),
+        context_provider=lambda: _runtime_context_value(runtime)[0],
+        context_source_provider=lambda: _runtime_context_value(runtime)[1],
         branch_provider=lambda: _read_git_branch(
             workspace_provider() if workspace_provider is not None else Path.cwd()
         ),
@@ -1440,6 +1497,53 @@ def _estimate_runtime_context(runtime):
 
     text = "\n".join(str(turn) for turn in turns)
     return max(1, len(text) // 4)
+
+
+def _runtime_usage_ledger(runtime):
+    llm = getattr(getattr(runtime, "agent", None), "llm", None)
+    return getattr(llm, "usage_ledger", None)
+
+
+def _runtime_context_value(runtime):
+    ledger = _runtime_usage_ledger(runtime)
+    snapshot = getattr(ledger, "current_context", None)
+    if snapshot is not None:
+        return max(0, int(snapshot.total_tokens)), snapshot.source
+    return _estimate_runtime_context(runtime), "estimated"
+
+
+def _estimated_context_sections(runtime):
+    llm = getattr(getattr(runtime, "agent", None), "llm", None)
+    messages = list(getattr(llm, "last_primary_messages", None) or [])
+    if not messages:
+        return {}
+    sections = {}
+    for message in messages:
+        role = str(message.get("role") or "messages")
+        content = message.get("content") or ""
+        if role == "system":
+            sections["system"] = sections.get("system", 0) + max(1, len(str(content)) // 4)
+            continue
+        try:
+            payload = json.loads(content) if isinstance(content, str) else content
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = None
+        if isinstance(payload, dict):
+            for key in ["memory", "workspace", "skills", "selected_skill", "rag_results"]:
+                if key in payload:
+                    text = json.dumps(payload[key], ensure_ascii=False, sort_keys=True)
+                    sections[key] = sections.get(key, 0) + max(1, len(text) // 4)
+        else:
+            sections["messages"] = sections.get("messages", 0) + max(1, len(str(content)) // 4)
+    return sections
+
+
+def _format_detail_tokens(tokens):
+    tokens = max(0, int(tokens or 0))
+    if tokens < 1000:
+        return str(tokens)
+    value = tokens / 1000
+    return f"{value:.1f}k" if value < 100 else f"{value:.0f}k"
 
 
 def _read_git_branch(cwd=None):

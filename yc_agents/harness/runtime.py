@@ -29,7 +29,6 @@ from yc_agents.harness.token_budget import TokenBudget
 from yc_agents.harness.verification import VerificationGate
 
 
-PLAIN_ANSWER_ALLOWED_TOOLS = ["workspace_files", "file_reader"]
 RUNTIME_RESPONSE_TYPES = {"tool_call", "final_answer"}
 FINAL_AFTER_TOOL_TYPES = {"tool_call", "final_answer"}
 
@@ -331,7 +330,7 @@ class YCAgentRuntime:
             "user_input": context.user_input,
             "selected_skill": context.selected_skill,
             "intent_result": context.intent_result,
-            "allowed_tools": list(self.allowed_tools),
+            "enabled_tools": list(self.allowed_tools),
             "expects_json": self.expects_json,
         }
 
@@ -916,7 +915,7 @@ class YCAgentRuntime:
             "skill_selected",
             {
                 "selected_skill": selected_skill,
-                "allowed_tools": list(tool_context.get("allowed_tools") or []),
+                "available_tools": list(tool_context.get("available_tools") or []),
                 "plain_answer": bool(tool_context.get("plain_answer")),
             },
         )
@@ -927,39 +926,34 @@ class YCAgentRuntime:
         )
 
     def _effective_allowed_tools(self, trace):
-        runtime_allowed = set(self.allowed_tools)
+        configured_enabled = set(self.allowed_tools)
         registered = set(getattr(self.tool_registry, "tools", {}).keys()) if self.tool_registry else set()
         context_getter = getattr(self.agent, "current_turn_tool_context", None)
 
         if callable(context_getter):
             tool_context = context_getter()
-            declared = set(tool_context.get("allowed_tools") or PLAIN_ANSWER_ALLOWED_TOOLS)
             selected_skill = tool_context.get("selected_skill")
             plain_answer = bool(tool_context.get("plain_answer"))
         else:
-            declared = set(self.allowed_tools)
             selected_skill = None
             plain_answer = False
 
-        for missing_tool in sorted(declared - registered):
+        for missing_tool in sorted(configured_enabled - registered):
             trace.record(
-                "skill_allowed_tool_missing",
+                "enabled_tool_missing",
                 {
-                    "selected_skill": selected_skill,
                     "tool_name": missing_tool,
                 },
             )
 
-        effective = sorted(runtime_allowed & declared)
-        if registered:
-            effective = sorted(set(effective) & registered)
+        effective = sorted(configured_enabled & registered)
 
         trace.record(
             "effective_allowed_tools",
             {
                 "selected_skill": selected_skill,
                 "plain_answer": plain_answer,
-                "allowed_tools": effective,
+                "enabled_tools": effective,
             },
         )
         return effective

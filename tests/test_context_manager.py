@@ -64,7 +64,6 @@ class TestContextManager(unittest.TestCase):
                     "triggers": [],
                     "inputs": [],
                     "outputs": [],
-                    "allowed_tools": ["workspace_files", "file_reader"],
                 }
             ],
         )
@@ -84,7 +83,7 @@ class TestContextManager(unittest.TestCase):
         )
 
         self.assertEqual(result["memory"], memory)
-        self.assertEqual(result["recent_messages"], memory["session"])
+        self.assertNotIn("recent_messages", result)
         self.assertEqual(result["workspace"]["path"], r"E:\project")
 
     def test_skill_selection_context_can_include_context_report(self):

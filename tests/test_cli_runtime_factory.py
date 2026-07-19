@@ -25,6 +25,7 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
     default_allow_tools = [
         "workspace_files",
         "file_reader",
+        "workspace_write",
         "markdown_writer",
         "rag_search",
         "web_search",
@@ -32,7 +33,12 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
         "code_search",
         "verification_runner",
         "command_reader",
+        "memory_search",
+        "mcp_sqlite_list_tables",
+        "mcp_sqlite_describe_table",
+        "mcp_sqlite_query_readonly",
     ]
+    enabled_names = set(default_allow_tools if allow_tools is None else allow_tools)
     config = {
         "agents": {
             "defaults": {
@@ -61,7 +67,10 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
             }
         },
         "tools": {
-            "allow": allow_tools or default_allow_tools,
+            "entries": {
+                name: {"enabled": name in enabled_names}
+                for name in default_allow_tools
+            },
             "web": {
                 "search": {
                     "provider": "tavily",
@@ -155,7 +164,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                     workspace.path / ".ycore" / "sqlite" / "analytics.sqlite",
                 )
                 self.assertIn("workspace_files", runtime.allowed_tools)
-                self.assertIn("mcp_sqlite_query_readonly", runtime.allowed_tools)
+                self.assertNotIn("mcp_sqlite_query_readonly", runtime.allowed_tools)
             finally:
                 runtime.close()
 
@@ -202,7 +211,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
 
             try:
                 self.assertIsNotNone(runtime.analytics_recorder)
-                self.assertIn("mcp_sqlite_query_readonly", runtime.allowed_tools)
+                self.assertNotIn("mcp_sqlite_query_readonly", runtime.allowed_tools)
                 self.assertEqual(runtime.allowed_tools[0], "workspace_files")
             finally:
                 runtime.close()
@@ -293,6 +302,24 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             self.assertEqual(runtime.tool_registry.get_tool("web_search").name, "web_search")
             self.assertIn("web_search", runtime.agent.workspace_context["available_tools"])
 
+    def test_runtime_factory_registers_workspace_writers_at_active_workspace(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("write")
+
+            runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
+
+            workspace_writer = runtime.tool_registry.get_tool("workspace_write")
+            markdown_writer = runtime.tool_registry.get_tool("markdown_writer")
+            self.assertIn("workspace_write", runtime.allowed_tools)
+            self.assertIn(
+                "workspace_write",
+                runtime.agent.workspace_context["available_tools"],
+            )
+            self.assertEqual(workspace_writer.workspace_root, workspace.path.resolve())
+            self.assertEqual(markdown_writer.output_dir, workspace.path)
+
     def test_runtime_factory_registers_review_evidence_tools(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -319,7 +346,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             self.assertEqual(runtime.tool_registry.get_tool("command_reader").name, "command_reader")
             self.assertIn("command_reader", runtime.agent.workspace_context["available_tools"])
 
-    def test_build_cli_runtime_uses_ycore_tool_allowlist(self):
+    def test_build_cli_runtime_uses_ycore_enabled_tool_entries(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
@@ -333,10 +360,26 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                     skills_dir=root / "skills",
                 )
 
-            self.assertEqual(runtime.allowed_tools, ["workspace_files", "file_reader"])
+            self.assertEqual(
+                runtime.allowed_tools,
+                ["workspace_files", "file_reader"],
+            )
             self.assertEqual(
                 runtime.agent.workspace_context["available_tools"],
                 ["workspace_files", "file_reader"],
+            )
+            self.assertEqual(
+                set(runtime.tool_registry.tools),
+                {"workspace_files", "file_reader"},
+            )
+            catalog = {
+                item["name"]: item
+                for item in runtime.agent.workspace_context["tool_catalog"]
+            }
+            self.assertEqual(set(catalog), {"workspace_files", "file_reader"})
+            self.assertEqual(
+                catalog["file_reader"]["parameters"][0]["name"],
+                "file_path",
             )
             self.assertEqual(runtime.agent.compression_threshold, 5)
             self.assertEqual(runtime.context_limit, 64000)
@@ -416,7 +459,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.assertNotIn("workspaces", data)
         self.assertNotIn("apiKey", provider)
         self.assertEqual(provider["apiKeyEnv"], "DEEPSEEK_API_KEY")
-        self.assertEqual(model["contextWindow"], 64000)
+        self.assertEqual(model["contextWindow"], 1000000)
         self.assertEqual(model["maxOutputTokens"], 4096)
         self.assertEqual(model["request"]["max_tokens"], 4096)
         self.assertEqual(model["request"]["temperature"], 0.2)
@@ -425,13 +468,26 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.assertIn("analytics", data)
         self.assertNotIn("apiKey", search)
         self.assertEqual(search["apiKeyEnv"], "TAVILY_API_KEY")
+        self.assertNotIn("allow", data["tools"])
+        self.assertTrue(data["tools"]["entries"])
+        self.assertTrue(
+            all(
+                isinstance(settings.get("enabled"), bool)
+                for settings in data["tools"]["entries"].values()
+            )
+        )
 
     def test_build_cli_runtime_registers_sqlite_mcp_tools_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             write_ycore_config(
                 root,
-                allow_tools=["workspace_files"],
+                allow_tools=[
+                    "workspace_files",
+                    "mcp_sqlite_list_tables",
+                    "mcp_sqlite_describe_table",
+                    "mcp_sqlite_query_readonly",
+                ],
                 analytics_enabled=False,
                 sqlite_mcp_enabled=True,
             )

@@ -18,15 +18,27 @@ def middle_truncate(value, max_length):
     return f"{text[:start_len]}{marker}{text[-end_len:]}"
 
 
-def format_context_usage(used, limit):
+def format_context_usage(used, limit, source="estimated"):
     if limit <= 0:
-        return "0% / 0 est"
+        return "0/0"
 
-    percent = int((max(0, used) / limit) * 100)
-    percent = max(0, min(100, percent))
+    used = max(0, int(used or 0))
+    percent = max(0.0, min(100.0, (used / limit) * 100))
+    prefix = "~" if source == "estimated" and used > 0 else ""
+    used_label = _format_token_count(used)
     limit_label = _format_token_limit(limit)
 
-    return f"{percent}% / {limit_label} est"
+    return f"{prefix}{used_label}/{limit_label} ({percent:.2f}%)"
+
+
+def _format_token_count(tokens):
+    tokens = max(0, int(tokens or 0))
+    if tokens < 1000:
+        return str(tokens)
+    value = tokens / 1000
+    if tokens % 1000 == 0 or value >= 100:
+        return f"{value:.0f}k"
+    return f"{value:.1f}k"
 
 
 def _format_token_limit(limit):
