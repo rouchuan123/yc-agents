@@ -94,6 +94,15 @@ DEFAULT_CONFIG = {
             "maxInputTokens": 32000,
         },
     },
+    "rag": {
+        "enabled": True,
+        "globalDir": "data/RAG_knowledge",
+        "workspaceDir": ".ycore/memory/RAG_knowledge",
+        "chunkSize": 1200,
+        "chunkOverlap": 150,
+        "topK": 4,
+        "retrieval": "bm25",
+    },
 }
 
 
@@ -323,6 +332,14 @@ class YCoreConfig:
 
     def memory_data(self):
         return dict(self.data.get("memory") or {})
+
+    def rag_data(self):
+        return dict(self.data.get("rag") or {})
+
+    def global_config_root(self):
+        if self.source_paths:
+            return Path(self.source_paths[0]).parent
+        return self.default_global_config_path().parent
 
     def to_safe_dict(self):
         return _mask_secrets(self.data)

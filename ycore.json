@@ -169,5 +169,14 @@
       "minHours": 24,
       "maxInputTokens": 32000
     }
+  },
+  "rag": {
+    "enabled": true,
+    "globalDir": "data/RAG_knowledge",
+    "workspaceDir": ".ycore/memory/RAG_knowledge",
+    "chunkSize": 1200,
+    "chunkOverlap": 150,
+    "topK": 4,
+    "retrieval": "bm25"
   }
 }
