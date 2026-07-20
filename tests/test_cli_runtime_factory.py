@@ -302,6 +302,61 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             self.assertEqual(runtime.tool_registry.get_tool("web_search").name, "web_search")
             self.assertIn("web_search", runtime.agent.workspace_context["available_tools"])
 
+    def test_runtime_factory_indexes_global_and_workspace_rag_documents(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            global_knowledge = self.global_config_root / "data" / "RAG_knowledge"
+            workspace_knowledge = (
+                root / ".ycore" / "memory" / "RAG_knowledge"
+            )
+            global_knowledge.mkdir(parents=True)
+            workspace_knowledge.mkdir(parents=True)
+            (global_knowledge / "global.md").write_text(
+                "# 全局知识\n\n全局通用标识 GLOBAL-RAG-ONLY-1001。",
+                encoding="utf-8",
+            )
+            (workspace_knowledge / "workspace.md").write_text(
+                "# 工作区知识\n\n工作区私有标识 WORKSPACE-RAG-ONLY-2002。",
+                encoding="utf-8",
+            )
+            workspace = WorkspaceStore(
+                ycore_root=root,
+                startup_dir=root,
+            ).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("rag")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=FakeLLM(),
+                skills_dir=root / "skills",
+            )
+
+            rag_tool = runtime.tool_registry.get_tool("rag_search")
+            global_result = rag_tool.run("GLOBAL-RAG-ONLY-1001")
+            workspace_result = rag_tool.run("WORKSPACE-RAG-ONLY-2002")
+            rag_report = runtime.agent.workspace_context["rag"]
+            scopes = {
+                item["scope"]: item
+                for item in rag_report["scopes"]
+            }
+
+            self.assertEqual(rag_report["documents"], 2)
+            self.assertEqual(rag_report["chunks"], 2)
+            self.assertEqual(rag_report["retrieval"], "bm25")
+            self.assertEqual(scopes["global"]["documents"], 1)
+            self.assertEqual(scopes["workspace"]["documents"], 1)
+            self.assertEqual(
+                global_result["sources"],
+                ["global:data/RAG_knowledge/global.md"],
+            )
+            self.assertEqual(
+                workspace_result["sources"],
+                [
+                    "workspace:.ycore/memory/"
+                    "RAG_knowledge/workspace.md"
+                ],
+            )
+
     def test_runtime_factory_registers_workspace_writers_at_active_workspace(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

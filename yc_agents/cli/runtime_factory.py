@@ -23,10 +23,9 @@ from yc_agents.memory.session import SessionMemory
 from yc_agents.memory.summary import SummaryMemory
 from yc_agents.prompts.builder import PromptBuilder
 from yc_agents.prompts.project_instructions import ProjectInstructionLoader
-from yc_agents.rag.embeddings import APIEmbeddingProvider, DeterministicEmbeddingProvider
-from yc_agents.rag.hybrid_retriever import HybridRetriever
+from yc_agents.rag.embeddings import APIEmbeddingProvider
 from yc_agents.rag.keyword_index import KeywordIndex
-from yc_agents.rag.vector_store import VectorStore
+from yc_agents.rag.knowledge_index import RAGKnowledgeIndex
 from yc_agents.tools.file_reader import FileReaderTool
 from yc_agents.tools.code_search import CodeSearchTool
 from yc_agents.tools.command_reader import CommandReaderTool
@@ -58,6 +57,7 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
     )
     runtime_config = ycore_config.runtime_data()
     memory_config = ycore_config.memory_data()
+    rag_config = ycore_config.rag_data()
     configured_enabled_tools = ycore_config.enabled_tools()
     enabled_tool_names = set(configured_enabled_tools)
     compression_threshold = int(memory_config.get("compressionThreshold", 12))
@@ -91,14 +91,57 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             llm=llm,
         )
     keyword_index = KeywordIndex()
-    vector_store = VectorStore(
-        embedding_provider=DeterministicEmbeddingProvider(),
+    rag_enabled = bool(rag_config.get("enabled", True))
+    rag_retrieval = str(rag_config.get("retrieval", "bm25")).lower()
+    if rag_retrieval != "bm25":
+        raise ValueError(
+            f"Unsupported RAG retrieval mode: {rag_retrieval}. "
+            "The minimal RAG pipeline currently supports only bm25."
+        )
+    rag_index_report = {
+        "enabled": rag_enabled,
+        "retrieval": rag_retrieval,
+        "documents": 0,
+        "chunks": 0,
+        "scopes": [],
+        "errors": [],
+    }
+    if rag_enabled and "rag_search" in enabled_tool_names:
+        scope_configs = [
+            (
+                ycore_config.global_config_root(),
+                rag_config.get("globalDir", "data/RAG_knowledge"),
+                "global",
+                False,
+            ),
+            (
+                session.workspace.path,
+                rag_config.get(
+                    "workspaceDir",
+                    ".ycore/memory/RAG_knowledge",
+                ),
+                "workspace",
+                True,
+            ),
+        ]
+        for root_dir, knowledge_dir, scope, create in scope_configs:
+            scope_report = RAGKnowledgeIndex(
+                root_dir,
+                knowledge_dir,
+                scope=scope,
+                chunk_size=int(rag_config.get("chunkSize", 1200)),
+                chunk_overlap=int(rag_config.get("chunkOverlap", 150)),
+                keyword_index=keyword_index,
+                create=create,
+            ).build()
+            rag_index_report["scopes"].append(scope_report)
+            rag_index_report["documents"] += scope_report["documents"]
+            rag_index_report["chunks"] += scope_report["chunks"]
+            rag_index_report["errors"].extend(scope_report["errors"])
+    rag_search_tool = RAGSearchTool(
+        keyword_index,
+        default_top_k=int(rag_config.get("topK", 4)),
     )
-    rag_retriever = HybridRetriever(
-        keyword_index=keyword_index,
-        vector_store=vector_store,
-    )
-    rag_search_tool = RAGSearchTool(rag_retriever)
     project_instructions = ProjectInstructionLoader(session.workspace.path).load()
     prompt_builder = PromptBuilder(project_instructions=project_instructions)
     intent_router = IntentRouter(
@@ -140,7 +183,8 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             )
         )
     )
-    register_enabled(rag_search_tool)
+    if rag_enabled:
+        register_enabled(rag_search_tool)
     if long_term_memory is not None and "memory_search" in enabled_tool_names:
         memory_search_tool = MemorySearchTool(
             long_term_memory,
@@ -235,6 +279,7 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             "ycore_dir": str(session.workspace.ycore_dir),
             "available_tools": available_tools,
             "tool_catalog": tool_registry.list_tools(),
+            "rag": rag_index_report,
         },
     )
 
