@@ -9,6 +9,79 @@ from yc_agents.config.ycore import YCoreConfig
 
 
 class TestYCoreConfig(unittest.TestCase):
+    def test_default_load_merges_development_user_and_workspace_layers(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = root / "workspace"
+            home = root / "home"
+            workspace.mkdir()
+            home.mkdir()
+            (workspace / ".ycore").mkdir()
+            default_config = root / "default.json"
+            development_config = root / "development.json"
+            user_config = home / "ycore.json"
+            workspace_config = workspace / ".ycore" / "ycore.json"
+
+            for path, value in [
+                (default_config, 1),
+                (development_config, 2),
+                (user_config, 3),
+                (workspace_config, 4),
+            ]:
+                path.write_text(
+                    json.dumps({"runtime": {"maxToolCalls": value}}),
+                    encoding="utf-8",
+                )
+
+            with patch(
+                "yc_agents.config.ycore.default_config_path",
+                return_value=default_config,
+            ), patch(
+                "yc_agents.config.ycore.development_config_path",
+                return_value=development_config,
+            ), patch(
+                "yc_agents.config.ycore.ycore_home",
+                return_value=home,
+            ):
+                config = YCoreConfig.load(workspace)
+
+            self.assertEqual(config.runtime_data()["maxToolCalls"], 4)
+            self.assertEqual(
+                config.source_paths,
+                [default_config, development_config, user_config, workspace_config],
+            )
+
+    def test_missing_provider_api_key_names_user_env_without_leaking_values(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_path = root / "ycore.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "agents": {"defaults": {"model": {"primary": "provider/model"}}},
+                        "models": {
+                            "providers": {
+                                "provider": {
+                                    "apiKeyEnv": "YCORE_TEST_API_KEY",
+                                    "models": [{"id": "model"}],
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            with patch.dict(os.environ, {}, clear=True), patch(
+                "yc_agents.config.ycore.ycore_home",
+                return_value=root / "home",
+            ):
+                config = YCoreConfig.load(root, global_path=config_path)
+                with self.assertRaisesRegex(ValueError, "YCORE_TEST_API_KEY") as error:
+                    config.resolve_model_provider()
+
+            self.assertIn(str(root / "home" / ".env"), str(error.exception))
+
     def test_missing_global_ycore_json_raises_clear_error(self):
         with TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

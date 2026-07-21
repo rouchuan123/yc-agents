@@ -1,4 +1,5 @@
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -7,6 +8,28 @@ from yc_agents.cli.workspaces import WorkspaceStore
 
 
 class TestWorkspaceStore(unittest.TestCase):
+    def test_default_store_keeps_registry_in_ycore_home_and_switches_startup_dirs(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            home = root / "home"
+            first_path = root / "first"
+            second_path = root / "second"
+            first_path.mkdir()
+            second_path.mkdir()
+
+            with unittest.mock.patch.dict(os.environ, {"YCORE_HOME": str(home)}):
+                store = WorkspaceStore(startup_dir=first_path)
+                first = store.add_workspace(first_path)
+                second = store.add_workspace(second_path)
+                repeated = store.add_workspace(second_path)
+
+            self.assertEqual(store.index_path, home / "workspaces.json")
+            self.assertEqual(first.path, first_path.resolve())
+            self.assertEqual(second.path, second_path.resolve())
+            self.assertEqual(repeated.id, second.id)
+            self.assertEqual(len(store.load_index()["workspaces"]), 2)
+            self.assertEqual(store.load_index()["current_workspace_id"], second.id)
+
     def test_first_start_initializes_current_directory(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

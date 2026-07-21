@@ -4,7 +4,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import main
+import yc_agents.cli.main as main
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.cli.workspaces import WorkspaceStore
 from yc_agents.harness.permissions import HumanApprovalGate
@@ -114,10 +114,10 @@ class TestMainEntryPoint(unittest.TestCase):
         self.addCleanup(temp_dir.cleanup)
         root = Path(temp_dir.name)
         with patch(
-            "main.WorkspaceStore",
-            side_effect=lambda: WorkspaceStore(ycore_root=root, startup_dir=root),
+            "yc_agents.cli.main.WorkspaceStore",
+            side_effect=lambda **_kwargs: WorkspaceStore(ycore_root=root, startup_dir=root),
         ):
-            return main.build_runtime()
+            return main.build_runtime(root)
 
     def test_build_runtime_wraps_skill_runtime_agent(self):
         runtime = self.build_runtime_in_temp_workspace()
@@ -171,7 +171,7 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_exports_build_runtime(self):
         self.assertTrue(callable(main.build_runtime))
 
-    @patch("main.build_cli_runtime")
+    @patch("yc_agents.cli.main.build_cli_runtime")
     def test_build_runtime_lets_runtime_factory_construct_ycore_llm(
         self,
         mock_build_cli_runtime,
@@ -183,20 +183,20 @@ class TestMainEntryPoint(unittest.TestCase):
         root = Path(temp_dir.name)
 
         with patch(
-            "main.WorkspaceStore",
-            side_effect=lambda: WorkspaceStore(ycore_root=root, startup_dir=root),
+            "yc_agents.cli.main.WorkspaceStore",
+            side_effect=lambda **_kwargs: WorkspaceStore(ycore_root=root, startup_dir=root),
         ):
-            self.assertIs(main.build_runtime(), runtime)
+            self.assertIs(main.build_runtime(root), runtime)
 
         _args, kwargs = mock_build_cli_runtime.call_args
         self.assertNotIn("llm", kwargs)
 
-    @patch("main.run_tui")
-    @patch("main.build_cli_runtime")
-    @patch("main.load_dotenv")
+    @patch("yc_agents.cli.main.run_tui")
+    @patch("yc_agents.cli.main.build_cli_runtime")
+    @patch("yc_agents.cli.main.initialize_user_environment")
     def test_main_loads_env_builds_runtime_and_starts_tui(
         self,
-        mock_load_dotenv,
+        mock_initialize_user_environment,
         mock_build_cli_runtime,
         mock_run_tui,
     ):
@@ -207,12 +207,12 @@ class TestMainEntryPoint(unittest.TestCase):
         root = Path(temp_dir.name)
 
         with patch(
-            "main.WorkspaceStore",
-            side_effect=lambda: WorkspaceStore(ycore_root=root, startup_dir=root),
-        ):
-            main.main()
+            "yc_agents.cli.main.WorkspaceStore",
+            side_effect=lambda **_kwargs: WorkspaceStore(ycore_root=root, startup_dir=root),
+        ), patch("yc_agents.cli.main.Path.cwd", return_value=root):
+            main.main([])
 
-        mock_load_dotenv.assert_called_once_with()
+        mock_initialize_user_environment.assert_called_once_with()
         mock_build_cli_runtime.assert_called_once()
         _args, build_kwargs = mock_build_cli_runtime.call_args
         self.assertNotIn("llm", build_kwargs)
