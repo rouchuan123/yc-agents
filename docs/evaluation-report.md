@@ -6,7 +6,7 @@
 
 ## 目的
 
-YCore eval 用来检查本地 Agent Harness 是否真的完成了任务，而不是只看最终回答是否流畅。当前基线重点评估通用本地工作区审查链路，包括 `code-review`、`eval-writer`、ToolGateway 边界、上下文读取、trace/state 证据和 verification 诚实性。
+YCore eval 用来检查本地 Agent Harness 是否真的完成了任务，而不是只看最终回答是否流畅。具体领域与评测目标由 Skill 决定，Harness 只提供通用的执行、观测和验证能力。当前基线重点评估通用本地工作区审查链路，包括 `code-review`、`eval-writer`、ToolGateway 边界、上下文读取、trace/state 证据和 verification 诚实性。
 
 本次基线使用的 active workspace 是：
 

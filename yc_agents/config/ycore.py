@@ -4,6 +4,13 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from yc_agents.config.paths import (
+    builtin_skills_dir,
+    default_config_path,
+    development_config_path,
+    ycore_home,
+)
+
 
 DEFAULT_TOOL_ENTRIES = {
     "workspace_files": {"enabled": True},
@@ -200,7 +207,15 @@ class YCoreConfig:
 
         source_paths = []
         source_configs = []
-        search_paths = cls._config_search_paths(root, global_config)
+        search_paths = cls._config_search_paths(
+            root,
+            global_config,
+            include_user_layers=(
+                global_path is None
+                and global_config.resolve(strict=False)
+                == default_config_path().resolve(strict=False)
+            ),
+        )
         for path in search_paths:
             if path.exists():
                 source_configs.append(
@@ -238,11 +253,14 @@ class YCoreConfig:
         )
 
     @classmethod
-    def _config_search_paths(cls, root, global_path):
-        paths = [
-            Path(global_path),
-            Path(root) / ".ycore" / "ycore.json",
-        ]
+    def _config_search_paths(cls, root, global_path, include_user_layers=False):
+        paths = [Path(global_path)]
+        if include_user_layers:
+            development_config = development_config_path()
+            if development_config is not None:
+                paths.append(development_config)
+            paths.append(ycore_home() / "ycore.json")
+        paths.append(Path(root) / ".ycore" / "ycore.json")
 
         unique_paths = []
         seen = set()
@@ -256,7 +274,7 @@ class YCoreConfig:
 
     @staticmethod
     def default_global_config_path():
-        return Path(__file__).resolve().parents[2] / "ycore.json"
+        return default_config_path()
 
     @property
     def primary_model_ref(self):
@@ -279,6 +297,12 @@ class YCoreConfig:
         if structured.get("enabled"):
             structured_request = dict(structured.get("request") or {})
         api_key = self._resolve_secret(provider, "apiKey", "apiKeyEnv")
+        api_key_env = provider.get("apiKeyEnv")
+        if api_key_env and not api_key:
+            raise ValueError(
+                f"Missing API key: set {api_key_env} in the environment or "
+                f"{ycore_home() / '.env'}"
+            )
         timeout = int(self.data.get("runtime", {}).get("modelTimeoutSeconds", 60))
         return ModelProviderSettings(
             provider=provider_id,
@@ -322,7 +346,17 @@ class YCoreConfig:
         return self.enabled_tools()
 
     def skills_dirs(self):
-        return list(self.data.get("skills", {}).get("dirs") or ["skills"])
+        configured = list(self.data.get("skills", {}).get("dirs") or ["skills"])
+        resolved = []
+        for value in configured:
+            path = Path(value).expanduser()
+            if path.is_absolute():
+                resolved.append(path)
+            elif str(path) == "skills":
+                resolved.append(builtin_skills_dir())
+            else:
+                resolved.append((self.root_path / path).resolve())
+        return resolved
 
     def analytics_data(self):
         return dict(self.data.get("analytics") or {})
@@ -337,6 +371,14 @@ class YCoreConfig:
         return dict(self.data.get("rag") or {})
 
     def global_config_root(self):
+        development_config = development_config_path()
+        if (
+            development_config is not None
+            and self.source_paths
+            and Path(self.source_paths[0]).resolve(strict=False)
+            == default_config_path().resolve(strict=False)
+        ):
+            return development_config.parent
         if self.source_paths:
             return Path(self.source_paths[0]).parent
         return self.default_global_config_path().parent

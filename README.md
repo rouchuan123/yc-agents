@@ -113,9 +113,21 @@ python -m venv .venv
 pip install -r requirements.txt
 ```
 
+如果希望在任意目录使用 `ycore` 命令，推荐通过 pipx 安装。开发者使用 editable 安装后，源码修改会在下次启动时立即生效：
+
+```powershell
+pipx install --editable E:\code\yc-agents
+```
+
+其他用户可以直接从 Git 仓库安装：
+
+```powershell
+pipx install git+https://github.com/rouchuan123/yc-agents.git
+```
+
 ### 4. 配置密钥
 
-复制 `.env.example` 为 `.env`，然后填写实际使用的 API Key，例如：
+首次执行 `ycore` 会在 `%USERPROFILE%\.ycore\.env` 创建密钥模板。填写实际使用的 API Key，例如：
 
 ```dotenv
 DEEPSEEK_API_KEY=your-api-key
@@ -123,13 +135,15 @@ MIMO_API_KEY=your-api-key
 TAVILY_API_KEY=your-api-key
 ```
 
-`.env` 只存放密钥。模型、工具、Skill、Analytics、Memory 和 MCP Server 等非密钥配置统一写在 `ycore.json` 中。
+`.env` 只存放密钥。模型、工具、Skill、Analytics、Memory 和 MCP Server 等非密钥配置统一写在 `ycore.json` 中。用户可通过 `%USERPROFILE%\.ycore\ycore.json` 覆盖全局配置，工作区仍可通过 `<workspace>\.ycore\ycore.json` 覆盖项目配置。
 
 ### 5. 启动 YCore
 
 ```powershell
-python main.py
+ycore
 ```
+
+命令执行目录会自动注册并切换为当前 Workspace。源码仓库仍兼容 `python main.py`。
 
 ## 🖥️ CLI 使用
 
@@ -176,11 +190,14 @@ YCore 采用单一的非密钥配置模型：
 
 | 配置 | 位置 | 用途 |
 | --- | --- | --- |
-| 全局运行配置 | `ycore.json` | 模型、工具、Skill、Analytics、Memory、MCP 与 JSON 协议策略 |
+| 内置默认配置 | 安装包；开发模式为仓库根 `ycore.json` | 随版本发布的默认模型、工具、Skill 与 Runtime 配置 |
+| 用户全局覆盖 | `%USERPROFILE%/.ycore/ycore.json` | 可选的个人模型和工具配置覆盖 |
 | Workspace 覆盖配置 | `<workspace>/.ycore/ycore.json` | 可选的工作区级配置覆盖 |
 | 全局项目指令 | `YCORE.md` | 仓库级 Agent 指令 |
 | Workspace 项目指令 | `<workspace>/.ycore/YCORE.md` | 当前工作区的本地指令 |
-| 密钥 | `.env` | Provider 与搜索服务 API Key |
+| 密钥 | `%USERPROFILE%/.ycore/.env` | Provider 与搜索服务 API Key |
+| Workspace 注册表 | `%USERPROFILE%/.ycore/workspaces.json` | CLI 工作区列表 |
+| Workspace 元数据 | `<workspace>/.ycore/workspace.json` | 单个工作区状态 |
 
 工具采用显式开关配置。所有已实现工具都列在 `entries` 中，设为 `false` 后不会注册，也不会提供给 Agent：
 
@@ -197,10 +214,8 @@ YCore 采用单一的非密钥配置模型：
 ```
 
 Workspace 可在 `<workspace>/.ycore/ycore.json` 覆盖单个工具的 `enabled`。旧 `tools.allow` 仅作为无 `entries` 配置的迁移兼容格式。
-| Workspace 注册表 | `data/workspaces.json` | CLI 工作区列表 |
-| Workspace 元数据 | `<workspace>/.ycore/workspace.json` | 单个工作区状态 |
 
-如果根目录 `ycore.json` 缺失，YCore 会明确报错并停止启动，不会从 `LLM_*` 或 `YCORE_ANALYTICS_*` 等环境变量恢复非密钥配置。
+配置合并顺序为：安装包默认配置、editable 开发仓库配置、用户全局覆盖、Workspace 覆盖。可通过 `YCORE_HOME` 修改用户目录位置。缺少当前模型要求的 API Key 时，YCore 会指出需要设置的环境变量和 `.env` 路径。
 
 ### 模型参数
 
@@ -267,7 +282,9 @@ yc-agents/
 
 | 任务 | 命令 |
 | --- | --- |
-| 启动 CLI | `python main.py` |
+| 启动 CLI | `ycore` |
+| 查看命令帮助 | `ycore --help` |
+| 查看版本 | `ycore --version` |
 | 运行测试 | `python -m pytest --basetemp .\.pytest-tmp -q` |
 | 运行本地检查 | `powershell -ExecutionPolicy Bypass -File .\scripts\test.ps1` |
 | 运行离线 Eval Demo | `python scripts/demo_eval_run.py` |
@@ -277,6 +294,8 @@ yc-agents/
 ```powershell
 .\.venv\Scripts\Activate.ps1
 ```
+
+editable 安装后，普通源码修改无需重装；修改依赖或命令入口后执行 `pipx reinstall ycore`。普通用户可使用 `pipx upgrade ycore` 更新，从本机删除则执行 `pipx uninstall ycore`。
 
 如果被评估的 Active Workspace 自身依赖 `.venv`，其验证命令应使用该 Workspace 的 Python 解释器，而不是全局 Python。
 

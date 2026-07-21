@@ -1,7 +1,12 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "ycore"
 version = "0.1.0"
 description = "YCore is a local skill-driven CLI agent runtime."
+readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
   "openai",
@@ -13,6 +18,20 @@ dependencies = [
   "pypdf",
   "textual"
 ]
+
+[project.scripts]
+ycore = "yc_agents.cli.main:main"
+
+[tool.setuptools.packages.find]
+include = ["yc_agents*"]
+
+[tool.setuptools.data-files]
+"share/ycore" = ["ycore.json", ".env.example"]
+"share/ycore/skills/code-review" = ["skills/code-review/SKILL.md"]
+"share/ycore/skills/code-review/assets" = ["skills/code-review/assets/*.md"]
+"share/ycore/skills/code-review/references" = ["skills/code-review/references/*.md"]
+"share/ycore/skills/eval-writer" = ["skills/eval-writer/SKILL.md"]
+"share/ycore/skills/ycore-analytics" = ["skills/ycore-analytics/SKILL.md"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

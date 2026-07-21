@@ -6,6 +6,8 @@ from hashlib import sha1
 from pathlib import Path
 from uuid import uuid4
 
+from yc_agents.config.paths import ycore_home
+
 
 def _now_iso():
     return datetime.now().isoformat(timespec="seconds")
@@ -29,9 +31,15 @@ class WorkspaceContext:
 
 class WorkspaceStore:
     def __init__(self, ycore_root=None, startup_dir=None, index_path=None):
-        self.ycore_root = Path(ycore_root or Path.cwd()).resolve()
+        using_default_root = ycore_root is None
+        self.ycore_root = Path(ycore_root or ycore_home()).resolve()
         self.startup_dir = Path(startup_dir or Path.cwd()).resolve()
-        self.index_path = Path(index_path or self.ycore_root / "data" / "workspaces.json")
+        default_index = (
+            self.ycore_root / "workspaces.json"
+            if using_default_root
+            else self.ycore_root / "data" / "workspaces.json"
+        )
+        self.index_path = Path(index_path or default_index)
 
     def ensure_active_workspace(self):
         index = self.load_index()
