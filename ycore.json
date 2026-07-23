@@ -26,7 +26,7 @@
           {
             "id": "deepseek-v4-flash",
             "name": "deepseek-v4-flash",
-            "contextWindow": 1000000,
+            "contextWindow": 256000,
             "maxOutputTokens": 4096,
             "request": {
               "max_tokens": 4096,
@@ -152,7 +152,8 @@
   },
   "memory": {
     "enabled": true,
-    "activeContextMaxTokens": 2000000,
+    "compressionThreshold": 12,
+    "activeContextMaxTokens": 200000,
     "compactionTriggerPercent": 80,
     "compactionTargetPercent": 30,
     "retrieveTopK": 6,

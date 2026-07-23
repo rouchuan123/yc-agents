@@ -586,6 +586,24 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         asyncio.run(run_app())
 
+    def test_running_app_loads_current_session_transcript_on_mount(self):
+        async def run_app():
+            session_store = FakeSessionStore()
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                session_store=session_store,
+                session=session_store.current,
+            )
+
+            async with app.run_test():
+                self.assertEqual(
+                    app.transcript_entries,
+                    [("You", "current question")],
+                )
+
+        asyncio.run(run_app())
+
     def test_sidebar_refreshes_after_session_new(self):
         async def run_app():
             session_store = FakeSessionStore()

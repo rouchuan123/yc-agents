@@ -143,6 +143,7 @@ class YCAgentsTUIApp(App):
         yield self.workbench
 
     async def on_mount(self):
+        self.reload_transcript()
         await self.refresh_sidebar()
         self._refresh_chrome_for_width(self.size.width)
         if self.prompt is not None:
