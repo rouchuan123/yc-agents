@@ -9,6 +9,72 @@ from yc_agents.config.ycore import YCoreConfig
 
 
 class TestYCoreConfig(unittest.TestCase):
+    def test_skill_entries_expose_only_enabled_skills(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_path = root / "ycore.json"
+            config_path.write_text(
+                json.dumps(
+                    {
+                        "skills": {
+                            "entries": {
+                                "code-review": {"enabled": True},
+                                "eval-writer": {"enabled": False},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = YCoreConfig.load(root, global_path=config_path)
+
+            self.assertEqual(
+                config.skill_entries(),
+                {
+                    "code-review": {"enabled": True},
+                    "eval-writer": {"enabled": False},
+                },
+            )
+            self.assertEqual(config.enabled_skills(), ["code-review"])
+
+    def test_workspace_skill_entries_override_global_enabled_state(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = root / "workspace"
+            workspace.mkdir()
+            (workspace / ".ycore").mkdir()
+            global_config = root / "global-ycore.json"
+            global_config.write_text(
+                json.dumps(
+                    {
+                        "skills": {
+                            "entries": {
+                                "code-review": {"enabled": True},
+                                "eval-writer": {"enabled": True},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            (workspace / ".ycore" / "ycore.json").write_text(
+                json.dumps(
+                    {
+                        "skills": {
+                            "entries": {
+                                "eval-writer": {"enabled": False},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = YCoreConfig.load(workspace, global_path=global_config)
+
+            self.assertEqual(config.enabled_skills(), ["code-review"])
+
     def test_default_load_merges_development_user_and_workspace_layers(self):
         with TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
