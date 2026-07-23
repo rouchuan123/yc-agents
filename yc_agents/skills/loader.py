@@ -6,8 +6,11 @@ from yc_agents.skills.definition import SkillDefinition
 
 
 class SkillLoader:
-    def __init__(self, skills_dir="skills"):
+    def __init__(self, skills_dir="skills", enabled_skills=None):
         self.skills_dir = Path(skills_dir)
+        self.enabled_skills = (
+            None if enabled_skills is None else set(enabled_skills)
+        )
 
     def load_all(self):
         if not self.skills_dir.exists():
@@ -24,7 +27,19 @@ class SkillLoader:
             if not skill_file.exists():
                 continue
 
-            skills.append(self.load_one(skill_dir))
+            if (
+                self.enabled_skills is not None
+                and skill_dir.name not in self.enabled_skills
+            ):
+                continue
+
+            skill = self.load_one(skill_dir)
+            if (
+                self.enabled_skills is not None
+                and skill.name not in self.enabled_skills
+            ):
+                continue
+            skills.append(skill)
 
         return skills
 

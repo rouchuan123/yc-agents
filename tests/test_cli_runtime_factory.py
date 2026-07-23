@@ -128,6 +128,54 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.global_config_patch.stop()
         self.global_config_dir.cleanup()
 
+    def test_build_cli_runtime_filters_skills_using_ycore_entries(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            skills_dir = root / "skills"
+            for name in ["code-review", "eval-writer"]:
+                skill_dir = skills_dir / name
+                skill_dir.mkdir(parents=True)
+                (skill_dir / "SKILL.md").write_text(
+                    (
+                        "---\n"
+                        f"name: {name}\n"
+                        f"description: {name}\n"
+                        "---\n\n"
+                        f"# {name}\n"
+                    ),
+                    encoding="utf-8",
+                )
+
+            workspace = WorkspaceStore(
+                ycore_root=root / "state",
+                startup_dir=root,
+            ).ensure_active_workspace()
+            (workspace.ycore_dir / "ycore.json").write_text(
+                json.dumps(
+                    {
+                        "skills": {
+                            "entries": {
+                                "code-review": {"enabled": True},
+                                "eval-writer": {"enabled": False},
+                            }
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            session = CLISessionStore(workspace).create_session("skills")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=FakeLLM(),
+                skills_dir=skills_dir,
+            )
+
+            self.assertEqual(
+                runtime.agent._load_registry().list_skills(),
+                [{"name": "code-review", "description": "code-review"}],
+            )
+
     def test_build_cli_runtime_uses_global_ycore_when_workspace_has_no_ycore(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

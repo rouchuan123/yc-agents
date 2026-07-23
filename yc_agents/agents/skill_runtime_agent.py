@@ -33,9 +33,13 @@ class SkillRuntimeAgent:
         workspace_context=None,
         prompt_builder=None,
         intent_router=None,
+        enabled_skills=None,
     ):
         self.llm = llm
         self.skills_dir = skills_dir
+        self.enabled_skills = (
+            None if enabled_skills is None else set(enabled_skills)
+        )
         self.prompt_builder = prompt_builder or PromptBuilder()
         self.skill_agent = SkillAgent(llm, prompt_builder=self.prompt_builder)
         self.context_manager = ContextManager()
@@ -137,7 +141,10 @@ class SkillRuntimeAgent:
     def _load_registry(self):
         registry = SkillRegistry()
 
-        for skill in SkillLoader(self.skills_dir).load_all():
+        for skill in SkillLoader(
+            self.skills_dir,
+            enabled_skills=self.enabled_skills,
+        ).load_all():
             registry.register(skill)
 
         return registry

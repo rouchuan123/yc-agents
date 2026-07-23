@@ -345,6 +345,24 @@ class YCoreConfig:
     def allowed_tools(self):
         return self.enabled_tools()
 
+    def skill_entries(self):
+        entries = self.data.get("skills", {}).get("entries") or {}
+        return {
+            str(name): (
+                dict(settings)
+                if isinstance(settings, dict)
+                else {"enabled": bool(settings)}
+            )
+            for name, settings in entries.items()
+        }
+
+    def enabled_skills(self):
+        return [
+            name
+            for name, settings in self.skill_entries().items()
+            if bool(settings.get("enabled", False))
+        ]
+
     def skills_dirs(self):
         configured = list(self.data.get("skills", {}).get("dirs") or ["skills"])
         resolved = []

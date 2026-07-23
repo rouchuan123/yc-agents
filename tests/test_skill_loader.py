@@ -19,6 +19,41 @@ class TestSkillLoader(unittest.TestCase):
         self.assertTrue(all(skill.allowed_tools == [] for skill in skills))
         self.assertTrue(all("allowed_tools" not in skill.to_dict() for skill in skills))
 
+    def test_load_all_filters_explicitly_disabled_skills(self):
+        loader = SkillLoader("skills", enabled_skills={"code-review"})
+
+        skills = loader.load_all()
+
+        self.assertEqual([skill.name for skill in skills], ["code-review"])
+
+    def test_load_all_accepts_an_explicit_empty_enabled_set(self):
+        loader = SkillLoader("skills", enabled_skills=set())
+
+        self.assertEqual(loader.load_all(), [])
+
+    def test_load_all_does_not_parse_a_disabled_skill(self):
+        with TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir)
+            enabled_dir = skills_dir / "enabled"
+            enabled_dir.mkdir()
+            (enabled_dir / "SKILL.md").write_text(
+                "---\nname: enabled\ndescription: enabled\n---\n\nEnabled.\n",
+                encoding="utf-8",
+            )
+            disabled_dir = skills_dir / "disabled"
+            disabled_dir.mkdir()
+            (disabled_dir / "SKILL.md").write_text(
+                "invalid front matter",
+                encoding="utf-8",
+            )
+
+            skills = SkillLoader(
+                skills_dir,
+                enabled_skills={"enabled"},
+            ).load_all()
+
+            self.assertEqual([skill.name for skill in skills], ["enabled"])
+
     def test_code_review_skill_requires_deep_evidence_based_review(self):
         loader = SkillLoader("skills")
 

@@ -60,6 +60,10 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
     rag_config = ycore_config.rag_data()
     configured_enabled_tools = ycore_config.enabled_tools()
     enabled_tool_names = set(configured_enabled_tools)
+    skill_entries = ycore_config.skill_entries()
+    enabled_skill_names = (
+        set(ycore_config.enabled_skills()) if skill_entries else None
+    )
     compression_threshold = int(memory_config.get("compressionThreshold", 12))
     resolved_skills_dir = skills_dir or ycore_config.skills_dirs()[0]
     analytics_recorder = (
@@ -281,6 +285,7 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             "tool_catalog": tool_registry.list_tools(),
             "rag": rag_index_report,
         },
+        enabled_skills=enabled_skill_names,
     )
 
     return YCAgentRuntime(

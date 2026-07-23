@@ -215,6 +215,20 @@ YCore 采用单一的非密钥配置模型：
 
 Workspace 可在 `<workspace>/.ycore/ycore.json` 覆盖单个工具的 `enabled`。旧 `tools.allow` 仅作为无 `entries` 配置的迁移兼容格式。
 
+Skill 同样支持显式启停。只要 `skills.entries` 非空，Runtime 就只加载其中 `enabled: true` 的 Skill；Workspace 配置可以覆盖全局状态。为兼容旧配置，`skills.entries` 为空时仍会自动加载 Skill 目录中的全部合法 `SKILL.md`：
+
+```json
+{
+  "skills": {
+    "dirs": ["skills"],
+    "entries": {
+      "code-review": {"enabled": true},
+      "eval-writer": {"enabled": false}
+    }
+  }
+}
+```
+
 配置合并顺序为：安装包默认配置、editable 开发仓库配置、用户全局覆盖、Workspace 覆盖。可通过 `YCORE_HOME` 修改用户目录位置。缺少当前模型要求的 API Key 时，YCore 会指出需要设置的环境变量和 `.env` 路径。
 
 ### 模型参数
