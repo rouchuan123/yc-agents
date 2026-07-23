@@ -41,13 +41,11 @@ def build_session_entries(session_store, current_session):
     current_id = getattr(current_session, "id", "")
     entries = []
     for session in session_store.list_sessions():
-        message_count = int(getattr(session, "message_count", 0) or 0)
         entries.append(
             SidebarEntry(
                 kind="session",
                 item_id=str(session.id),
                 title=str(session.title or session.id),
-                detail=f"{message_count} messages",
                 active=str(session.id) == current_id,
             )
         )

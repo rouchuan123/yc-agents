@@ -70,7 +70,7 @@ def test_build_workspace_entries_marks_current_workspace():
     ]
 
 
-def test_build_session_entries_marks_current_session_and_message_count():
+def test_build_session_entries_marks_current_session_without_message_count():
     current = FakeSession("session-current", "Current review", 4)
 
     entries = build_session_entries(FakeSessionStore(), current)
@@ -80,17 +80,18 @@ def test_build_session_entries_marks_current_session_and_message_count():
             kind="session",
             item_id="session-current",
             title="Current review",
-            detail="4 messages",
             active=True,
         ),
         SidebarEntry(
             kind="session",
             item_id="session-next",
             title="Next task",
-            detail="2 messages",
             active=False,
         ),
     ]
+
+    assert render_sidebar_entry(entries[0]) == "> Current review"
+    assert render_sidebar_entry(entries[1]) == "  Next task"
 
 
 def test_render_sidebar_entry_uses_active_marker_and_truncates_detail():
