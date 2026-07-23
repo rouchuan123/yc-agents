@@ -64,7 +64,6 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
     enabled_skill_names = (
         set(ycore_config.enabled_skills()) if skill_entries else None
     )
-    compression_threshold = int(memory_config.get("compressionThreshold", 12))
     resolved_skills_dir = skills_dir or ycore_config.skills_dirs()[0]
     analytics_recorder = (
         AnalyticsRecorder(analytics_config, session_id=session.id)
@@ -268,7 +267,6 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
         summary_memory=summary_memory,
         profile_memory=profile_memory,
         memory_compressor=memory_compressor,
-        compression_threshold=compression_threshold,
         memory_config=memory_config,
         context_limit=provider_config.context_window or 8000,
         max_output_tokens=provider_config.max_output_tokens or 0,

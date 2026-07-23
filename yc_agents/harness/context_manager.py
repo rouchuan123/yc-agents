@@ -73,8 +73,6 @@ class ContextManager:
         summary="",
         profile=None,
         memory_context=None,
-        memory_compressor=None,
-        compression_threshold=None,
     ):
         if memory_context is not None:
             result = {
@@ -87,37 +85,12 @@ class ContextManager:
             return result
 
         session_messages = session or []
-        summary_text = self._maybe_compress_summary(
-            session_messages=session_messages,
-            summary=summary or "",
-            memory_compressor=memory_compressor,
-            compression_threshold=compression_threshold,
-        )
-
         return {
             "session": session_messages,
-            "summary": summary_text,
+            "summary": summary or "",
             "profile": profile or {},
             "retrieved": [],
         }
-
-    def _maybe_compress_summary(
-        self,
-        session_messages,
-        summary,
-        memory_compressor=None,
-        compression_threshold=None,
-    ):
-        if memory_compressor is None:
-            return summary
-
-        if not compression_threshold or compression_threshold <= 0:
-            return summary
-
-        if len(session_messages) < compression_threshold:
-            return summary
-
-        return memory_compressor.compress_and_save(session_messages)
 
     def _summarize_skill(self, skill):
         to_summary = getattr(skill, "to_summary", None)

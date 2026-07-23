@@ -100,32 +100,6 @@ class TestContextManager(unittest.TestCase):
         self.assertEqual(context["context_report"]["max_tokens"], 1000)
         self.assertIn("skills", context["context_report"]["sections"])
 
-    def test_build_memory_context_compresses_session_when_threshold_reached(self):
-        class FakeCompressor:
-            def __init__(self):
-                self.received_messages = None
-
-            def compress_and_save(self, messages):
-                self.received_messages = messages
-                return "compressed summary"
-
-        messages = [
-            {"role": "user", "content": "question 1"},
-            {"role": "assistant", "content": "answer 1"},
-            {"role": "user", "content": "question 2"},
-        ]
-        compressor = FakeCompressor()
-
-        result = ContextManager().build_memory_context(
-            session=messages,
-            summary="old summary",
-            memory_compressor=compressor,
-            compression_threshold=3,
-        )
-
-        self.assertEqual(result["summary"], "compressed summary")
-        self.assertEqual(compressor.received_messages, messages)
-
     def test_memory_compressor_returns_summary_with_metadata(self):
         compressor = MemoryCompressor(max_items=2)
         messages = [

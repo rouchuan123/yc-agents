@@ -42,6 +42,26 @@ def test_compaction_reserves_output_and_uses_window_trigger(tmp_path):
     assert result["compacted"] is True
 
 
+def test_compaction_uses_configured_percent_for_active_target(tmp_path):
+    class CapturingCompressor(MemoryCompressor):
+        def _select_prefix(self, items, target_tokens):
+            self.target_tokens = target_tokens
+            return 0
+
+    compressor = CapturingCompressor(
+        summary_memory=SummaryMemory(tmp_path / "summary.md")
+    )
+
+    compressor.compact_if_needed(
+        messages(),
+        active_max_tokens=200,
+        context_limit=10_000,
+        target_percent=30,
+    )
+
+    assert compressor.target_tokens == 60
+
+
 def test_small_history_is_not_compacted(tmp_path):
     compressor = MemoryCompressor(summary_memory=SummaryMemory(tmp_path / "summary.md"))
     original = messages(count=2, size=10)

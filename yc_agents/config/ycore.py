@@ -85,7 +85,6 @@ DEFAULT_CONFIG = {
     },
     "memory": {
         "enabled": True,
-        "compressionThreshold": 12,
         "activeContextMaxTokens": 64000,
         "compactionTriggerPercent": 80,
         "compactionTargetPercent": 50,
