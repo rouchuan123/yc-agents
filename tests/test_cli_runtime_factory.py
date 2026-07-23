@@ -96,7 +96,7 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
             "enabled": analytics_enabled,
             "sqliteMcp": {"enabled": sqlite_mcp_enabled},
         },
-        "memory": {"compressionThreshold": 5},
+        "memory": {"activeContextMaxTokens": 5000},
     }
     (root / "ycore.json").write_text(json.dumps(config), encoding="utf-8")
     (root / ".ycore").mkdir(exist_ok=True)
@@ -484,7 +484,10 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                 catalog["file_reader"]["parameters"][0]["name"],
                 "file_path",
             )
-            self.assertEqual(runtime.agent.compression_threshold, 5)
+            self.assertEqual(
+                runtime.agent.memory_config["activeContextMaxTokens"],
+                5000,
+            )
             self.assertEqual(runtime.context_limit, 64000)
 
     def test_build_cli_runtime_passes_ycore_tavily_key_to_web_search(self):

@@ -72,7 +72,10 @@ class MemoryCompressor:
         if not active_triggered and not window_triggered:
             return self._result(messages, previous_summary, False, 0, active_tokens)
 
-        active_target = max(1, int(active_max_tokens) // 2)
+        active_target = max(
+            1,
+            int(active_max_tokens) * max(1, int(target_percent)) // 100,
+        )
         window_target = max(1, usable_window * max(1, int(target_percent)) // 100)
         target_messages = min(
             active_target,

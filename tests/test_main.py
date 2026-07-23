@@ -79,7 +79,7 @@ def write_ycore_config(root):
             "enabled": False,
             "sqliteMcp": {"enabled": False},
         },
-        "memory": {"compressionThreshold": 12},
+        "memory": {"activeContextMaxTokens": 64000},
     }
     (root / "ycore.json").write_text(json.dumps(config), encoding="utf-8")
 
@@ -161,7 +161,10 @@ class TestMainEntryPoint(unittest.TestCase):
         self.assertIsInstance(runtime.agent.profile_memory, CodeAgentProfileMemory)
         self.assertIsInstance(runtime.agent.memory_compressor, MemoryCompressor)
         self.assertIsInstance(runtime.agent.rag_search_tool, RAGSearchTool)
-        self.assertGreater(runtime.agent.compression_threshold, 0)
+        self.assertGreater(
+            runtime.agent.memory_config["activeContextMaxTokens"],
+            0,
+        )
 
     def test_build_runtime_configures_permission_gate(self):
         runtime = self.build_runtime_in_temp_workspace()

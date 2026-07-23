@@ -22,7 +22,6 @@ class SkillRuntimeAgent:
         summary_memory=None,
         profile_memory=None,
         memory_compressor=None,
-        compression_threshold=None,
         memory_config=None,
         context_limit=8000,
         max_output_tokens=0,
@@ -47,7 +46,6 @@ class SkillRuntimeAgent:
         self.summary_memory = summary_memory
         self.profile_memory = profile_memory
         self.memory_compressor = memory_compressor
-        self.compression_threshold = compression_threshold
         self.memory_config = dict(memory_config or {})
         self.context_limit = int(context_limit or 8000)
         self.max_output_tokens = int(max_output_tokens or 0)

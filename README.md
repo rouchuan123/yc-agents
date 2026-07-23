@@ -246,7 +246,7 @@ Skill 同样支持显式启停。只要 `skills.entries` 非空，Runtime 就只
 
 状态栏显示 `Context 9.2k/1000k (0.92%)`。`/context` 可查看 input、output、cached、reasoning、主/辅助调用次数及估算分类。每个会话的统计保存在 `.ycore/sessions/<session-id>/usage.json`。
 
-活跃会话默认在记忆超过 64k token，或完整 prompt 达到窗口 80% 时压缩，目标降至 32k 活跃记忆且不高于窗口 50%。旧的 `compressionThreshold` 字段继续兼容，新 token 阈值优先。
+活跃会话在原文估算超过 `activeContextMaxTokens`，或完整 prompt 达到 `compactionTriggerPercent` 指定的窗口比例时压缩。压缩后的活跃原文目标由 `compactionTargetPercent` 同时作用于活跃记忆上限和模型可用窗口，不再使用固定比例或按对话轮数触发。
 
 长期记忆使用三层 Markdown 来源：`~/.ycore/memory/MEMORY.md`、工作区 `.ycore/memory/MEMORY.md` 和 `.ycore/memory/sessions/*.md`。工作区 SQLite 索引提供中文 BM25 检索；配置 embedding 后自动升级为混合检索，失败时降级为关键词检索。每轮自动注入相关片段，也可使用只读 `memory_search` 工具。`memory.dream.enabled` 默认为 `false`，开启后按配置整理跨会话长期记忆。
 

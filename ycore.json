@@ -52,7 +52,7 @@
           {
             "id": "mimo-v2.5-pro",
             "name": "MiMo V2.5 Pro",
-            "contextWindow": 1000000,
+            "contextWindow": 256000,
             "maxOutputTokens": 4096,
             "request": {
               "max_completion_tokens": 4096,
@@ -152,10 +152,9 @@
   },
   "memory": {
     "enabled": true,
-    "compressionThreshold": 12,
-    "activeContextMaxTokens": 64000,
+    "activeContextMaxTokens": 2000000,
     "compactionTriggerPercent": 80,
-    "compactionTargetPercent": 50,
+    "compactionTargetPercent": 30,
     "retrieveTopK": 6,
     "retrievalTokenBudget": 4000,
     "minScore": 0.2,
