@@ -318,7 +318,8 @@ class DocxBuilder:
                     f"Template table still requires user confirmation: {element_id}. "
                     "Resolve it with document_job.set_contract using "
                     f'{{"tables":[{{"element_id":"{element_id}","action":"preserve|delete|rewrite"}}]}}; '
-                    "then call document_job.confirm_plan. Do not use set_plan or set_outline for table decisions."
+                    "set_contract merges this decision with existing table decisions; then call "
+                    "document_job.confirm_plan once. Do not use set_plan or set_outline for table decisions."
                 )
             if action in {"rewrite", "reuse_structure"} and element_id not in targeted:
                 if untargeted:

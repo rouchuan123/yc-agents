@@ -63,3 +63,43 @@ def normalize_template_contract(contract, *, reset_confirmation=False):
     else:
         value["confirmed"] = bool(value.get("confirmed", False))
     return value
+
+
+def contract_semantics(contract):
+    value = normalize_template_contract(contract)
+    value.pop("confirmed", None)
+    value.pop("confirmed_at", None)
+    return value
+
+
+def merge_template_contract(existing, patch):
+    """Merge a partial contract patch by element_id without losing earlier decisions."""
+    if not isinstance(patch, dict):
+        raise ValueError("template contract patch must be an object")
+    current = normalize_template_contract(existing or {})
+    incoming = normalize_template_contract(patch)
+    merged = deepcopy(current)
+
+    for collection in CONTRACT_COLLECTIONS:
+        if collection not in patch:
+            continue
+        items = {
+            item["element_id"]: deepcopy(item)
+            for item in current.get(collection, [])
+        }
+        for item in incoming.get(collection, []):
+            items[item["element_id"]] = deepcopy(item)
+        merged[collection] = list(items.values())
+
+    if "defaults" in patch:
+        defaults = dict(current.get("defaults") or {})
+        defaults.update(incoming.get("defaults") or {})
+        merged["defaults"] = defaults
+    if "unresolved" in patch:
+        merged["unresolved"] = list(incoming.get("unresolved") or [])
+
+    reserved = set(CONTRACT_COLLECTIONS) | {"defaults", "unresolved", "confirmed", "confirmed_at"}
+    for key, value in patch.items():
+        if key not in reserved:
+            merged[key] = deepcopy(value)
+    return normalize_template_contract(merged)

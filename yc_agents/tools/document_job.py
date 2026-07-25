@@ -7,8 +7,9 @@ class DocumentJobTool(BaseTool):
     description = (
         "Create and manage the active immutable-version document authoring job. "
         "Use set_contract—not set_plan/set_outline—for table and complex-object preserve/delete/rewrite decisions. "
-        "Contract items use element_id; legacy id is accepted and normalized. set_contract always invalidates prior "
-        "plan confirmation, so call confirm_plan once afterward. "
+        "Contract items use element_id; legacy id is accepted and normalized. set_contract merges decisions by "
+        "element_id and only invalidates confirmation when the effective contract changes. Never repeat an unchanged "
+        "set_contract after confirm_plan. Use replace_contract only to intentionally discard all prior decisions. "
         "set_plan canonicalizes chapters to recursive sections/children and always invalidates prior plan confirmation; "
         "when it returns requires_plan_confirmation, call confirm_plan before writing content. "
         "get_active also returns current session attachments. When no job exists, use an existing template attachment; "
@@ -74,15 +75,25 @@ class DocumentJobTool(BaseTool):
                 pending_questions=pending_questions,
             )
             return {"ok": True, "job": self.job_store.summary(data)}
-        if operation == "set_contract":
-            data = self.job_store.set_contract(job_id, contract or {})
+        if operation in {"set_contract", "replace_contract"}:
+            data = self.job_store.set_contract(
+                job_id,
+                contract or {},
+                replace=operation == "replace_contract",
+            )
+            changed = bool(data.pop("_contract_changed", False))
+            requires_confirmation = not bool(data.get("plan_confirmed"))
             return {
                 "ok": True,
                 "job": self.job_store.summary(data),
                 "contract": self.job_store.get_contract(job_id),
-                "requires_plan_confirmation": True,
-                "next_action": "document_job.confirm_plan",
-                "instruction": "Do not call set_plan/set_outline for contract decisions.",
+                "contract_changed": changed,
+                "requires_plan_confirmation": requires_confirmation,
+                "next_action": "document_job.confirm_plan" if requires_confirmation else "docx_generate",
+                "instruction": (
+                    "Contract decisions were merged by element_id. Do not call set_plan/set_outline for them, "
+                    "and do not repeat set_contract when contract_changed is false."
+                ),
             }
         if operation == "set_plan":
             data = self.job_store.set_plan(job_id, outline or {})
@@ -95,7 +106,13 @@ class DocumentJobTool(BaseTool):
             }
         if operation == "confirm_plan":
             data = self.job_store.confirm_plan(job_id)
-            return {"ok": True, "job": self.job_store.summary(data)}
+            return {
+                "ok": True,
+                "job": self.job_store.summary(data),
+                "requires_plan_confirmation": False,
+                "next_action": "docx_generate",
+                "instruction": "Plan confirmed. Do not call set_contract again unless the user changes a decision.",
+            }
         if operation == "rollback":
             data = self.job_store.rollback(job_id, version)
             return {"ok": True, "job": self.job_store.summary(data)}
