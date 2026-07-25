@@ -513,6 +513,69 @@ def test_contract_rejects_conflicting_legacy_and_canonical_ids(document_workspac
         )
 
 
+def test_contract_partial_updates_merge_and_identical_repeat_is_idempotent(document_workspace):
+    _workspace, _template, attachments, jobs, job = document_workspace
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "第一章"}]})
+    tool = DocumentJobTool(jobs, attachments)
+
+    first = tool.run(
+        "set_contract",
+        job_id=job["id"],
+        contract={
+            "tables": [
+                {"element_id": "body.tbl0000", "action": "delete"},
+                {"element_id": "body.tbl0001", "action": "delete"},
+                {"element_id": "body.tbl0002", "action": "delete"},
+            ]
+        },
+    )
+    partial = tool.run(
+        "set_contract",
+        job_id=job["id"],
+        contract={"tables": [{"element_id": "body.tbl0003", "action": "preserve"}]},
+    )
+
+    assert first["contract_changed"] is True
+    assert [item["element_id"] for item in partial["contract"]["tables"]] == [
+        "body.tbl0000",
+        "body.tbl0001",
+        "body.tbl0002",
+        "body.tbl0003",
+    ]
+    confirmed = tool.run("confirm_plan", job_id=job["id"])
+    assert confirmed["next_action"] == "docx_generate"
+
+    repeated = tool.run(
+        "set_contract",
+        job_id=job["id"],
+        contract={
+            "tables": [
+                {"element_id": "body.tbl0000", "action": "delete"},
+                {"element_id": "body.tbl0001", "action": "delete"},
+                {"element_id": "body.tbl0002", "action": "delete"},
+                {"element_id": "body.tbl0003", "action": "preserve"},
+            ]
+        },
+    )
+
+    assert repeated["contract_changed"] is False
+    assert repeated["requires_plan_confirmation"] is False
+    assert repeated["next_action"] == "docx_generate"
+    assert repeated["job"]["plan_confirmed"] is True
+    assert repeated["job"]["contract_confirmed"] is True
+    assert repeated["contract"]["confirmed"] is True
+
+    replaced = tool.run(
+        "replace_contract",
+        job_id=job["id"],
+        contract={"tables": [{"element_id": "body.tbl0003", "action": "preserve"}]},
+    )
+    assert replaced["contract_changed"] is True
+    assert replaced["requires_plan_confirmation"] is True
+    assert [item["element_id"] for item in replaced["contract"]["tables"]] == ["body.tbl0003"]
+
+
 def test_editor_scan_does_not_materialize_unreferenced_headers(tmp_path):
     template = tmp_path / "no-headers.docx"
     document = Document()

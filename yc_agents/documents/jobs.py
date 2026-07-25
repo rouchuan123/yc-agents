@@ -6,7 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from yc_agents.documents.contract import normalize_template_contract
+from yc_agents.documents.contract import (
+    contract_semantics,
+    merge_template_contract,
+    normalize_template_contract,
+)
 from yc_agents.documents.outline import normalize_outline, validate_canonical_outline
 
 
@@ -132,17 +136,39 @@ class DocumentJobStore:
             changes["pending_questions"] = list(pending_questions)
         return self.update(job_id, **changes)
 
-    def set_contract(self, job_id, contract):
+    def set_contract(self, job_id, contract, *, replace=False):
+        data = self.get(job_id)
         job_root = self.root / job_id
         path = job_root / "template" / "template-contract.json"
-        value = normalize_template_contract(contract or {}, reset_confirmation=True)
+        existing = None
+        if path.exists():
+            existing = normalize_template_contract(json.loads(path.read_text(encoding="utf-8")))
+        if replace or existing is None:
+            value = normalize_template_contract(contract or {})
+        else:
+            value = merge_template_contract(existing, contract or {})
+        changed = existing is None or contract_semantics(existing) != contract_semantics(value)
+        if not changed:
+            # Canonicalize legacy aliases on disk but preserve both confirmation flags.
+            value["confirmed"] = bool(existing.get("confirmed"))
+            if existing.get("confirmed_at"):
+                value["confirmed_at"] = existing["confirmed_at"]
+            else:
+                value.pop("confirmed_at", None)
+            self._write_json(path, value)
+            data["_contract_changed"] = False
+            return data
+
+        value = normalize_template_contract(value, reset_confirmation=True)
         self._write_json(path, value)
-        return self.update(
+        data = self.update(
             job_id,
             template_contract_path=str(path),
             contract_confirmed=False,
             plan_confirmed=False,
         )
+        data["_contract_changed"] = True
+        return data
 
     def get_contract(self, job_id):
         data = self.get(job_id)
