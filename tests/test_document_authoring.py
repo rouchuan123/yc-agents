@@ -154,6 +154,47 @@ def test_document_job_tool_returns_existing_attachments_and_auto_creates_job(tmp
     assert tool.run("get_active")["job"]["id"] == created["job"]["id"]
 
 
+def test_document_job_tool_uses_active_job_when_job_id_is_omitted(tmp_path):
+    workspace = tmp_path / "workspace"
+    session_path = workspace / ".ycore" / "sessions" / "session-active"
+    session_path.mkdir(parents=True)
+    template = tmp_path / "template.docx"
+    make_template(template)
+    attachments = AttachmentManager(session_path)
+    attachment = attachments.import_file(template, role="template")
+    jobs = DocumentJobStore(workspace, "session-active")
+    job = jobs.create(attachment, title="活跃任务")
+    tool = DocumentJobTool(jobs, attachments)
+
+    result = tool.run(
+        "set_contract",
+        contract={
+            "confirm": [
+                {"element_id": "body.tbl0000", "decision": "rewrite"}
+            ]
+        },
+    )
+
+    assert result["job"]["id"] == job["id"]
+    assert result["contract"]["tables"] == [
+        {"element_id": "body.tbl0000", "action": "rewrite"}
+    ]
+    assert "confirm" not in result["contract"]
+
+
+def test_document_job_tool_reports_missing_active_job_clearly(tmp_path):
+    workspace = tmp_path / "workspace"
+    session_path = workspace / ".ycore" / "sessions" / "session-empty"
+    session_path.mkdir(parents=True)
+    tool = DocumentJobTool(
+        DocumentJobStore(workspace, "session-empty"),
+        AttachmentManager(session_path),
+    )
+
+    with pytest.raises(ValueError, match="No active document job"):
+        tool.run("set_contract", contract={})
+
+
 def test_template_analyzer_extracts_effective_chinese_formatting(document_workspace):
     _workspace, template, _attachments, jobs, job = document_workspace
     analyzer = DocxTemplateAnalyzer(jobs)
@@ -376,6 +417,35 @@ def test_set_outline_feedback_requires_reconfirmation_and_stops_repeated_upserts
         tool.run("upsert_section", job["id"], section_id="s1", title="第一章", content="正文")
 
 
+def test_document_content_tool_returns_compact_section_summary(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(
+        job["id"],
+        {"sections": [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}]},
+    )
+    jobs.confirm_plan(job["id"])
+    tool = DocumentContentTool(content)
+
+    body = "这是一段不会回显到工具历史中的长正文。"
+    result = tool.run(
+        "upsert_section",
+        job["id"],
+        section_id="s1",
+        title="第一章",
+        content=body,
+        tables=[{"headers": ["项目"], "rows": [["值"]]}],
+    )
+
+    assert result["section"]["characters"] == len(body)
+    assert result["section"]["tables"] == 1
+    assert "content" not in result["section"]
+    assert result["remaining"] == 1
+    assert content.get_section(job["id"], "s1")["content"].startswith("这是一段")
+
+
 def test_content_rejects_unsourced_project_metrics(document_workspace):
     _workspace, _template, _attachments, jobs, job = document_workspace
     jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
@@ -528,6 +598,43 @@ def test_contract_rejects_conflicting_legacy_and_canonical_ids(document_workspac
         )
 
 
+def test_contract_legacy_confirm_decision_merges_and_canonical_item_wins(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0001", "action": "delete"}]},
+    )
+    jobs.set_contract(
+        job["id"],
+        {"confirm": [{"element_id": "body.tbl0000", "decision": "rewrite"}]},
+    )
+    jobs.set_contract(
+        job["id"],
+        {
+            "tables": [{"element_id": "body.tbl0000", "action": "preserve"}],
+            "confirm": [{"element_id": "body.tbl0000", "decision": "rewrite"}],
+        },
+    )
+
+    contract = jobs.get_contract(job["id"])
+    assert contract["tables"] == [
+        {"element_id": "body.tbl0001", "action": "delete"},
+        {"element_id": "body.tbl0000", "action": "preserve"},
+    ]
+    assert "confirm" not in contract
+
+
+def test_contract_rejects_confirmed_as_an_action_with_valid_choices(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+
+    with pytest.raises(ValueError, match=r"confirmed.*Use one of:.*rewrite"):
+        jobs.set_contract(
+            job["id"],
+            {"confirm": [{"element_id": "body.tbl0000", "decision": "confirmed"}]},
+        )
+
+
 def test_contract_partial_updates_merge_and_identical_repeat_is_idempotent(document_workspace):
     _workspace, _template, attachments, jobs, job = document_workspace
     content = DocumentContentStore(jobs)
@@ -646,6 +753,18 @@ def test_document_source_discovery_excludes_template_copy_unless_explicitly_requ
 
     assert template.name not in {item["name"] for item in default["candidates"]}
     assert template.name in {item["name"] for item in explicit["candidates"]}
+
+
+def test_document_source_discovery_ignores_word_lock_files(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    (workspace / "~$文献综述.docx").write_bytes(b"word-lock")
+    (workspace / "文献综述.md").write_text("可用资料", encoding="utf-8")
+
+    result = DocumentSourceService(workspace, jobs).discover(job["id"], query="文献综述")
+
+    names = {item["name"] for item in result["candidates"]}
+    assert "~$文献综述.docx" not in names
+    assert "文献综述.md" in names
 
 
 def test_execution_broker_scrubs_secrets_and_restricts_paths(tmp_path, monkeypatch):

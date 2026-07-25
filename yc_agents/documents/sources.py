@@ -35,6 +35,8 @@ class DocumentSourceService:
         for path in self.workspace_root.rglob("*"):
             if not path.is_file() or set(path.relative_to(self.workspace_root).parts) & EXCLUDED_DIRS:
                 continue
+            if path.name.startswith("~$"):
+                continue
             if is_blocked_readable_file(path) or not is_readable_workspace_file(path):
                 continue
             if not include_template and self._is_template_source(path, job):

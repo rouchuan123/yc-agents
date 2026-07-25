@@ -28,6 +28,9 @@ def test_docx_template_authoring_cases_cover_business_workflow():
         "docx_verify",
     }.issubset(required)
     assert any("workspace_write" in case.get("forbidden_tools", []) for case in cases)
+    contract_case = next(case for case in cases if case["id"] == "docx-contract-rewrite-shape-001")
+    assert "action=rewrite" in contract_case["failure_notes"]
+    assert "confirm[].decision" in contract_case["failure_notes"]
 
 
 def test_eval_case_files_are_generic_workspace_focused():

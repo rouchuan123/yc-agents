@@ -7,7 +7,8 @@ class DocumentContentTool(BaseTool):
     description = (
         "Persist a recursive confirmed outline and draft long documents section by section before DOCX generation. "
         "set_outline invalidates prior confirmation; call document_job.confirm_plan exactly once after the final outline. "
-        "Never retry upsert_section after PLAN_NOT_CONFIRMED until that confirmation succeeds."
+        "Never retry upsert_section after PLAN_NOT_CONFIRMED until that confirmation succeeds. "
+        "upsert_section returns a compact summary, not the full body; use get_section only when body text is needed."
     )
     schema = ToolSchema(
         fields=[
@@ -49,7 +50,7 @@ class DocumentContentTool(BaseTool):
                 "next_action": "document_job.confirm_plan",
             }
         if operation == "upsert_section":
-            return self.content_store.upsert_section(
+            result = self.content_store.upsert_section(
                 job_id,
                 section_id,
                 title,
@@ -59,6 +60,24 @@ class DocumentContentTool(BaseTool):
                 target_role=target_role,
                 tables=tables,
             )
+            section = result["section"]
+            missing = self.content_store.get_missing(job_id)
+            return {
+                "ok": True,
+                "section": {
+                    "id": section["id"],
+                    "title": section["title"],
+                    "characters": len(section.get("content") or ""),
+                    "source_ids": list(section.get("source_ids") or []),
+                    "fact_status": section.get("fact_status"),
+                    "target_role": section.get("target_role"),
+                    "level": section.get("level"),
+                    "tables": len(section.get("tables") or []),
+                },
+                "path": result["path"],
+                "remaining": len(missing["missing"]),
+                "complete": missing["complete"],
+            }
         if operation == "get_missing":
             return {"ok": True, **self.content_store.get_missing(job_id)}
         if operation == "get_section":

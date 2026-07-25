@@ -25,6 +25,8 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
    - `reuse_structure`：章节、表格和图片位置模式；
    - `confirm`：Logo、公司名、免责声明及复杂对象中的旧业务内容。
 4. 用 `document_job` 的 `set_contract` 保存分类和置信度。
+   - 唯一 canonical 写法是 `{"tables":[{"element_id":"body.tbl0000","action":"rewrite"}]}`。
+   - 用户说“保留表格结构、重写内容”时使用 `tables[].action="rewrite"`；不要写成 `confirm[].decision`，也不要使用不存在的动作 `confirmed`。
 5. 发现 SmartArt、嵌入对象、复杂图表或文本框旧内容时，说明限制并集中询问保留、删除或图片替换；不得假装已编辑。
 
 详细分类规则见 [references/template-contract.md](references/template-contract.md)。
@@ -48,6 +50,7 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
 ## 内容与生成
 
 1. 计划确认后按提纲逐章生成，使用 `document_content.upsert_section` 保存；长文不得挤在单次最终回答中。
+   - `upsert_section` 只回传章节摘要。每写若干章调用 `get_missing` 检查进度，继续依据已确认提纲和 missing ID 写作；除非局部修订需要，不要调用 `get_section` 把已写全文重新带回上下文。
 2. 每章记录 `source_ids` 和 `fact_status`。投资额、营收、面积、建设期、产能等项目指标只能是用户明确提供、经已确认来源支撑，或已在提纲假设中展示并确认；通用市场报告不能支撑某一家公司的项目指标，不得补造。
    - `fact_status=assumption` 的章节必须在正文显示“【假设】”、暂按或测算假设等醒目标识，不能只保存在内部状态。
 3. 调用 `document_content.get_missing`；required 章节齐全后才能调用 `docx_generate`。
