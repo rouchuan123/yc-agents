@@ -54,6 +54,17 @@ class RunOutputWriter:
 
         return self.write_text("verification.md", "\n".join(lines))
 
+    def write_artifacts(self, execution_history):
+        artifacts = []
+        for entry in execution_history or []:
+            tool_name = (entry.get("tool_call") or {}).get("tool_name", "")
+            result = entry.get("tool_result")
+            if not isinstance(result, dict):
+                continue
+            for path in result.get("artifacts", []):
+                artifacts.append({"tool": tool_name, "path": str(path)})
+        return self.write_json("artifacts.json", {"artifacts": artifacts})
+
     def write_text(self, file_name, content):
         self.context.outputs_dir.mkdir(parents=True, exist_ok=True)
         path = self.context.outputs_dir / file_name

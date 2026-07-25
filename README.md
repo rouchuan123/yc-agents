@@ -68,8 +68,9 @@ Agent 会显示当前使用的 Skill、工具调用和结果摘要，完整过�
 | `code-review` | 本地项目体检与变更审查 | 代码证据、调用链、风险分级、测试缺口 |
 | `eval-writer` | 设计 Agent Workflow 评测方案 | Deterministic Eval、真实模型 Smoke Eval、人工 Rubric |
 | `ycore-analytics` | 查询 Workspace 的 SQLite Analytics | 运行健康度、工具失败、Verification、Eval 通过率 |
+| `docx-template-authoring` | 从成品 Word 提取精细排版并生成、连续修订新文档 | 模板蒸馏、来源确认、Word/MiMo QA、不可变版本 |
 
-当前默认发布三个示例业务 Skill，它们是第一批验证 Skill。具体 Workflow 保存在 Skill 中，不写入全局 Prompt。后续可继续加入其他领域 Skill，并复用同一套 Harness 进行验证。
+当前默认发布四个示例业务 Skill，它们用于验证通用 Harness 能否支撑代码、评测、分析和成品 Word 模板仿写 Workflow。具体流程保存在 Skill 中，不写入全局 Prompt。
 
 ## 🧰 默认工具
 
@@ -82,6 +83,7 @@ Agent 会显示当前使用的 Skill、工具调用和结果摘要，完整过�
 - ✍️ **`markdown_writer`**：在用户要求保存时将 Markdown 写入当前工作区。
 - 🧭 **`rag_search`**：提供可选的本地上下文检索。
 - 🌐 **`web_search`**：在用户明确需要外部或最新信息时搜索网络。
+- 📎 **文档任务工具组**：管理模板附件、DocumentJob、精细格式分析、确认来源、分章内容、DOCX 生成/修订及 Word/MiMo 验收。
 
 所有工具都是全局工具。`ycore.json` 的 `tools.entries.<tool>.enabled` 是唯一启用来源；Skill 只提供领域知识和工作流，Agent 在已启用工具中自行选择。
 
@@ -165,6 +167,11 @@ YCore 使用 Textual TUI：顶部显示当前工作区、模型、估算上下�
 | `/stop` | 停止正在处理的任务 |
 | `/skills` | 查看当前可用 Skill |
 | `/clear` | 清空屏幕内容，不删除 Session 记忆 |
+| `/attach [template\|reference] <path>` | 给当前 Session 添加成品 Word 模板或参考资料 |
+| `/attachments` / `/detach <id>` | 查看或移除当前 Session 附件 |
+| `/document status` | 查看当前文档任务状态 |
+| `/document history` | 查看不可变 DOCX 版本历史 |
+| `/document rollback <version>` | 切换当前文档版本，不删除后续历史 |
 | `Ctrl+B` | 显示或隐藏 Workspace/Sessions 工作台 |
 
 ## 🏗️ 系统架构
@@ -244,7 +251,7 @@ Skill 同样支持显式启停。只要 `skills.entries` 非空，Runtime 就只
 
 ### 上下文统计与记忆
 
-状态栏显示 `Context 9.2k/1000k (0.92%)`。`/context` 可查看 input、output、cached、reasoning、主/辅助调用次数及估算分类。每个会话的统计保存在 `.ycore/sessions/<session-id>/usage.json`。
+状态栏显示 `Context 9.2k/256k (3.59%)`。`/context` 可查看 input、output、cached、reasoning、主/辅助调用次数及估算分类。每个会话的统计保存在 `.ycore/sessions/<session-id>/usage.json`。
 
 活跃会话在原文估算超过 `activeContextMaxTokens`，或完整 prompt 达到 `compactionTriggerPercent` 指定的窗口比例时压缩。压缩后的活跃原文目标由 `compactionTargetPercent` 同时作用于活跃记忆上限和模型可用窗口，不再使用固定比例或按对话轮数触发。
 
@@ -316,7 +323,7 @@ editable 安装后，普通源码修改无需重装；修改依赖或命令入�
 ## 🚧 当前边界
 
 - 当前仅保留 CLI 端。
-- 默认发布 `code-review`、`eval-writer` 和 `ycore-analytics` 三个示例业务 Skill。
+- 默认发布 `code-review`、`eval-writer`、`ycore-analytics` 和 `docx-template-authoring` 四个示例业务 Skill。
 - 领域能力由 Skill 决定，YCore 全局层保持通用。
 - 保留通用 `.docx` 文件读取能力，方便读取需求或规格文档。
 - RAG 是可选 Context Infrastructure，不是固定产品能力。

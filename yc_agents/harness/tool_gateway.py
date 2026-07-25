@@ -151,10 +151,13 @@ class ToolGateway:
         future = executor.submit(tool.run, *args, **kwargs)
 
         try:
-            return future.result(timeout=self.policy.timeout_seconds), None
+            timeout_seconds = float(
+                getattr(tool, "timeout_seconds", self.policy.timeout_seconds)
+            )
+            return future.result(timeout=timeout_seconds), None
         except TimeoutError:
             future.cancel()
-            return None, ("timeout", f"Tool timed out after {self.policy.timeout_seconds}s")
+            return None, ("timeout", f"Tool timed out after {timeout_seconds}s")
         except PermissionError as exc:
             return None, ("permission_error", str(exc))
         except FileNotFoundError as exc:

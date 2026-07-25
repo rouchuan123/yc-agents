@@ -140,6 +140,7 @@ class YCAgentRuntime:
             )
             writer.write_final_output(response)
             writer.write_verification(verification)
+            writer.write_artifacts(execution_history)
             if run_analytics is not None:
                 run_analytics.record_final_output(response)
                 run_analytics.record_verification(verification)
@@ -266,6 +267,8 @@ class YCAgentRuntime:
                 yield response
             else:
                 verification = self.verification_gate.verify_final_output(response)
+
+            writer.write_artifacts(execution_history)
             writer.write_final_output(response)
             writer.write_verification(verification)
             if run_analytics is not None:

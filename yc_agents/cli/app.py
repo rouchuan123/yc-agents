@@ -29,6 +29,8 @@ from yc_agents.cli.status import StatusCollector
 from yc_agents.cli.suggestions import CommandSuggestionRegistry
 from yc_agents.cli.theme import YCORE_TCSS
 from yc_agents.cli.workspaces import WorkspaceStore
+from yc_agents.documents.attachments import AttachmentManager
+from yc_agents.documents.jobs import DocumentJobStore
 
 
 class YCAgentsTUIApp(App):
@@ -416,6 +418,30 @@ class YCAgentsTUIApp(App):
             self.clear_transcript()
             return
 
+        if command.action == "attach":
+            self.attach_document_file(command.content)
+            return
+
+        if command.action == "attachments":
+            self.append_turn("Attachments", self.render_attachments())
+            return
+
+        if command.action == "detach":
+            self.detach_document_file(command.content)
+            return
+
+        if command.action == "document_status":
+            self.append_turn("Document", self.render_document_status())
+            return
+
+        if command.action == "document_history":
+            self.append_turn("Document", self.render_document_history())
+            return
+
+        if command.action == "document_rollback":
+            self.rollback_document(command.content)
+            return
+
         if command.action == "confirm":
             self.confirm_pending_action()
             return
@@ -477,6 +503,111 @@ class YCAgentsTUIApp(App):
         await self._run_user_message(command.content)
 
         self.refresh_status()
+
+    def _attachment_manager(self):
+        if self.session is None:
+            raise RuntimeError("No active session is available")
+        return AttachmentManager(self.session.path)
+
+    def _document_job_store(self):
+        if self.session is None or self.workspace is None:
+            raise RuntimeError("No active workspace/session is available")
+        return DocumentJobStore(self.workspace.path, self.session.id)
+
+    def attach_document_file(self, argument):
+        value = str(argument or "").strip()
+        role = "auto"
+        lowered = value.lower()
+        for candidate in ["template", "reference"]:
+            prefix = candidate + " "
+            if lowered.startswith(prefix):
+                role = candidate
+                value = value[len(prefix):].strip()
+                break
+        value = value.strip().strip('"')
+        if not value:
+            self.append_turn("Error", "Usage: /attach [template|reference] <path>")
+            return
+        try:
+            record = self._attachment_manager().import_file(value, role=role)
+        except Exception as exc:
+            self.append_turn("Error", f"Attachment failed: {exc}")
+            return
+        self.append_turn(
+            "Attachment",
+            f"Added {record['id']} ({record['role']}): {record['name']} [{record['bytes']} bytes]",
+        )
+
+    def render_attachments(self):
+        try:
+            items = self._attachment_manager().list()
+        except Exception as exc:
+            return f"Attachment list failed: {exc}"
+        if not items:
+            return "No attachments in the current session."
+        return "\n".join(
+            f"- {item['id']} [{item['role']}] {item['name']} ({item['bytes']} bytes)"
+            for item in items
+        )
+
+    def detach_document_file(self, attachment_id):
+        try:
+            record = self._attachment_manager().detach(str(attachment_id).strip())
+        except Exception as exc:
+            self.append_turn("Error", f"Detach failed: {exc}")
+            return
+        self.append_turn("Attachment", f"Detached {record['id']}: {record['name']}")
+
+    def render_document_status(self):
+        try:
+            store = self._document_job_store()
+            job = store.get_active()
+        except Exception as exc:
+            return f"Document status failed: {exc}"
+        if job is None:
+            return "No active document job. Attach a DOCX template and ask YCore to create a similar document."
+        summary = store.summary(job)
+        return "\n".join(
+            [
+                f"Job: {summary['id']}",
+                f"Title: {summary['title']}",
+                f"Status: {summary['status']}",
+                f"Template: {summary['template']['name']}",
+                f"Current revision: {summary['current_revision'] or '-'}",
+                f"Sources confirmed: {len(summary['confirmed_sources'])}",
+            ]
+        )
+
+    def render_document_history(self):
+        try:
+            store = self._document_job_store()
+            job = store.get_active()
+        except Exception as exc:
+            return f"Document history failed: {exc}"
+        if job is None:
+            return "No active document job."
+        revisions = store.summary(job)["revisions"]
+        if not revisions:
+            return "The active document job has no generated revisions."
+        current = int(job.get("current_revision") or 0)
+        return "\n".join(
+            f"- {'*' if int(item['version']) == current else ' '} v{int(item['version']):03d} "
+            f"qa={'passed' if item.get('qa_passed') else 'pending/failed'} {item.get('docx_path') or ''}"
+            for item in revisions
+        )
+
+    def rollback_document(self, version):
+        try:
+            parsed = int(str(version).strip().lower().lstrip("v"))
+            store = self._document_job_store()
+            job = store.get_active()
+            if job is None:
+                raise ValueError("No active document job")
+            updated = store.rollback(job["id"], parsed)
+        except Exception as exc:
+            self.append_turn("Error", f"Document rollback failed: {exc}")
+            return
+        self.append_turn("Document", f"Current document revision is now v{int(updated['current_revision']):03d}.")
 
     @property
     def is_running(self):

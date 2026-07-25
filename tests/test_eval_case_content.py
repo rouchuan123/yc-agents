@@ -14,6 +14,22 @@ def _load_jsonl(path):
     return rows
 
 
+def test_docx_template_authoring_cases_cover_business_workflow():
+    cases = _load_jsonl(CASE_DIR / "docx_template_authoring_cases.jsonl")
+    assert len(cases) >= 7
+    required = {tool for case in cases for tool in case.get("required_tools", [])}
+    assert {
+        "document_job",
+        "docx_template_analyzer",
+        "document_source",
+        "document_content",
+        "docx_generate",
+        "docx_edit",
+        "docx_verify",
+    }.issubset(required)
+    assert any("workspace_write" in case.get("forbidden_tools", []) for case in cases)
+
+
 def test_eval_case_files_are_generic_workspace_focused():
     expected = {
         "code_review_cases.jsonl",

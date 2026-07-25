@@ -565,7 +565,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.assertNotIn("workspaces", data)
         self.assertNotIn("apiKey", provider)
         self.assertEqual(provider["apiKeyEnv"], "DEEPSEEK_API_KEY")
-        self.assertEqual(model["contextWindow"], 1000000)
+        self.assertEqual(model["contextWindow"], 256000)
         self.assertEqual(model["maxOutputTokens"], 4096)
         self.assertEqual(model["request"]["max_tokens"], 4096)
         self.assertEqual(model["request"]["temperature"], 0.2)
