@@ -9,6 +9,8 @@ class DocumentJobTool(BaseTool):
         "Use set_contract—not set_plan/set_outline—for table and complex-object preserve/delete/rewrite decisions. "
         "For example, preserving a table's layout while replacing its business content is "
         "contract.tables=[{element_id: 'body.tbl0000', action: 'rewrite'}]; do not put this decision in confirm. "
+        "Write replacement headers/rows with document_content.upsert_section tables and target_element_id; "
+        "do not rely on contract replacement_data for new jobs. "
         "Contract items use element_id; legacy id is accepted and normalized. set_contract merges decisions by "
         "element_id and only invalidates confirmation when the effective contract changes. Never repeat an unchanged "
         "set_contract after confirm_plan. confirm_plan locks the contract. Use unlock_contract only when the user "

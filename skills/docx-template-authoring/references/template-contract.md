@@ -31,3 +31,17 @@
 ```
 
 用户说“保留结构，重写内容”表示保留该表格的几何和样式、替换业务数据，对应 `action: rewrite`。不要传 `confirm[].decision`，不要把 `confirmed` 当动作；合法动作只有 `preserve`、`rewrite`、`reuse_structure`、`confirm` 和 `delete`。
+
+契约不承载新表格正文。对 `action: rewrite` 的表格，使用 `document_content.upsert_section` 将数据写入对应章节：
+
+```json
+{
+  "tables": [
+    {
+      "target_element_id": "body.tbl0000",
+      "headers": ["列一", "列二"],
+      "rows": [["值一", "值二"]]
+    }
+  ]
+}
+```

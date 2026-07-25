@@ -8,7 +8,11 @@ class DocumentContentTool(BaseTool):
         "Persist a recursive confirmed outline and draft long documents section by section before DOCX generation. "
         "set_outline invalidates prior confirmation; call document_job.confirm_plan exactly once after the final outline. "
         "Never retry upsert_section after PLAN_NOT_CONFIRMED until that confirmation succeeds. "
-        "upsert_section returns a compact summary, not the full body; use get_section only when body text is needed."
+        "upsert_section returns a compact summary, not the full body; use get_section only when body text is needed. "
+        "Use get_grounding_gaps and set_provenance to repair source_ids/fact_status on existing sections "
+        "without resending or erasing their content. "
+        "Template table content belongs in a section's tables list as "
+        "{target_element_id, headers, rows}; set_contract only decides preserve/rewrite/delete behavior."
     )
     schema = ToolSchema(
         fields=[
@@ -22,6 +26,7 @@ class DocumentContentTool(BaseTool):
             ToolField(name="fact_status", type="str", required=False, default="draft"),
             ToolField(name="target_role", type="str", required=False, default=""),
             ToolField(name="tables", type="list", required=False, default=[]),
+            ToolField(name="reason", type="str", required=False, default=""),
         ]
     )
 
@@ -40,6 +45,7 @@ class DocumentContentTool(BaseTool):
         fact_status="draft",
         target_role="",
         tables=None,
+        reason="",
     ):
         operation = str(operation).strip().lower()
         if operation == "set_outline":
@@ -80,6 +86,27 @@ class DocumentContentTool(BaseTool):
             }
         if operation == "get_missing":
             return {"ok": True, **self.content_store.get_missing(job_id)}
+        if operation == "get_grounding_gaps":
+            return {"ok": True, **self.content_store.get_grounding_gaps(job_id)}
+        if operation == "set_provenance":
+            result = self.content_store.set_provenance(
+                job_id,
+                section_id,
+                source_ids or [],
+                fact_status=fact_status,
+            )
+            section = result["section"]
+            return {
+                "ok": True,
+                "section": {
+                    "id": section["id"],
+                    "title": section["title"],
+                    "characters": len(section.get("content") or ""),
+                    "source_ids": list(section.get("source_ids") or []),
+                    "fact_status": section.get("fact_status"),
+                },
+                "path": result["path"],
+            }
         if operation == "get_section":
             return {"ok": True, "section": self.content_store.get_section(job_id, section_id)}
         raise ValueError(f"Unsupported document_content operation: {operation}")

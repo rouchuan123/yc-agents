@@ -13,6 +13,9 @@ from docx.shared import Pt
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 
+from yc_agents.documents.content import (
+    is_literature_review_job,
+)
 from yc_agents.documents.contract import normalize_template_contract
 from yc_agents.documents.ooxml import package_part_hashes, preserve_package_parts, sha256_file
 
@@ -589,6 +592,7 @@ class DocxBuilder:
             raise ValueError("Resolve pending document requirements before generation")
         if job.get("source_candidates") and not job.get("source_confirmation_at"):
             raise ValueError("Workspace source candidates require explicit confirmation before generation")
+        self._validate_literature_sources(job, sections)
         contract_path = job.get("template_contract_path")
         if not contract_path or not Path(contract_path).exists() or not job.get("contract_confirmed"):
             raise ValueError("A confirmed template contract is required before generation")
@@ -603,6 +607,7 @@ class DocxBuilder:
             for item in list(contract.get("tables") or [])
             if isinstance(item, dict) and item.get("element_id")
         }
+        contract_replacements = self._contract_table_replacements(contract)
         defaults = dict(contract.get("defaults") or {})
         spec = self._load_template_spec(job)
         for table in spec.get("tables", []):
@@ -616,7 +621,11 @@ class DocxBuilder:
                     "set_contract merges this decision with existing table decisions; then call "
                     "document_job.confirm_plan once. Do not use set_plan or set_outline for table decisions."
                 )
-            if action in {"rewrite", "reuse_structure"} and element_id not in targeted:
+            if (
+                action in {"rewrite", "reuse_structure"}
+                and element_id not in targeted
+                and element_id not in contract_replacements
+            ):
                 if untargeted:
                     untargeted.pop(0)
                 else:
@@ -624,6 +633,26 @@ class DocxBuilder:
             if action not in {"preserve", "rewrite", "reuse_structure", "delete"}:
                 raise ValueError(f"Unsupported template contract action for {element_id}: {action}")
         return contract
+
+    def _validate_literature_sources(self, job, sections):
+        if not is_literature_review_job(job):
+            return
+        job_id = job["id"]
+        grounding = self.content_store.get_grounding_gaps(job_id)
+        legal_ids = set(grounding["legal_source_ids"])
+        if not legal_ids:
+            raise ValueError(
+                "SOURCE_GROUNDING_REQUIRED: literature reviews require confirmed workspace "
+                "sources or web sources recorded with document_source.record_web before generation"
+            )
+        if grounding["gaps"]:
+            invalid_sections = [item["section_id"] for item in grounding["gaps"]]
+            raise ValueError(
+                "SOURCE_GROUNDING_REQUIRED: literature-review sections lack grounded "
+                f"source_ids: {invalid_sections}. Call document_content.get_grounding_gaps, "
+                "then document_content.set_provenance for existing text; do not call set_outline "
+                "or overwrite section content."
+            )
 
     @staticmethod
     def _load_template_spec(job):
@@ -642,6 +671,19 @@ class DocxBuilder:
         default = str((contract.get("defaults") or {}).get("tables") or "confirm")
         return [items.get(f"body.tbl{index:04d}", default) for index in range(table_count)]
 
+    @staticmethod
+    def _contract_table_replacements(contract):
+        replacements = {}
+        for item in list(contract.get("tables") or []):
+            if not isinstance(item, dict) or not item.get("element_id"):
+                continue
+            replacement = item.get("replacement_data")
+            if isinstance(replacement, dict) and (
+                replacement.get("headers") or replacement.get("rows")
+            ):
+                replacements[str(item["element_id"])] = dict(replacement)
+        return replacements
+
     @classmethod
     def _rewrite_tables(cls, document, sections, contract):
         requested = [dict(table) for section in sections for table in section.get("tables", [])]
@@ -651,6 +693,7 @@ class DocxBuilder:
             if item.get("target_element_id")
         }
         untargeted = [item for item in requested if not item.get("target_element_id")]
+        contract_replacements = cls._contract_table_replacements(contract)
         actions = cls._contract_table_actions(contract, len(document.tables))
         data_by_index = {}
         for index, action in enumerate(actions):
@@ -660,6 +703,8 @@ class DocxBuilder:
             table_data = targeted.get(element_id)
             if table_data is None and untargeted:
                 table_data = untargeted.pop(0)
+            if table_data is None:
+                table_data = contract_replacements.get(element_id)
             data_by_index[index] = table_data
         for index in range(len(document.tables) - 1, -1, -1):
             table = document.tables[index]

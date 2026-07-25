@@ -39,6 +39,73 @@ class TestVerificationGate(unittest.TestCase):
 
         self.assertTrue(result["passed"])
 
+    def test_document_workflow_rejects_placeholder_when_qa_failed(self):
+        gate = VerificationGate()
+        history = [
+            {
+                "tool_call": {"tool_name": "docx_verify", "arguments": {"mode": "all"}},
+                "tool_result": {"passed": False, "delivery_ready": False},
+            }
+        ]
+
+        result = gate.verify_final_output("Continue", execution_history=history)
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(
+            result["checks"][-1]["name"],
+            "document_workflow_completion_disclosed",
+        )
+
+    def test_document_workflow_allows_explicit_incomplete_status(self):
+        gate = VerificationGate()
+        history = [
+            {
+                "tool_call": {"tool_name": "docx_verify", "arguments": {"mode": "all"}},
+                "tool_result": {"passed": False, "delivery_ready": False},
+            }
+        ]
+
+        result = gate.verify_final_output(
+            "DOCX QA 未通过，任务尚未完成。",
+            execution_history=history,
+        )
+
+        self.assertTrue(result["passed"])
+
+    def test_document_workflow_requires_new_qa_after_edit(self):
+        gate = VerificationGate()
+        history = [
+            {
+                "tool_call": {"tool_name": "docx_verify", "arguments": {"mode": "all"}},
+                "tool_result": {"passed": True, "delivery_ready": True},
+            },
+            {
+                "tool_call": {"tool_name": "docx_edit", "arguments": {}},
+                "tool_result": {"ok": True},
+            },
+        ]
+
+        result = gate.verify_final_output("Continue", execution_history=history)
+
+        self.assertFalse(result["passed"])
+
+    def test_document_workflow_accepts_delivery_ready_qa_after_edit(self):
+        gate = VerificationGate()
+        history = [
+            {
+                "tool_call": {"tool_name": "docx_edit", "arguments": {}},
+                "tool_result": {"ok": True},
+            },
+            {
+                "tool_call": {"tool_name": "docx_verify", "arguments": {"mode": "all"}},
+                "tool_result": {"passed": True, "delivery_ready": True},
+            },
+        ]
+
+        result = gate.verify_final_output("文档已生成并通过 QA。", execution_history=history)
+
+        self.assertTrue(result["passed"])
+
     def test_verify_json_message_passes_for_allowed_type(self):
         gate = VerificationGate()
 

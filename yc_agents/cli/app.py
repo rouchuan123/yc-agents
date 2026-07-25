@@ -1,23 +1,28 @@
 import asyncio
 import json
+import os
 import subprocess
 import time
 from contextlib import suppress
+from dataclasses import dataclass
 from pathlib import Path
 from queue import Empty, SimpleQueue
 
 from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
+from textual import events
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
+from textual.message import Message
+from textual.screen import Screen
 from textual.widgets import (
     Collapsible,
     Input,
     Label,
     ListView,
-    Markdown as TextualMarkdown,
     Static,
+    TextArea,
 )
 
 from yc_agents.cli.commands import parse_cli_input
@@ -33,6 +38,77 @@ from yc_agents.documents.attachments import AttachmentManager
 from yc_agents.documents.jobs import DocumentJobStore
 
 
+class PromptTextArea(TextArea):
+    @dataclass
+    class Submitted(Message):
+        text_area: "PromptTextArea"
+        value: str
+
+        @property
+        def control(self):
+            return self.text_area
+
+    @property
+    def value(self):
+        return self.text
+
+    @value.setter
+    def value(self, value):
+        self.load_text(str(value or ""))
+
+    async def _on_key(self, event: events.Key):
+        if event.key == "shift+enter":
+            event.stop()
+            event.prevent_default()
+            start, end = self.selection
+            self._replace_via_keyboard("\n", start, end)
+            return
+        if event.key == "enter":
+            event.stop()
+            event.prevent_default()
+            self.post_message(self.Submitted(self, self.text))
+            return
+        await super()._on_key(event)
+
+    def action_end(self):
+        self.cursor_location = self.document.end
+
+
+class StableMarkdown(Static):
+    """Render Markdown without rebuilding selectable child widgets on updates."""
+
+    def __init__(self, source="", *args, **kwargs):
+        self.markdown_source = str(source or "")
+        super().__init__(Markdown(self.markdown_source), *args, **kwargs)
+
+    def update_markdown(self, source):
+        source = str(source or "")
+        if source == self.markdown_source:
+            return False
+        self.markdown_source = source
+        super().update(Markdown(source))
+        return True
+
+
+class SafeSelectionScreen(Screen):
+    """Ignore Textual's stale Markdown child selection race on mouse down."""
+
+    def _forward_event(self, event):
+        try:
+            return super()._forward_event(event)
+        except AttributeError as exc:
+            stale_selection = (
+                isinstance(event, events.MouseDown)
+                and "'NoneType' object has no attribute 'region'" in str(exc)
+            )
+            if not stale_selection:
+                raise
+            self._mouse_down_offset = None
+            self._select_state = None
+            self.clear_selection()
+            event.stop()
+
+
 class YCAgentsTUIApp(App):
     CSS = YCORE_TCSS
 
@@ -41,6 +117,20 @@ class YCAgentsTUIApp(App):
         ("ctrl+c", "copy_selection_or_quit", "Copy/Quit"),
         ("ctrl+shift+c", "copy_selection", "Copy"),
     ]
+
+    def get_default_screen(self):
+        return SafeSelectionScreen(id="_default")
+
+    def get_driver_class(self):
+        driver_class = super().get_driver_class()
+        if os.name == "nt":
+            from textual.drivers.windows_driver import WindowsDriver
+
+            if driver_class is WindowsDriver:
+                from yc_agents.cli.windows_driver import ModifierAwareWindowsDriver
+
+                return ModifierAwareWindowsDriver
+        return driver_class
 
     def __init__(
         self,
@@ -109,6 +199,10 @@ class YCAgentsTUIApp(App):
         self.active_assistant_index = None
         self.active_process_entries = []
         self.current_run_has_process_events = False
+        self._turn_views = []
+        self._transcript_redraw_scheduled = False
+        self._transcript_redraw_dirty = False
+        self._transcript_full_redraw = True
         self.attach_runtime_event_callback()
 
     def compose(self) -> ComposeResult:
@@ -122,9 +216,12 @@ class YCAgentsTUIApp(App):
         self.selection_list.display = False
         self.command_suggestions = Static("", id="command-suggestions")
         self.command_suggestions.display = False
-        self.prompt = Input(
+        self.prompt = PromptTextArea(
             placeholder="Ask YCore anything...",
             id="prompt",
+            soft_wrap=True,
+            show_line_numbers=False,
+            highlight_cursor_line=False,
         )
         self.prompt_meta = Static(self.render_prompt_meta(), id="prompt-meta")
         self.prompt_area = Vertical(
@@ -152,24 +249,34 @@ class YCAgentsTUIApp(App):
             self.prompt.focus()
 
     async def on_input_submitted(self, event: Input.Submitted):
+        await self._submit_prompt(event.value)
+
+    async def on_prompt_text_area_submitted(self, event: PromptTextArea.Submitted):
+        await self._submit_prompt(event.value)
+
+    async def _submit_prompt(self, value):
         if self.prompt is not None:
             self.prompt.value = ""
 
-        if self.selection_list_visible and not str(event.value or "").strip():
+        if self.selection_list_visible and not str(value or "").strip():
             await self.execute_selected_list_item()
             return
 
         self.hide_command_suggestions()
         self.hide_selection_list()
-        command = parse_cli_input(event.value)
+        command = parse_cli_input(value)
         if command.action == "message":
             self.start_background_run(command.content)
             return
 
-        await self.handle_cli_input(event.value)
+        await self.handle_cli_input(value)
 
     def on_input_changed(self, event: Input.Changed):
         self.update_command_suggestions(event.value)
+
+    def on_text_area_changed(self, event: TextArea.Changed):
+        if event.text_area is self.prompt:
+            self.update_command_suggestions(self.prompt.text)
 
     def on_list_view_highlighted(self, event: ListView.Highlighted):
         if event.list_view is self.workspace_list:
@@ -215,7 +322,8 @@ class YCAgentsTUIApp(App):
             except Empty:
                 return
 
-            if event.get("event_type") == "assistant_process":
+            event_type = event.get("event_type", "")
+            if event_type == "assistant_process":
                 entry = (event.get("payload") or {}).get("entry")
                 if entry:
                     self.current_run_has_process_events = True
@@ -223,15 +331,50 @@ class YCAgentsTUIApp(App):
                     self._update_active_assistant_content()
                 continue
 
-            if (
-                self.current_run_has_process_events
-                and event.get("event_type", "").startswith("tool_")
-            ):
-                continue
+            if self.current_run_has_process_events:
+                process_entry = self._runtime_event_process_entry(event)
+                if process_entry is not None:
+                    self.active_process_entries.append(process_entry)
+                    self._update_active_assistant_content()
+                if (
+                    event_type.startswith("tool_")
+                    or event_type.startswith("recovery_")
+                    or event_type == "run_stopped"
+                ):
+                    continue
 
             message = self.format_runtime_event(event)
             if message:
                 self.append_turn("Tool", message)
+
+    @staticmethod
+    def _runtime_event_process_entry(event):
+        event_type = event.get("event_type", "")
+        payload = event.get("payload", {}) or {}
+        if event_type == "tool_retry":
+            tool_name = payload.get("tool_name") or "tool"
+            attempt = payload.get("attempt")
+            suffix = f" · 第 {attempt} 次" if attempt else ""
+            return {
+                "type": "tool_retry",
+                "content": f"工具重试 · {tool_name}{suffix}",
+            }
+        if event_type == "recovery_succeeded":
+            return {
+                "type": "recovery",
+                "content": f"恢复成功 · {payload.get('kind', 'run')}",
+            }
+        if event_type == "recovery_exhausted":
+            return {
+                "type": "recovery",
+                "content": f"恢复次数耗尽 · {payload.get('kind', 'run')}",
+            }
+        if event_type == "run_stopped":
+            return {
+                "type": "recovery",
+                "content": f"执行停止 · {payload.get('error_type', 'error')}",
+            }
+        return None
 
     def format_runtime_event(self, event):
         event_type = event.get("event_type", "")
@@ -867,6 +1010,7 @@ class YCAgentsTUIApp(App):
             "content": "",
             "process_entries": self.active_process_entries,
             "process_collapsed": False,
+            "process_user_toggled": False,
             "process_running": True,
         }
         self.append_turn("Assistant", content)
@@ -882,6 +1026,7 @@ class YCAgentsTUIApp(App):
                 "content": str(content or ""),
                 "process_entries": self.active_process_entries,
                 "process_collapsed": False,
+                "process_user_toggled": False,
                 "process_running": True,
             }
         if final_content is not None:
@@ -896,7 +1041,8 @@ class YCAgentsTUIApp(App):
         speaker, content = self.transcript_entries[self.active_assistant_index]
         if self._is_structured_assistant_content(content):
             content["process_running"] = False
-            content["process_collapsed"] = True
+            if not content.get("process_user_toggled"):
+                content["process_collapsed"] = True
             self.transcript_entries[self.active_assistant_index] = (speaker, content)
             self.redraw_transcript()
         self.active_assistant_index = None
@@ -910,14 +1056,14 @@ class YCAgentsTUIApp(App):
 
         if speaker == "Assistant" and not content:
             self.transcript_entries.pop()
-            self.redraw_transcript()
+            self.redraw_transcript(force=True)
 
-    def redraw_transcript(self):
+    def redraw_transcript(self, force=False):
         if self.transcript is None:
             return
 
         if hasattr(self.transcript, "mount") and hasattr(self.transcript, "remove_children"):
-            if self._schedule_widget_transcript_redraw():
+            if self._schedule_widget_transcript_redraw(force=force):
                 return
 
         if not hasattr(self.transcript, "clear") or not hasattr(self.transcript, "write"):
@@ -933,14 +1079,25 @@ class YCAgentsTUIApp(App):
             with suppress(Exception):
                 self.transcript.scroll_y = scroll_y
 
-    def _schedule_widget_transcript_redraw(self):
+    def _schedule_widget_transcript_redraw(self, force=False):
         try:
             asyncio.get_running_loop()
         except RuntimeError:
             return False
 
+        self._transcript_redraw_dirty = True
+        self._transcript_full_redraw = self._transcript_full_redraw or bool(force)
+        if self._transcript_redraw_scheduled:
+            return True
+        self._transcript_redraw_scheduled = True
+
         async def redraw():
-            await self._redraw_widget_transcript()
+            try:
+                while self._transcript_redraw_dirty:
+                    self._transcript_redraw_dirty = False
+                    await self._redraw_widget_transcript()
+            finally:
+                self._transcript_redraw_scheduled = False
 
         self.call_later(redraw)
         return True
@@ -950,20 +1107,146 @@ class YCAgentsTUIApp(App):
             return
 
         scroll_y = getattr(self.transcript, "scroll_y", None)
-        await self.transcript.remove_children()
+        max_scroll_y = getattr(self.transcript, "max_scroll_y", 0)
+        was_at_end = scroll_y is None or scroll_y >= max(0, max_scroll_y - 1)
+        needs_full_redraw = self._transcript_full_redraw
+        if len(self._turn_views) > len(self.transcript_entries):
+            needs_full_redraw = True
+        if not needs_full_redraw:
+            for index, view in enumerate(self._turn_views):
+                content = self.transcript_entries[index][1]
+                if view["structured"] != self._is_structured_assistant_content(content):
+                    needs_full_redraw = True
+                    break
 
-        widgets = []
-        for speaker, content in self.transcript_entries:
-            widgets.extend(self.build_turn_widgets(speaker, content))
+        if needs_full_redraw:
+            await self.transcript.remove_children()
+            self._turn_views = []
+            self._transcript_full_redraw = False
 
-        if widgets:
-            await self.transcript.mount(*widgets)
+        while len(self._turn_views) < len(self.transcript_entries):
+            index = len(self._turn_views)
+            speaker, content = self.transcript_entries[index]
+            view = self._build_turn_view(index, speaker, content)
+            self._turn_views.append(view)
+            await self.transcript.mount(view["container"])
 
-        if scroll_y is not None:
+        for index, (speaker, content) in enumerate(self.transcript_entries):
+            self._update_turn_view(self._turn_views[index], speaker, content)
+
+        if was_at_end:
+            with suppress(Exception):
+                self.transcript.scroll_end(animate=False)
+        elif scroll_y is not None:
             with suppress(Exception):
                 self.transcript.scroll_y = scroll_y
-        with suppress(Exception):
-            self.transcript.scroll_end(animate=False)
+
+    def _build_turn_view(self, index, speaker, content):
+        kind = self._turn_kind(speaker)
+        label = "YCore" if kind == "assistant" else str(speaker)
+        label_widget = Static(
+            Text(label, style="bold"),
+            classes=f"turn-label turn-{kind}-label",
+        )
+        structured = speaker == "Assistant" and self._is_structured_assistant_content(content)
+        if structured:
+            process_body = StableMarkdown(
+                self._render_process_entries_text(content.get("process_entries") or [])
+            )
+            process = Collapsible(
+                process_body,
+                title=self._process_title(content),
+                collapsed=bool(content.get("process_collapsed", True)),
+                classes="process-block",
+            )
+            process._turn_index = index
+            body = StableMarkdown(
+                self._assistant_final_content(content),
+                classes="turn-body turn-assistant-body",
+            )
+            body.display = bool(self._assistant_final_content(content))
+            container = Vertical(
+                label_widget,
+                process,
+                body,
+                Static("", classes="turn-gap"),
+                classes="turn-view",
+            )
+            return {
+                "container": container,
+                "label": label_widget,
+                "body": body,
+                "process": process,
+                "process_body": process_body,
+                "structured": True,
+                "content": self._assistant_final_content(content),
+            }
+
+        if speaker == "Assistant":
+            body = StableMarkdown(
+                str(content),
+                classes="turn-body turn-assistant-body",
+            )
+        else:
+            body = Static(str(content), classes=f"turn-body turn-{kind}-body")
+        container = Vertical(
+            label_widget,
+            body,
+            Static("", classes="turn-gap"),
+            classes="turn-view",
+        )
+        return {
+            "container": container,
+            "label": label_widget,
+            "body": body,
+            "process": None,
+            "process_body": None,
+            "structured": False,
+            "content": str(content),
+        }
+
+    def _update_turn_view(self, view, speaker, content):
+        kind = self._turn_kind(speaker)
+        label = "YCore" if kind == "assistant" else str(speaker)
+        view["label"].update(Text(label, style="bold"))
+        if view["structured"]:
+            entries = list(content.get("process_entries") or [])
+            view["process"].title = self._process_title(content)
+            view["process_body"].update_markdown(self._render_process_entries_text(entries))
+            collapsed = bool(content.get("process_collapsed", True))
+            if view["process"].collapsed != collapsed:
+                if content.get("process_running") and view["process"].is_mounted:
+                    content["process_collapsed"] = bool(view["process"].collapsed)
+                    content["process_user_toggled"] = True
+                else:
+                    view["process"].collapsed = collapsed
+            final_content = self._assistant_final_content(content)
+            view["body"].update_markdown(final_content)
+            view["content"] = final_content
+            view["body"].display = bool(final_content)
+            return
+        value = str(content)
+        if value == view.get("content"):
+            return
+        if isinstance(view["body"], StableMarkdown):
+            view["body"].update_markdown(value)
+        else:
+            view["body"].update(value)
+        view["content"] = value
+
+    def on_collapsible_toggled(self, event: Collapsible.Toggled):
+        index = getattr(event.collapsible, "_turn_index", None)
+        if index is None or not (0 <= index < len(self.transcript_entries)):
+            return
+        speaker, content = self.transcript_entries[index]
+        if not self._is_structured_assistant_content(content):
+            return
+        collapsed = bool(event.collapsible.collapsed)
+        if bool(content.get("process_collapsed", True)) == collapsed:
+            return
+        content["process_collapsed"] = collapsed
+        content["process_user_toggled"] = True
+        self.transcript_entries[index] = (speaker, content)
 
     def build_turn_widgets(self, speaker, content):
         kind = self._turn_kind(speaker)
@@ -978,7 +1261,7 @@ class YCAgentsTUIApp(App):
             final_content = self._assistant_final_content(content)
             collapsed = bool(content.get("process_collapsed", True))
             process = Collapsible(
-                TextualMarkdown(self._render_process_entries_text(process_entries)),
+                StableMarkdown(self._render_process_entries_text(process_entries)),
                 title=self._process_title(content),
                 collapsed=collapsed,
                 classes="process-block",
@@ -986,7 +1269,7 @@ class YCAgentsTUIApp(App):
             widgets = [speaker_widget, process]
             if final_content:
                 widgets.append(
-                    TextualMarkdown(
+                    StableMarkdown(
                         final_content,
                         classes="turn-body turn-assistant-body",
                     )
@@ -995,7 +1278,7 @@ class YCAgentsTUIApp(App):
             return widgets
 
         if speaker == "Assistant":
-            body = TextualMarkdown(
+            body = StableMarkdown(
                 str(content),
                 classes="turn-body turn-assistant-body",
             )
@@ -1048,6 +1331,8 @@ class YCAgentsTUIApp(App):
             elif entry_type == "tool_result":
                 tool_name = entry.get("tool_name", "tool")
                 lines.append(f"{tool_name} 完成 · {entry.get('summary', '')}")
+            elif entry_type in {"tool_retry", "recovery"}:
+                lines.append(str(entry.get("content") or entry.get("summary") or ""))
             else:
                 lines.append(str(entry.get("summary") or entry.get("content") or entry))
         return "\n\n".join(line for line in lines if line)
@@ -1082,11 +1367,13 @@ class YCAgentsTUIApp(App):
 
     def clear_transcript(self):
         self.transcript_entries.clear()
+        self._turn_views = []
+        self._transcript_full_redraw = True
 
         if self.transcript is not None and hasattr(self.transcript, "clear"):
             self.transcript.clear()
         elif self.transcript is not None:
-            self._schedule_widget_transcript_redraw()
+            self._schedule_widget_transcript_redraw(force=True)
 
         if self.elapsed_status is not None:
             self.elapsed_status.update("")
@@ -1270,7 +1557,7 @@ class YCAgentsTUIApp(App):
             return
 
         self.transcript_entries = list(self.session_store.load_transcript(limit=20))
-        self.redraw_transcript()
+        self.redraw_transcript(force=True)
 
     def update_command_suggestions(self, text):
         if not str(text or "").startswith("/"):
@@ -1331,7 +1618,7 @@ class YCAgentsTUIApp(App):
         value = suggestion.completion or suggestion.command
         prevent = getattr(self.prompt, "prevent", None)
         if callable(prevent):
-            with self.prompt.prevent(Input.Changed):
+            with self.prompt.prevent(TextArea.Changed):
                 self.prompt.value = value
         else:
             self.prompt.value = value

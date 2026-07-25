@@ -615,9 +615,9 @@ class DocxVerifier:
         )
         return [
             self._finding(
-                "blocking",
+                "warning",
                 "fonts",
-                f"模板字体未安装，无法保证高保真：{', '.join(missing)}",
+                f"模板字体未安装，Word 可能使用替代字体，无法声明字体级高保真：{', '.join(missing)}",
             )
         ] if missing else []
 
@@ -630,6 +630,7 @@ class DocxVerifier:
             "新宋体": {"nsimsun"},
             "仿宋": {"fangsong"},
             "楷体": {"kaiti"},
+            "楷体_gb2312": {"kaiti", "stkaiti", "simkai"},
             "微软雅黑": {"microsoftyahei"},
             "等线": {"dengxian"},
         }
