@@ -27,6 +27,14 @@ DEFAULT_TOOL_ENTRIES = {
     "mcp_sqlite_list_tables": {"enabled": True},
     "mcp_sqlite_describe_table": {"enabled": True},
     "mcp_sqlite_query_readonly": {"enabled": True},
+    "document_job": {"enabled": False},
+    "docx_template_analyzer": {"enabled": False},
+    "docx_template_query": {"enabled": False},
+    "document_source": {"enabled": False},
+    "document_content": {"enabled": False},
+    "docx_generate": {"enabled": False},
+    "docx_edit": {"enabled": False},
+    "docx_verify": {"enabled": False},
 }
 
 
@@ -36,6 +44,7 @@ DEFAULT_CONFIG = {
             "model": {
                 "primary": "",
                 "fallbacks": [],
+                "vision": "",
             },
         },
         "entries": {"main": {"enabled": True}},
@@ -109,6 +118,14 @@ DEFAULT_CONFIG = {
         "topK": 4,
         "retrieval": "bm25",
     },
+    "documents": {
+        "enabled": True,
+        "renderer": "word",
+        "visualQa": {
+            "enabled": True,
+            "maxRepairIterations": 2,
+        },
+    },
 }
 
 
@@ -124,6 +141,7 @@ class ModelProviderSettings:
     max_output_tokens: int | None = None
     request: dict | None = None
     structured_output_request: dict | None = None
+    capabilities: tuple[str, ...] = ()
 
 
 def _deep_merge(base, override):
@@ -279,8 +297,8 @@ class YCoreConfig:
     def primary_model_ref(self):
         return self.data["agents"]["defaults"]["model"]["primary"]
 
-    def resolve_model_provider(self):
-        primary = self.primary_model_ref
+    def resolve_model_provider(self, model_ref=None):
+        primary = str(model_ref or self.primary_model_ref)
         if "/" not in primary:
             raise ValueError("agents.defaults.model.primary must use provider/model format")
 
@@ -314,7 +332,17 @@ class YCoreConfig:
             max_output_tokens=model_entry.get("maxOutputTokens"),
             request=dict(model_entry.get("request") or {}),
             structured_output_request=structured_request,
+            capabilities=tuple(model_entry.get("capabilities") or []),
         )
+
+    @property
+    def vision_model_ref(self):
+        return str(self.data.get("agents", {}).get("defaults", {}).get("model", {}).get("vision") or "")
+
+    def resolve_vision_model_provider(self):
+        if not self.vision_model_ref:
+            return None
+        return self.resolve_model_provider(self.vision_model_ref)
 
     def resolve_web_search_api_key(self):
         search = self.data.get("tools", {}).get("web", {}).get("search", {})
@@ -386,6 +414,9 @@ class YCoreConfig:
 
     def rag_data(self):
         return dict(self.data.get("rag") or {})
+
+    def documents_data(self):
+        return dict(self.data.get("documents") or {})
 
     def global_config_root(self):
         development_config = development_config_path()

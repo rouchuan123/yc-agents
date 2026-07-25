@@ -5,8 +5,9 @@
         "primary": "deepseek/deepseek-v4-flash",
         "fallbacks": [
           "deepseek/deepseek-v4-flash",
-          "xiaomi/mimo-v2.5-pro"
-        ]
+          "xiaomi/mimo-v2.5"
+        ],
+        "vision": "xiaomi/mimo-v2.5"
       }
     },
     "entries": {
@@ -50,8 +51,9 @@
         "apiKeyEnv": "MIMO_API_KEY",
         "models": [
           {
-            "id": "mimo-v2.5-pro",
-            "name": "MiMo V2.5 Pro",
+            "id": "mimo-v2.5",
+            "name": "MiMo V2.5",
+            "capabilities": ["text", "vision"],
             "contextWindow": 256000,
             "maxOutputTokens": 4096,
             "request": {
@@ -81,6 +83,9 @@
       },
       "ycore-analytics": {
         "enabled": true
+      },
+      "docx-template-authoring": {
+        "enabled": true
       }
     }
   },
@@ -100,7 +105,15 @@
       "memory_search": {"enabled": true},
       "mcp_sqlite_list_tables": {"enabled": true},
       "mcp_sqlite_describe_table": {"enabled": true},
-      "mcp_sqlite_query_readonly": {"enabled": true}
+      "mcp_sqlite_query_readonly": {"enabled": true},
+      "document_job": {"enabled": true},
+      "docx_template_analyzer": {"enabled": true},
+      "docx_template_query": {"enabled": true},
+      "document_source": {"enabled": true},
+      "document_content": {"enabled": true},
+      "docx_generate": {"enabled": true},
+      "docx_edit": {"enabled": true},
+      "docx_verify": {"enabled": true}
     },
     "web": {
       "search": {
@@ -128,7 +141,7 @@
     "expectsJson": true,
     "toolCalling": "json-protocol",
     "modelTimeoutSeconds": 60,
-    "maxToolCalls": 30,
+    "maxToolCalls": 100,
     "toolTimeoutSeconds": 30,
     "invalidJsonRetryCount": 2,
     "providerRetryCount": 1,
@@ -178,5 +191,14 @@
     "chunkOverlap": 150,
     "topK": 4,
     "retrieval": "bm25"
+  },
+  "documents": {
+    "enabled": true,
+    "renderer": "word",
+    "renderTimeoutSeconds": 300,
+    "visualQa": {
+      "enabled": true,
+      "maxRepairIterations": 2
+    }
   }
 }

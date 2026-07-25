@@ -13,7 +13,12 @@ class TestSkillLoader(unittest.TestCase):
 
         self.assertEqual(
             [skill.name for skill in skills],
-            ["code-review", "eval-writer", "ycore-analytics"],
+            [
+                "code-review",
+                "docx-template-authoring",
+                "eval-writer",
+                "ycore-analytics",
+            ],
         )
         self.assertTrue(all("中文" in skill.body for skill in skills))
         self.assertTrue(all(skill.allowed_tools == [] for skill in skills))

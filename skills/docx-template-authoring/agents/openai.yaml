@@ -1,0 +1,4 @@
+interface:
+  display_name: "Word 模板仿写"
+  short_description: "从成品 Word 提取精细排版并生成、连续修订新文档"
+  default_prompt: "Use $docx-template-authoring to create a new Word document from my attached finished DOCX template."

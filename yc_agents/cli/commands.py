@@ -36,6 +36,27 @@ def parse_cli_input(text):
     if normalized == "/clear":
         return CLICommand("clear", "")
 
+    if normalized == "/attachments":
+        return CLICommand("attachments", "")
+
+    if normalized.startswith("/attach "):
+        return CLICommand("attach", content[len("/attach "):].strip())
+
+    if normalized.startswith("/detach "):
+        return CLICommand("detach", content[len("/detach "):].strip())
+
+    if normalized == "/document status":
+        return CLICommand("document_status", "")
+
+    if normalized == "/document history":
+        return CLICommand("document_history", "")
+
+    if normalized.startswith("/document rollback "):
+        return CLICommand(
+            "document_rollback",
+            content[len("/document rollback "):].strip(),
+        )
+
     if normalized == "/confirm":
         return CLICommand("confirm", "")
 

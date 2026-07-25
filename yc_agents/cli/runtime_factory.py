@@ -6,6 +6,16 @@ from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.config.ycore import YCoreConfig
 from yc_agents.core.config import ProviderConfig
 from yc_agents.core.llm import YCAgentsLLM
+from yc_agents.documents.analyzer import DocxTemplateAnalyzer
+from yc_agents.documents.attachments import AttachmentManager
+from yc_agents.documents.broker import ExecutionBroker
+from yc_agents.documents.builder import DocxBuilder
+from yc_agents.documents.content import DocumentContentStore
+from yc_agents.documents.editor import DocxEditor
+from yc_agents.documents.jobs import DocumentJobStore
+from yc_agents.documents.sources import DocumentSourceService
+from yc_agents.documents.verifier import DocxVerifier
+from yc_agents.documents.vision import VisionQAService
 from yc_agents.harness.permissions import HumanApprovalGate
 from yc_agents.harness.recovery import RecoveryPolicy
 from yc_agents.harness.runtime import YCAgentRuntime
@@ -39,6 +49,13 @@ from yc_agents.tools.verification_runner import VerificationRunnerTool
 from yc_agents.tools.web_search import TavilyWebSearchProvider, WebSearchTool
 from yc_agents.tools.workspace_files import WorkspaceFilesTool
 from yc_agents.tools.workspace_write import WorkspaceWriteTool
+from yc_agents.tools.document_job import DocumentJobTool
+from yc_agents.tools.docx_template import DocxTemplateAnalyzerTool, DocxTemplateQueryTool
+from yc_agents.tools.document_source import DocumentSourceTool
+from yc_agents.tools.document_content import DocumentContentTool
+from yc_agents.tools.docx_generate import DocxGenerateTool
+from yc_agents.tools.docx_edit import DocxEditTool
+from yc_agents.tools.docx_verify import DocxVerifyTool
 
 
 def build_cli_runtime(session, llm=None, skills_dir=None):
@@ -58,6 +75,7 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
     runtime_config = ycore_config.runtime_data()
     memory_config = ycore_config.memory_data()
     rag_config = ycore_config.rag_data()
+    documents_config = ycore_config.documents_data()
     configured_enabled_tools = ycore_config.enabled_tools()
     enabled_tool_names = set(configured_enabled_tools)
     skill_entries = ycore_config.skill_entries()
@@ -188,6 +206,62 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
     )
     if rag_enabled:
         register_enabled(rag_search_tool)
+
+    if bool(documents_config.get("enabled", True)):
+        attachment_manager = AttachmentManager(session.path)
+        document_job_store = DocumentJobStore(session.workspace.path, session.id)
+        document_content_store = DocumentContentStore(document_job_store)
+        document_analyzer = DocxTemplateAnalyzer(document_job_store)
+        document_source_service = DocumentSourceService(
+            session.workspace.path,
+            document_job_store,
+            chunk_size=int(rag_config.get("chunkSize", 1200)),
+            chunk_overlap=int(rag_config.get("chunkOverlap", 150)),
+        )
+        document_builder = DocxBuilder(
+            session.workspace.path,
+            document_job_store,
+            document_content_store,
+        )
+        document_editor = DocxEditor(session.workspace.path, document_job_store)
+        document_jobs_root = session.workspace.path / ".ycore" / "document-jobs"
+        document_outputs_root = session.workspace.path / "outputs"
+        execution_broker = ExecutionBroker(
+            read_roots=[document_jobs_root],
+            write_roots=[document_jobs_root, document_outputs_root],
+            timeout_seconds=int(documents_config.get("renderTimeoutSeconds", 300)),
+        )
+        vision_service = VisionQAService()
+        visual_qa = dict(documents_config.get("visualQa") or {})
+        if visual_qa.get("enabled", True):
+            try:
+                vision_settings = ycore_config.resolve_vision_model_provider()
+                if vision_settings is not None:
+                    vision_config = ProviderConfig.from_ycore(vision_settings)
+                    vision_llm = YCAgentsLLM(
+                        config=vision_config,
+                        usage_ledger=getattr(llm, "usage_ledger", None),
+                    )
+                    vision_service = VisionQAService(vision_llm)
+            except (ValueError, RuntimeError):
+                vision_service = VisionQAService()
+        document_verifier = DocxVerifier(
+            document_job_store,
+            broker=execution_broker,
+            vision_service=vision_service,
+        )
+        document_tools = [
+            DocumentJobTool(document_job_store, attachment_manager),
+            DocxTemplateAnalyzerTool(document_analyzer),
+            DocxTemplateQueryTool(document_analyzer),
+            DocumentSourceTool(document_source_service),
+            DocumentContentTool(document_content_store),
+            DocxGenerateTool(document_builder),
+            DocxEditTool(document_editor),
+            DocxVerifyTool(document_verifier),
+        ]
+        for document_tool in document_tools:
+            register_enabled(document_tool)
     if long_term_memory is not None and "memory_search" in enabled_tool_names:
         memory_search_tool = MemorySearchTool(
             long_term_memory,

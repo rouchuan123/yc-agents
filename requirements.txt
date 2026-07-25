@@ -6,4 +6,9 @@ numpy
 rank-bm25
 pypdf
 textual
+lxml
+defusedxml
+Pillow
+PyMuPDF
+pywin32; platform_system == "Windows"
 pytest
