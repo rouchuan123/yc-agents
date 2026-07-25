@@ -9,7 +9,8 @@ class DocumentJobTool(BaseTool):
         "Use set_contract—not set_plan/set_outline—for table and complex-object preserve/delete/rewrite decisions. "
         "Contract items use element_id; legacy id is accepted and normalized. set_contract merges decisions by "
         "element_id and only invalidates confirmation when the effective contract changes. Never repeat an unchanged "
-        "set_contract after confirm_plan. Use replace_contract only to intentionally discard all prior decisions. "
+        "set_contract after confirm_plan. confirm_plan locks the contract. Use unlock_contract only when the user "
+        "explicitly changes a decision, and replace_contract only to intentionally discard all prior decisions. "
         "set_plan canonicalizes chapters to recursive sections/children and always invalidates prior plan confirmation; "
         "when it returns requires_plan_confirmation, call confirm_plan before writing content. "
         "get_active also returns current session attachments. When no job exists, use an existing template attachment; "
@@ -68,6 +69,15 @@ class DocumentJobTool(BaseTool):
             return {"ok": True, "attachments": attachments, "count": len(attachments)}
         if operation == "get":
             return {"ok": True, "job": self.job_store.summary(self.job_store.get(job_id))}
+        if operation == "unlock_contract":
+            data = self.job_store.unlock_contract(job_id)
+            return {
+                "ok": True,
+                "job": self.job_store.summary(data),
+                "requires_plan_confirmation": True,
+                "next_action": "document_job.set_contract",
+                "instruction": "Only unlock after the user explicitly changes a contract decision.",
+            }
         if operation == "update_requirements":
             data = self.job_store.update_requirements(
                 job_id,

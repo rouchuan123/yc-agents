@@ -8,6 +8,9 @@ from pathlib import Path
 from docx import Document
 from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.shared import Pt
+from docx.table import Table
 from docx.text.paragraph import Paragraph
 
 from yc_agents.documents.contract import normalize_template_contract
@@ -48,14 +51,35 @@ def _replace_paragraph_text(paragraph, text):
             run._r.insert(0, deepcopy(source_rpr))
 
 
-def _heading_level(paragraph):
+def _styled_heading_level(paragraph):
     text = paragraph.text.strip()
     style_name = (paragraph.style.name or "").lower()
     if not text:
         return None
+    if style_name.startswith("toc") or style_name.startswith("目录"):
+        return None
     style_match = re.search(r"(?:heading|标题)\s*([1-9])", style_name)
     if style_match:
         return int(style_match.group(1))
+    outline_level = paragraph._p.xpath("./w:pPr/w:outlineLvl/@w:val")
+    if outline_level:
+        try:
+            return int(outline_level[0]) + 1
+        except (TypeError, ValueError):
+            pass
+    return None
+
+
+def _heading_level(paragraph):
+    styled = _styled_heading_level(paragraph)
+    if styled is not None:
+        return styled
+    text = paragraph.text.strip()
+    style_name = (paragraph.style.name or "").lower()
+    if not text or style_name.startswith("toc") or style_name.startswith("目录"):
+        return None
+    if _has_field(paragraph):
+        return None
     if re.match(
         r"^(?:第[一二三四五六七八九十百0-9]+[章节篇部](?:\s|[、：:])|[一二三四五六七八九十百]+、)",
         text,
@@ -73,15 +97,69 @@ def _is_heading(paragraph):
     return _heading_level(paragraph) is not None
 
 
+def _has_field(paragraph):
+    return bool(paragraph._p.xpath(".//w:instrText | .//w:fldChar"))
+
+
 def _is_body_sample(paragraph):
     style_name = (paragraph.style.name or "").strip().lower()
     text = paragraph.text.strip()
+    direct_sizes = [run.font.size.pt for run in paragraph.runs if run.font.size is not None]
     return bool(
         text
         and not _is_heading(paragraph)
+        and not _has_field(paragraph)
+        and not style_name.startswith("toc")
         and style_name not in {"title", "subtitle", "题名", "副标题"}
+        and (not direct_sizes or max(direct_sizes) <= 18)
         and not re.match(r"^(?:图|表)\s*\d+", text)
     )
+
+
+def _markdown_row(line):
+    return [cell.strip() for cell in str(line).strip().strip("|").split("|")]
+
+
+def _is_markdown_separator(line):
+    cells = _markdown_row(line)
+    return bool(cells) and all(re.fullmatch(r":?-{3,}:?", cell.replace(" ", "")) for cell in cells)
+
+
+def _content_blocks(content):
+    lines = str(content or "").replace("\r\n", "\n").splitlines()
+    blocks = []
+    prose = []
+
+    def flush_prose():
+        if prose:
+            for text in _content_paragraphs("\n".join(prose)):
+                blocks.append(("paragraph", text))
+            prose.clear()
+
+    index = 0
+    while index < len(lines):
+        line = lines[index]
+        if (
+            line.strip().startswith("|")
+            and index + 1 < len(lines)
+            and _is_markdown_separator(lines[index + 1])
+        ):
+            flush_prose()
+            headers = _markdown_row(line)
+            index += 2
+            rows = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                rows.append(_markdown_row(lines[index]))
+                index += 1
+            blocks.append(("table", {"headers": headers, "rows": rows}))
+            continue
+        if line.strip():
+            prose.append(line)
+        else:
+            flush_prose()
+        index += 1
+    flush_prose()
+    return blocks
 
 
 def _table_set_text(cell, text):
@@ -98,6 +176,66 @@ def _request_field_update(document):
         update = OxmlElement("w:updateFields")
         settings.append(update)
     update.set(qn("w:val"), "true")
+
+
+def _continue_page_numbering(document):
+    for section in list(document.sections)[1:]:
+        page_number = section._sectPr.find(qn("w:pgNumType"))
+        if page_number is None:
+            continue
+        page_number.attrib.pop(qn("w:start"), None)
+        if not page_number.attrib and len(page_number) == 0:
+            section._sectPr.remove(page_number)
+
+
+def _normalize_floating_footer_page_fields(document):
+    alternate_content_tag = "{http://schemas.openxmlformats.org/markup-compatibility/2006}AlternateContent"
+    changed_parts = set()
+    seen_parts = set()
+    for section in document.sections:
+        footer = section.footer
+        part_name = str(footer.part.partname).lstrip("/")
+        if part_name in seen_parts:
+            continue
+        seen_parts.add(part_name)
+        for paragraph in footer.paragraphs:
+            alternates = list(paragraph._p.iter(alternate_content_tag))
+            page_alternates = [
+                node
+                for node in alternates
+                if any(
+                    "PAGE" in str(instruction.text or "").upper()
+                    for instruction in node.iter(qn("w:instrText"))
+                )
+            ]
+            if not page_alternates:
+                continue
+            for node in page_alternates:
+                parent = node.getparent()
+                if parent is not None:
+                    parent.remove(node)
+            paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            begin = paragraph.add_run()._r
+            begin_char = OxmlElement("w:fldChar")
+            begin_char.set(qn("w:fldCharType"), "begin")
+            begin.append(begin_char)
+            instruction = paragraph.add_run()._r
+            instruction_text = OxmlElement("w:instrText")
+            instruction_text.set("{http://www.w3.org/XML/1998/namespace}space", "preserve")
+            instruction_text.text = " PAGE  \\* MERGEFORMAT "
+            instruction.append(instruction_text)
+            separate = paragraph.add_run()._r
+            separate_char = OxmlElement("w:fldChar")
+            separate_char.set(qn("w:fldCharType"), "separate")
+            separate.append(separate_char)
+            value_run = paragraph.add_run("1")
+            value_run.font.size = Pt(9)
+            end = paragraph.add_run()._r
+            end_char = OxmlElement("w:fldChar")
+            end_char.set(qn("w:fldCharType"), "end")
+            end.append(end_char)
+            changed_parts.add(part_name)
+    return changed_parts
 
 
 def _apply_paragraph_template(paragraph, sample_xml):
@@ -119,6 +257,43 @@ def _apply_paragraph_template(paragraph, sample_xml):
         target_run.remove(current_rpr)
     if sample_rpr is not None:
         target_run.insert(0, deepcopy(sample_rpr))
+
+
+def _set_semantic_heading(paragraph, level):
+    level = max(1, min(9, int(level or 1)))
+    try:
+        paragraph.style = f"Heading {level}"
+    except KeyError:
+        pass
+    ppr = paragraph._p.get_or_add_pPr()
+    outline = ppr.find(qn("w:outlineLvl"))
+    if outline is None:
+        outline = OxmlElement("w:outlineLvl")
+        ppr.append(outline)
+    outline.set(qn("w:val"), str(level - 1))
+
+
+def _paragraph_has_numbering(paragraph):
+    if paragraph._p.xpath("./w:pPr/w:numPr"):
+        return True
+    style = paragraph.style
+    seen = set()
+    while style is not None and style.style_id not in seen:
+        seen.add(style.style_id)
+        ppr = style.element.pPr
+        if ppr is not None and ppr.find(qn("w:numPr")) is not None:
+            return True
+        style = style.base_style
+    return False
+
+
+def _heading_text_for_paragraph(title, paragraph, level):
+    text = str(title or "").strip()
+    if not _paragraph_has_numbering(paragraph):
+        return text
+    if int(level or 1) == 1:
+        return re.sub(r"^第[一二三四五六七八九十百0-9]+章\s*", "", text)
+    return re.sub(r"^\d+(?:\.\d+){1,8}\s*", "", text)
 
 
 class DocxBuilder:
@@ -147,15 +322,30 @@ class DocxBuilder:
 
         document = Document(internal_docx)
         requirements = dict(job.get("requirements") or {})
-        self._replace_title(document, requirements.get("title") or requirements.get("topic") or job.get("title"))
-        self._rewrite_sections(document, sections)
+        self._replace_cover(
+            document,
+            requirements.get("title") or requirements.get("topic") or job.get("title"),
+            requirements,
+        )
+        table_samples = [
+            (len(table.columns), len(table.rows), deepcopy(table._tbl))
+            for table in document.tables
+        ]
         self._rewrite_tables(document, sections, contract)
+        self._rewrite_sections(document, sections, table_samples)
+        _continue_page_numbering(document)
+        changed_footer_parts = _normalize_floating_footer_page_fields(document)
         _request_field_update(document)
         document.save(internal_docx)
+        allowed_changed_parts = {
+            "word/document.xml",
+            "word/settings.xml",
+            *changed_footer_parts,
+        }
         preserve_package_parts(
             template_path,
             internal_docx,
-            {"word/document.xml", "word/settings.xml"},
+            allowed_changed_parts,
         )
 
         output_dir = self.workspace_root / "outputs" / job["slug"]
@@ -167,18 +357,19 @@ class DocxBuilder:
         published = output_dir / filename
         if published.exists():
             raise FileExistsError(f"Published document version already exists: {published}")
-        shutil.copyfile(internal_docx, published)
-
         manifest = {
             "version": version,
             "base": "template",
             "template_sha256": job["template"]["sha256"],
             "docx_path": str(internal_docx),
-            "published_path": str(published),
+            "published_path": None,
+            "pending_published_path": str(published),
             "docx_sha256": sha256_file(internal_docx),
             "package_parts": package_part_hashes(internal_docx),
+            "allowed_changed_parts": sorted(allowed_changed_parts),
             "created_at": _now_iso(),
             "qa_passed": False,
+            "delivery_ready": False,
         }
         manifest_path = revision_dir / "artifact-manifest.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -190,23 +381,51 @@ class DocxBuilder:
             "job_id": job_id,
             "version": version,
             "docx_path": str(internal_docx),
-            "published_path": str(published),
+            "published_path": None,
+            "pending_published_path": str(published),
+            "delivery_ready": False,
             "template_unchanged": sha256_file(template_path) == job["template"]["sha256"],
-            "artifacts": [str(published), str(manifest_path)],
+            "artifacts": [str(manifest_path)],
         }
 
     @staticmethod
-    def _replace_title(document, title):
+    def _replace_cover(document, title, requirements):
         if not title:
             return
-        nonempty = [paragraph for paragraph in document.paragraphs if paragraph.text.strip()]
+        paragraphs = list(document.paragraphs)
+        first_heading = next(
+            (index for index, paragraph in enumerate(paragraphs) if _styled_heading_level(paragraph)),
+            None,
+        )
+        if first_heading is None:
+            first_heading = next(
+                (index for index, paragraph in enumerate(paragraphs) if _is_heading(paragraph)),
+                len(paragraphs),
+            )
+        nonempty = [paragraph for paragraph in paragraphs[:first_heading] if paragraph.text.strip()]
         if nonempty:
             _replace_paragraph_text(nonempty[0], title)
 
-    def _rewrite_sections(self, document, sections):
-        all_headings = [paragraph for paragraph in document.paragraphs if _is_heading(paragraph)]
+        brand_decision = str(
+            requirements.get("brand_decision") or requirements.get("brand_info") or ""
+        ).strip().lower()
+        company_name = str(requirements.get("company_name") or "").strip()
+        for paragraph in paragraphs[:first_heading]:
+            if "编制单位" not in paragraph.text:
+                continue
+            if company_name:
+                _replace_paragraph_text(paragraph, f"编制单位：{company_name}")
+            elif brand_decision in {"delete", "remove", "删除"}:
+                _replace_paragraph_text(paragraph, "")
+
+    def _rewrite_sections(self, document, sections, table_samples=None):
+        paragraphs = list(document.paragraphs)
+        all_headings = [paragraph for paragraph in paragraphs if _styled_heading_level(paragraph)]
+        if not all_headings:
+            all_headings = [paragraph for paragraph in paragraphs if _is_heading(paragraph)]
+        first_heading_index = paragraphs.index(all_headings[0]) if all_headings else 0
         body_sample = next(
-            (paragraph for paragraph in document.paragraphs if _is_body_sample(paragraph)),
+            (paragraph for paragraph in paragraphs[first_heading_index + 1 :] if _is_body_sample(paragraph)),
             None,
         )
         body_sample_xml = deepcopy(body_sample._p) if body_sample is not None else None
@@ -231,10 +450,23 @@ class DocxBuilder:
             heading = all_headings[index]
             section = sections[index]
             sample_xml = self._heading_sample(heading_samples, int(section.get("level") or 1))
-            _replace_paragraph_text(heading, section["title"])
             if sample_xml is not None:
                 _apply_paragraph_template(heading, sample_xml)
-            last_anchor = self._insert_section_body(heading._p, heading._parent, section, body_sample_xml)
+            _set_semantic_heading(heading, int(section.get("level") or 1))
+            _replace_paragraph_text(
+                heading,
+                _heading_text_for_paragraph(
+                    section["title"], heading, int(section.get("level") or 1)
+                ),
+            )
+            last_anchor = self._insert_section_body(
+                document,
+                heading._p,
+                heading._parent,
+                section,
+                body_sample_xml,
+                table_samples or [],
+            )
 
         if len(all_headings) > len(sections):
             for heading in reversed(all_headings[len(sections) :]):
@@ -247,10 +479,12 @@ class DocxBuilder:
                 for section in sections:
                     heading = document.add_heading(section["title"], level=int(section.get("level") or 1))
                     last_anchor = self._insert_section_body(
+                        document,
                         heading._p,
                         heading._parent,
                         section,
                         body_sample_xml,
+                        table_samples or [],
                     )
                 return
             anchor = last_anchor or all_headings[-1]._p
@@ -262,8 +496,21 @@ class DocxBuilder:
                 heading_xml = deepcopy(sample_xml)
                 anchor.addnext(heading_xml)
                 heading = Paragraph(heading_xml, parent)
-                _replace_paragraph_text(heading, section["title"])
-                anchor = self._insert_section_body(heading_xml, parent, section, body_sample_xml)
+                _set_semantic_heading(heading, int(section.get("level") or 1))
+                _replace_paragraph_text(
+                    heading,
+                    _heading_text_for_paragraph(
+                        section["title"], heading, int(section.get("level") or 1)
+                    ),
+                )
+                anchor = self._insert_section_body(
+                    document,
+                    heading_xml,
+                    parent,
+                    section,
+                    body_sample_xml,
+                    table_samples or [],
+                )
 
     @staticmethod
     def _heading_sample(samples, level):
@@ -274,18 +521,66 @@ class DocxBuilder:
         nearest = min(samples, key=lambda candidate: (abs(candidate - level), candidate))
         return samples[nearest]
 
-    @staticmethod
-    def _insert_section_body(anchor, parent, section, body_sample_xml):
-        for text in _content_paragraphs(section.get("content")):
+    @classmethod
+    def _insert_section_body(cls, document, anchor, parent, section, body_sample_xml, table_samples):
+        blocks = _content_blocks(section.get("content"))
+        if str(section.get("fact_status") or "").lower() == "assumption":
+            visible_text = "\n".join(
+                str(value) for block_type, value in blocks if block_type == "paragraph"
+            )
+            if not re.search(r"(?:【假设】|\[假设\]|假设说明|暂按|测算假设)", visible_text):
+                blocks.insert(0, ("paragraph", "【假设】本节数据为用户确认的测算假设，需以最终资料为准。"))
+        for block_type, value in blocks:
+            if block_type == "table":
+                anchor = cls._insert_content_table(
+                    document,
+                    anchor,
+                    parent,
+                    value,
+                    table_samples,
+                )
+                continue
             if body_sample_xml is None:
                 paragraph_xml = OxmlElement("w:p")
             else:
                 paragraph_xml = deepcopy(body_sample_xml)
             anchor.addnext(paragraph_xml)
             paragraph = Paragraph(paragraph_xml, parent)
-            _replace_paragraph_text(paragraph, text)
+            _replace_paragraph_text(paragraph, value)
             anchor = paragraph_xml
         return anchor
+
+    @staticmethod
+    def _insert_content_table(document, anchor, parent, table_data, table_samples):
+        headers = list(table_data.get("headers") or [])
+        rows = [list(row) for row in table_data.get("rows") or []]
+        values = ([headers] if headers else []) + rows
+        if not values:
+            return anchor
+        columns = max(len(row) for row in values)
+        matching = [sample for sample in table_samples if sample[0] == columns]
+        if matching:
+            _column_count, _row_count, sample_xml = min(matching, key=lambda item: item[1])
+            table_xml = deepcopy(sample_xml)
+            anchor.addnext(table_xml)
+            table = Table(table_xml, parent)
+        else:
+            table = document.add_table(rows=1, cols=columns)
+            try:
+                table.style = "Table Grid"
+            except KeyError:
+                pass
+            table_xml = table._tbl
+            anchor.addnext(table_xml)
+        while len(table.rows) < len(values):
+            table._tbl.append(deepcopy(table.rows[-1]._tr))
+        while len(table.rows) > len(values):
+            table._tbl.remove(table.rows[-1]._tr)
+        for row_index, row_values in enumerate(values):
+            for column_index in range(columns):
+                value = row_values[column_index] if column_index < len(row_values) else ""
+                _table_set_text(table.rows[row_index].cells[column_index], value)
+        return table_xml
 
     def _validate_generation_gate(self, job, sections):
         if not job.get("plan_confirmed"):

@@ -23,4 +23,13 @@ class DocxVerifyTool(BaseTool):
     def run(self, job_id, version=0, mode="all"):
         if mode not in {"all", "deterministic", "render", "visual"}:
             raise ValueError("mode must be one of: all, deterministic, render, visual")
-        return self.verifier.verify(job_id, version=version or None, mode=mode)
+        result = self.verifier.verify(job_id, version=version or None, mode=mode)
+        if mode == "all" and not result.get("passed"):
+            issues = [
+                str(item.get("issue") or "")
+                for item in result.get("findings", [])
+                if item.get("severity") == "blocking"
+            ]
+            summary = "; ".join(issues[:5]) or "DOCX verification failed"
+            raise ValueError(f"DOCX_QA_BLOCKED: {summary}")
+        return result

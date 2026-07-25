@@ -83,6 +83,7 @@ class DocumentJobStore:
             "outline": None,
             "plan_confirmed": False,
             "contract_confirmed": False,
+            "contract_locked": False,
             "current_revision": None,
             "revisions": [],
             "qa": {},
@@ -159,12 +160,19 @@ class DocumentJobStore:
             data["_contract_changed"] = False
             return data
 
+        if data.get("contract_locked"):
+            raise ValueError(
+                "CONTRACT_LOCKED: the confirmed template contract cannot change. "
+                "Only call document_job.unlock_contract after the user explicitly changes a decision."
+            )
+
         value = normalize_template_contract(value, reset_confirmation=True)
         self._write_json(path, value)
         data = self.update(
             job_id,
             template_contract_path=str(path),
             contract_confirmed=False,
+            contract_locked=False,
             plan_confirmed=False,
         )
         data["_contract_changed"] = True
@@ -176,6 +184,18 @@ class DocumentJobStore:
         if not path or not Path(path).exists():
             raise FileNotFoundError("Template contract has not been set")
         return normalize_template_contract(json.loads(Path(path).read_text(encoding="utf-8")))
+
+    def unlock_contract(self, job_id):
+        data = self.get(job_id)
+        if not data.get("contract_locked"):
+            return data
+        return self.update(
+            job_id,
+            contract_locked=False,
+            contract_confirmed=False,
+            plan_confirmed=False,
+            status="waiting_plan_confirmation",
+        )
 
     def set_plan(self, job_id, outline):
         canonical = normalize_outline(outline)
@@ -210,6 +230,20 @@ class DocumentJobStore:
         ]
         unresolved = list(contract.get("unresolved") or [])
         unresolved.extend(item.get("element_id") for item in items if item.get("action") == "confirm")
+        spec_path = data.get("template_spec_path")
+        if spec_path and Path(spec_path).exists():
+            spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+            table_items = {
+                str(item.get("element_id")): item
+                for item in contract.get("tables", [])
+                if item.get("element_id")
+            }
+            table_default = str((contract.get("defaults") or {}).get("tables") or "confirm")
+            for table in spec.get("tables", []):
+                element_id = str(table.get("element_id") or "")
+                action = str((table_items.get(element_id) or {}).get("action") or table_default)
+                if element_id and action == "confirm":
+                    unresolved.append(element_id)
         unresolved = [str(item) for item in unresolved if item]
         if unresolved:
             raise ValueError(f"Template contract still has unresolved confirmation items: {unresolved}")
@@ -220,6 +254,7 @@ class DocumentJobStore:
             job_id,
             plan_confirmed=True,
             contract_confirmed=True,
+            contract_locked=True,
             plan_confirmed_at=_now_iso(),
             status="drafting",
         )
@@ -276,6 +311,7 @@ class DocumentJobStore:
             "outline": data.get("outline"),
             "plan_confirmed": bool(data.get("plan_confirmed")),
             "contract_confirmed": bool(data.get("contract_confirmed")),
+            "contract_locked": bool(data.get("contract_locked")),
             "current_revision": data.get("current_revision"),
             "revisions": [
                 {
@@ -283,6 +319,8 @@ class DocumentJobStore:
                     "docx_path": item.get("docx_path"),
                     "created_at": item.get("created_at"),
                     "qa_passed": item.get("qa_passed"),
+                    "delivery_ready": item.get("delivery_ready", False),
+                    "published_path": item.get("published_path"),
                 }
                 for item in data.get("revisions", [])
             ],
