@@ -5,11 +5,61 @@ CONTRACT_COLLECTIONS = ("elements", "tables", "complex_objects")
 CONTRACT_ACTIONS = {"preserve", "rewrite", "reuse_structure", "confirm", "delete"}
 
 
+def _legacy_confirm_collection(element_id):
+    value = str(element_id or "").casefold()
+    if value.startswith("body.tbl") or ".tbl" in value:
+        return "tables"
+    if any(token in value for token in ("smartart", "chart", "object", "ole", "textbox", "drawing")):
+        return "complex_objects"
+    return "elements"
+
+
+def _normalize_legacy_confirm(value):
+    """Convert the model's historical ``confirm[].decision`` shape to canonical items."""
+    if "confirm" not in value:
+        return value
+    raw_items = value.pop("confirm")
+    if not isinstance(raw_items, list):
+        raise ValueError("template contract confirm must be a list")
+
+    canonical_ids = {
+        str(item.get("element_id") or item.get("id") or "").strip()
+        for collection in CONTRACT_COLLECTIONS
+        for item in value.get(collection, [])
+        if isinstance(item, dict)
+    }
+    for item in raw_items:
+        if not isinstance(item, dict):
+            raise ValueError("Each template contract confirm item must be an object")
+        element_id = str(item.get("element_id") or item.get("id") or "").strip()
+        if not element_id:
+            raise ValueError("Each template contract confirm item requires element_id")
+        action = str(item.get("decision") or item.get("action") or "confirm").strip().lower()
+        if action not in CONTRACT_ACTIONS:
+            allowed = ", ".join(sorted(CONTRACT_ACTIONS))
+            raise ValueError(
+                f"Unsupported template contract action for {element_id}: {action}. "
+                f"Use one of: {allowed}"
+            )
+        if element_id in canonical_ids:
+            continue
+        collection = _legacy_confirm_collection(element_id)
+        canonical_item = {
+            key: deepcopy(item[key])
+            for key in item
+            if key not in {"id", "decision", "action"}
+        }
+        canonical_item.update({"element_id": element_id, "action": action})
+        value.setdefault(collection, []).append(canonical_item)
+        canonical_ids.add(element_id)
+    return value
+
+
 def normalize_template_contract(contract, *, reset_confirmation=False):
     """Return a validated contract and accept legacy ``id`` as an element_id alias."""
     if not isinstance(contract, dict):
         raise ValueError("template contract must be an object")
-    value = deepcopy(contract)
+    value = _normalize_legacy_confirm(deepcopy(contract))
 
     for collection in CONTRACT_COLLECTIONS:
         raw_items = value.get(collection, [])
@@ -35,7 +85,11 @@ def normalize_template_contract(contract, *, reset_confirmation=False):
             seen.add(element_id)
             action = str(item.get("action") or "confirm").strip().lower()
             if action not in CONTRACT_ACTIONS:
-                raise ValueError(f"Unsupported template contract action for {element_id}: {action}")
+                allowed = ", ".join(sorted(CONTRACT_ACTIONS))
+                raise ValueError(
+                    f"Unsupported template contract action for {element_id}: {action}. "
+                    f"Use one of: {allowed}"
+                )
             canonical_item = {key: deepcopy(val) for key, val in item.items() if key != "id"}
             canonical_item["element_id"] = element_id
             canonical_item["action"] = action
@@ -81,7 +135,7 @@ def merge_template_contract(existing, patch):
     merged = deepcopy(current)
 
     for collection in CONTRACT_COLLECTIONS:
-        if collection not in patch:
+        if collection not in patch and not ("confirm" in patch and incoming.get(collection)):
             continue
         items = {
             item["element_id"]: deepcopy(item)
@@ -98,7 +152,13 @@ def merge_template_contract(existing, patch):
     if "unresolved" in patch:
         merged["unresolved"] = list(incoming.get("unresolved") or [])
 
-    reserved = set(CONTRACT_COLLECTIONS) | {"defaults", "unresolved", "confirmed", "confirmed_at"}
+    reserved = set(CONTRACT_COLLECTIONS) | {
+        "confirm",
+        "defaults",
+        "unresolved",
+        "confirmed",
+        "confirmed_at",
+    }
     for key, value in patch.items():
         if key not in reserved:
             merged[key] = deepcopy(value)

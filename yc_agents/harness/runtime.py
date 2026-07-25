@@ -753,7 +753,8 @@ class YCAgentRuntime:
             )
 
         tool_recovery = None
-        if self._tool_result_failed(tool_result):
+        tool_failed = self._tool_result_failed(tool_result)
+        if tool_failed:
             error_type = tool_result.get("error_type", "tool_error")
             if error_type in {"permission_error", "approval_denied"}:
                 raise RunStoppedError(
@@ -772,6 +773,11 @@ class YCAgentRuntime:
                 process_entries=process_entries,
                 recovery=recovery,
             )
+        else:
+            # Tool-feedback recovery is a consecutive-failure budget. Once the
+            # model has corrected the call and a tool succeeds, early mistakes
+            # must not consume retries needed for a later protocol/provider issue.
+            recovery.reset("tool_feedback")
 
         final_response = self._call_model_with_recovery(
             lambda: self.agent.run_with_observation(user_input, observation),

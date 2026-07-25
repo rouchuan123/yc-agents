@@ -7,6 +7,8 @@ class DocumentJobTool(BaseTool):
     description = (
         "Create and manage the active immutable-version document authoring job. "
         "Use set_contract—not set_plan/set_outline—for table and complex-object preserve/delete/rewrite decisions. "
+        "For example, preserving a table's layout while replacing its business content is "
+        "contract.tables=[{element_id: 'body.tbl0000', action: 'rewrite'}]; do not put this decision in confirm. "
         "Contract items use element_id; legacy id is accepted and normalized. set_contract merges decisions by "
         "element_id and only invalidates confirmation when the effective contract changes. Never repeat an unchanged "
         "set_contract after confirm_plan. confirm_plan locks the contract. Use unlock_contract only when the user "
@@ -67,6 +69,7 @@ class DocumentJobTool(BaseTool):
         if operation == "list_attachments":
             attachments = self._attachment_summaries()
             return {"ok": True, "attachments": attachments, "count": len(attachments)}
+        job_id = self._resolve_job_id(job_id)
         if operation == "get":
             return {"ok": True, "job": self.job_store.summary(self.job_store.get(job_id))}
         if operation == "unlock_contract":
@@ -127,6 +130,18 @@ class DocumentJobTool(BaseTool):
             data = self.job_store.rollback(job_id, version)
             return {"ok": True, "job": self.job_store.summary(data)}
         raise ValueError(f"Unsupported document_job operation: {operation}")
+
+    def _resolve_job_id(self, job_id):
+        value = str(job_id or "").strip()
+        if value:
+            return value
+        active = self.job_store.get_active()
+        if active and active.get("id"):
+            return str(active["id"])
+        raise ValueError(
+            "No active document job is available in the current session. "
+            "Call document_job.create after attaching a DOCX template."
+        )
 
     def _select_single_template(self):
         attachments = self.attachment_manager.list()

@@ -17,3 +17,17 @@
 - SmartArt、图表、嵌入对象和文本框只允许 preserve、confirm 或删除；首版不重建其内部结构。
 
 模板规格是排版权威；用户确认是业务内容权威。二者冲突时，用户明确要求优先，并在契约中记录偏离。
+
+## Tool 参数格式
+
+`document_job.set_contract` 只使用 canonical collection 和 `action`：
+
+```json
+{
+  "tables": [
+    {"element_id": "body.tbl0000", "action": "rewrite"}
+  ]
+}
+```
+
+用户说“保留结构，重写内容”表示保留该表格的几何和样式、替换业务数据，对应 `action: rewrite`。不要传 `confirm[].decision`，不要把 `confirmed` 当动作；合法动作只有 `preserve`、`rewrite`、`reuse_structure`、`confirm` 和 `delete`。

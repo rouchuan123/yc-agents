@@ -244,7 +244,7 @@ class DocumentJobStore:
                 action = str((table_items.get(element_id) or {}).get("action") or table_default)
                 if element_id and action == "confirm":
                     unresolved.append(element_id)
-        unresolved = [str(item) for item in unresolved if item]
+        unresolved = list(dict.fromkeys(str(item) for item in unresolved if item))
         if unresolved:
             raise ValueError(f"Template contract still has unresolved confirmation items: {unresolved}")
         contract["confirmed"] = True

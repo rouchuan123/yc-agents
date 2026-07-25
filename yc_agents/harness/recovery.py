@@ -49,6 +49,15 @@ class RecoveryController:
             "attempts": dict(self.attempts),
         }
 
+    def reset(self, kind=None):
+        """Reset recovered attempts so the global limit applies to consecutive failures."""
+        if kind is None:
+            self.total_attempts = 0
+            self.attempts.clear()
+            return
+        released = self.attempts.pop(str(kind), 0)
+        self.total_attempts = max(0, self.total_attempts - released)
+
     def _limit_for(self, kind):
         limits = {
             "protocol": self.policy.protocol_retries,
