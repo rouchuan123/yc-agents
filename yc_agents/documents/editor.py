@@ -66,7 +66,6 @@ class DocxEditor:
         published = output_dir / filename
         if published.exists():
             raise FileExistsError(f"Published document version already exists: {published}")
-        shutil.copyfile(internal_docx, published)
 
         manifest = {
             "version": version,
@@ -75,11 +74,14 @@ class DocxEditor:
             "operation_results": results,
             "template_sha256": job["template"]["sha256"],
             "docx_path": str(internal_docx),
-            "published_path": str(published),
+            "published_path": None,
+            "pending_published_path": str(published),
             "docx_sha256": sha256_file(internal_docx),
             "package_parts": package_part_hashes(internal_docx),
+            "allowed_changed_parts": list(base.get("allowed_changed_parts") or changed_parts),
             "created_at": _now_iso(),
             "qa_passed": False,
+            "delivery_ready": False,
         }
         manifest_path = revision_dir / "artifact-manifest.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -91,9 +93,11 @@ class DocxEditor:
             "job_id": job_id,
             "version": version,
             "docx_path": str(internal_docx),
-            "published_path": str(published),
+            "published_path": None,
+            "pending_published_path": str(published),
+            "delivery_ready": False,
             "operations": results,
-            "artifacts": [str(published), str(manifest_path)],
+            "artifacts": [str(manifest_path)],
         }
 
     def _apply(self, document, operation):

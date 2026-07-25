@@ -4,7 +4,10 @@ from yc_agents.tools.base import BaseTool
 
 class DocxGenerateTool(BaseTool):
     name = "docx_generate"
-    description = "Generate a new immutable DOCX revision from the finished template copy and completed section content."
+    description = (
+        "Generate a pending immutable DOCX revision from the finished template copy and completed section content. "
+        "The revision is not published or delivery-ready until docx_verify(mode=all) succeeds."
+    )
     schema = ToolSchema(
         fields=[
             ToolField(name="job_id", type="str", required=True),

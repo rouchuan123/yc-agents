@@ -2,12 +2,20 @@ import json
 import os
 import shutil
 import re
+from statistics import median
 from pathlib import Path
 
 from docx import Document
 
 from yc_agents.documents.ooxml import package_part_hashes, sha256_file, validate_docx_package
 from yc_agents.documents.analyzer import _font_format, _paragraph_format, _role_for, DocxTemplateAnalyzer
+from yc_agents.documents.builder import (
+    _has_field,
+    _heading_text_for_paragraph,
+    _is_body_sample,
+    _styled_heading_level,
+)
+from yc_agents.documents.outline import flatten_outline
 
 
 ALLOWED_CHANGED_PARTS = {
@@ -43,8 +51,9 @@ class DocxVerifier:
 
         template_parts = package_part_hashes(job["template"]["path"])
         revision_parts = package_part_hashes(docx_path)
+        allowed_changed_parts = ALLOWED_CHANGED_PARTS | set(revision.get("allowed_changed_parts") or [])
         for name, metadata in template_parts.items():
-            if name in ALLOWED_CHANGED_PARTS or name.startswith("word/media/"):
+            if name in allowed_changed_parts or name.startswith("word/media/"):
                 continue
             current = revision_parts.get(name)
             if current is None:
@@ -63,8 +72,27 @@ class DocxVerifier:
                         findings.append(self._finding("blocking", f"section-{expected['index']}", "页面宽度与模板不一致"))
                     if int(actual.page_height or 0) != int((expected.get("page_height") or {}).get("emu") or 0):
                         findings.append(self._finding("blocking", f"section-{expected['index']}", "页面高度与模板不一致"))
+                    for key in [
+                        "top_margin",
+                        "bottom_margin",
+                        "left_margin",
+                        "right_margin",
+                        "header_distance",
+                        "footer_distance",
+                    ]:
+                        actual_value = int(getattr(actual, key, None) or 0)
+                        expected_value = int((expected.get(key) or {}).get("emu") or 0)
+                        if actual_value != expected_value:
+                            findings.append(
+                                self._finding(
+                                    "blocking",
+                                    f"section-{expected['index']}",
+                                    f"页面设置 {key} 与模板不一致",
+                                )
+                            )
             findings.extend(self._representative_format_findings(spec, generated))
             findings.extend(self._table_geometry_findings(spec, generated, revision, job))
+            findings.extend(self._structural_content_findings(job, spec, generated))
         except Exception as exc:
             findings.append(self._finding("blocking", "document", f"无法读取生成DOCX：{exc}"))
         findings.extend(self._font_findings(spec))
@@ -94,15 +122,41 @@ class DocxVerifier:
                     artifacts.append(str(pdf_path))
                     page_images, geometry_findings = self._render_pdf_pages(pdf_path, qa_dir / "pages")
                     findings.extend(geometry_findings)
+                    findings.extend(self._page_number_findings(pdf_path))
                     artifacts.extend(str(path) for path in page_images)
 
         if mode in {"all", "visual"} and page_images:
             vision = self.vision_service.inspect_pages(page_images, template_summary=self._template_summary(spec)) if self.vision_service else {"available": False, "findings": []}
+            if not vision.get("available") and not any(
+                item.get("severity") == "blocking" for item in vision.get("findings", [])
+            ):
+                vision.setdefault("findings", []).append(
+                    self._finding("blocking", "vision", "视觉模型未配置，未执行逐页图片检查")
+                )
             findings.extend(vision.get("findings", []))
             (qa_dir / "vision-result.json").write_text(
                 json.dumps(vision, ensure_ascii=False, indent=2), encoding="utf-8"
             )
 
+        blocking = [item for item in findings if item.get("severity") == "blocking"]
+        passed = not blocking
+        published_path = None
+        if mode == "all" and passed:
+            target_value = revision.get("pending_published_path") or revision.get("published_path")
+            if not target_value:
+                findings.append(self._finding("blocking", "publish", "修订版本缺少待发布路径"))
+                passed = False
+            else:
+                target = Path(target_value)
+                target.parent.mkdir(parents=True, exist_ok=True)
+                if target.exists() and sha256_file(target) != sha256_file(docx_path):
+                    findings.append(self._finding("blocking", "publish", "输出路径已存在不同内容，拒绝覆盖"))
+                    passed = False
+                else:
+                    if not target.exists():
+                        shutil.copyfile(docx_path, target)
+                    published_path = str(target)
+                    artifacts.append(published_path)
         blocking = [item for item in findings if item.get("severity") == "blocking"]
         passed = not blocking
         report = {
@@ -116,6 +170,8 @@ class DocxVerifier:
             "pdf_path": str(pdf_path) if pdf_path.exists() else None,
             "page_images": [str(path) for path in page_images],
             "render": render_result,
+            "published_path": published_path,
+            "delivery_ready": bool(mode == "all" and passed and published_path),
         }
         report_path = qa_dir / ("qa-report.json" if mode == "all" else f"qa-report-{mode}.json")
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
@@ -132,6 +188,18 @@ class DocxVerifier:
                     item["qa_report_path"] = str(report_path)
                     item["pdf_path"] = report["pdf_path"]
                     item["page_images"] = report["page_images"]
+                    item["delivery_ready"] = report["delivery_ready"]
+                    if report["delivery_ready"]:
+                        item["published_path"] = published_path
+                    elif not item.get("delivery_ready"):
+                        pending = item.get("pending_published_path") or item.get("published_path")
+                        item["pending_published_path"] = pending
+                        item["published_path"] = None
+                manifest_path = item.get("manifest_path")
+                if manifest_path:
+                    Path(manifest_path).write_text(
+                        json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
         next_status = job.get("status")
         if mode == "all":
             next_status = "waiting_revision" if passed else "failed"
@@ -141,8 +209,6 @@ class DocxVerifier:
             qa={**dict(job.get("qa") or {}), f"v{version:03d}:{mode}": report},
             status=next_status,
         )
-        if mode == "all" and passed and revision.get("published_path"):
-            shutil.copyfile(docx_path, revision["published_path"])
         return {**report, "qa_report_path": str(report_path), "artifacts": artifacts}
 
     @staticmethod
@@ -249,6 +315,229 @@ class DocxVerifier:
                         )
         return findings
 
+    def _structural_content_findings(self, job, spec, generated):
+        findings = []
+        paragraphs = list(generated.paragraphs)
+        outline_sections = flatten_outline(job.get("outline") or {})
+        expected_titles = {str(item.get("title") or "").strip() for item in outline_sections}
+
+        for section in outline_sections:
+            title = str(section.get("title") or "").strip()
+            level = int(section.get("level") or 1)
+            matches = [
+                paragraph
+                for paragraph in paragraphs
+                if paragraph.text.strip()
+                == _heading_text_for_paragraph(title, paragraph, level)
+            ]
+            if len(matches) != 1:
+                findings.append(
+                    self._finding(
+                        "blocking",
+                        title or section.get("id") or "outline",
+                        f"提纲标题在生成文档中应精确出现一次，实际为 {len(matches)} 次",
+                    )
+                )
+                continue
+            actual_level = _styled_heading_level(matches[0])
+            if actual_level != level:
+                findings.append(
+                    self._finding(
+                        "blocking",
+                        title,
+                        f"标题必须使用可导航的 Heading {level} 语义，实际层级为 {actual_level}",
+                    )
+                )
+
+        for paragraph in paragraphs:
+            style_name = str(paragraph.style.name or "").strip().lower()
+            text = paragraph.text.strip()
+            if (style_name.startswith("toc") or style_name.startswith("目录")) and len(text) > 120:
+                findings.append(
+                    self._finding("blocking", text[:80], "目录样式段落包含长正文，正文被错误写入目录")
+                )
+
+        visible_text = "\n".join(
+            [paragraph.text for paragraph in paragraphs]
+            + [cell.text for table in generated.tables for row in table.rows for cell in row.cells]
+        )
+        if re.search(r"(?m)^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$", visible_text):
+            findings.append(self._finding("blocking", "markdown-table", "文档中残留 Markdown 表格分隔线"))
+        if re.search(r"错误\s*[!！]\s*(?:未定义书签|引用源未找到)|Error!\s*(?:Bookmark|Reference)", visible_text, re.IGNORECASE):
+            findings.append(self._finding("blocking", "fields", "目录或交叉引用显示未定义书签错误"))
+
+        root = generated._element
+        bookmark_names = set(root.xpath(".//w:bookmarkStart/@w:name"))
+        hyperlink_anchors = set(root.xpath(".//w:hyperlink/@w:anchor"))
+        field_text = " ".join(root.xpath(".//w:instrText/text()"))
+        referenced = set(hyperlink_anchors)
+        referenced.update(
+            match.group(1) or match.group(2)
+            for match in re.finditer(
+                r"PAGEREF\s+\"?([^\s\"\\]+)|HYPERLINK\s+\\l\s+\"([^\"]+)\"",
+                field_text,
+                re.IGNORECASE,
+            )
+        )
+        missing_bookmarks = sorted(
+            name for name in referenced if name and name not in bookmark_names and name != "_GoBack"
+        )
+        if missing_bookmarks:
+            findings.append(
+                self._finding(
+                    "blocking",
+                    "bookmarks",
+                    f"目录或内部链接引用了不存在的书签：{', '.join(missing_bookmarks[:12])}",
+                )
+            )
+
+        expected_sizes = []
+        for element in spec.get("elements", []):
+            if element.get("role") != "body":
+                continue
+            for run in element.get("runs") or []:
+                size = ((run.get("effective_font") or {}).get("size") or {}).get("pt")
+                if size:
+                    expected_sizes.append(float(size))
+        expected_size = median(expected_sizes) if expected_sizes else 12.0
+        oversized_chars = 0
+        oversized_anchors = []
+        for paragraph in paragraphs:
+            if not _is_body_sample(paragraph):
+                continue
+            for run in paragraph.runs:
+                if not run.text.strip():
+                    continue
+                size = ((_font_format(run, paragraph).get("size") or {}).get("pt"))
+                if size and float(size) > max(18.0, expected_size * 1.5):
+                    oversized_chars += len(run.text)
+                    if len(oversized_anchors) < 5:
+                        oversized_anchors.append(run.text.strip()[:30])
+        if oversized_chars >= 80:
+            findings.append(
+                self._finding(
+                    "blocking",
+                    "body-font-size",
+                    f"检测到 {oversized_chars} 个正文字符字号异常偏大；模板正文基准约 {expected_size:g}pt",
+                    f"检查：{'、'.join(oversized_anchors)}",
+                )
+            )
+
+        findings.extend(self._legacy_content_findings(job, generated, expected_titles))
+        assumption_sections = []
+        sections_dir = self.job_store.job_root(job["id"]) / "content" / "sections"
+        if sections_dir.exists():
+            for path in sections_dir.glob("*.json"):
+                try:
+                    value = json.loads(path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    continue
+                if str(value.get("fact_status") or "").lower() == "assumption":
+                    assumption_sections.append(str(value.get("title") or path.stem))
+        if assumption_sections and not re.search(r"【假设】|\[假设\]|假设说明|暂按|测算假设", visible_text):
+            findings.append(
+                self._finding(
+                    "blocking",
+                    "assumptions",
+                    f"含假设数据的章节未在正文显式标注：{', '.join(assumption_sections[:8])}",
+                )
+            )
+        return findings
+
+    def _legacy_content_findings(self, job, generated, expected_titles):
+        template = Document(job["template"]["path"])
+        template_paragraphs = list(template.paragraphs)
+        generated_texts = {paragraph.text.strip() for paragraph in generated.paragraphs if paragraph.text.strip()}
+        first_heading = next(
+            (index for index, paragraph in enumerate(template_paragraphs) if _styled_heading_level(paragraph)),
+            0,
+        )
+        stale = []
+        for paragraph in template_paragraphs[first_heading:]:
+            text = paragraph.text.strip()
+            if (
+                len(text) >= 24
+                and text not in expected_titles
+                and not _has_field(paragraph)
+                and not str(paragraph.style.name or "").lower().startswith("toc")
+                and text in generated_texts
+            ):
+                stale.append(text)
+        if stale:
+            return [
+                self._finding(
+                    "blocking",
+                    stale[0][:80],
+                    f"生成文档仍残留 {len(stale)} 段模板旧业务正文",
+                    "删除或重写旧项目内容后重新验证",
+                )
+            ]
+
+        requirements = dict(job.get("requirements") or {})
+        brand_decision = str(
+            requirements.get("brand_decision") or requirements.get("brand_info") or ""
+        ).strip().lower()
+        if brand_decision not in {"delete", "remove", "删除"}:
+            return []
+        company_pattern = re.compile(
+            r"[\u3400-\u9fffA-Za-z0-9（）()·]{2,28}(?:集团有限公司|有限公司)"
+        )
+        template_text = "\n".join(
+            [p.text for p in template_paragraphs]
+            + [cell.text for table in template.tables for row in table.rows for cell in row.cells]
+        )
+        old_companies = set(company_pattern.findall(template_text))
+        generated_text = "\n".join(
+            [p.text for p in generated.paragraphs]
+            + [cell.text for table in generated.tables for row in table.rows for cell in row.cells]
+        )
+        allowed = " ".join(
+            str(requirements.get(key) or job.get(key) or "")
+            for key in ("company_name", "title", "topic")
+        )
+        residual = sorted(
+            name for name in old_companies if name in generated_text and name not in allowed
+        )
+        return [
+            self._finding(
+                "blocking",
+                "cover-brand",
+                f"用户要求删除旧品牌，但仍残留：{', '.join(residual)}",
+            )
+        ] if residual else []
+
+    def _page_number_findings(self, pdf_path):
+        try:
+            import fitz
+        except ImportError:
+            return []
+        document = fitz.open(pdf_path)
+        detected = []
+        try:
+            for page_index, page in enumerate(document, start=1):
+                candidates = []
+                for block in page.get_text("blocks"):
+                    if block[1] < page.rect.height * 0.9:
+                        continue
+                    for line in str(block[4] or "").splitlines():
+                        match = re.fullmatch(r"\s*(?:第\s*)?(\d{1,4})\s*(?:页)?\s*", line)
+                        if match:
+                            candidates.append(int(match.group(1)))
+                if candidates:
+                    detected.append((page_index, candidates[-1]))
+        finally:
+            document.close()
+        for (previous_page, previous_number), (page, number) in zip(detected, detected[1:]):
+            if page == previous_page + 1 and number != previous_number + 1:
+                return [
+                    self._finding(
+                        "blocking",
+                        f"page-{page}",
+                        f"页码不连续或发生重置：PDF第{previous_page}页显示{previous_number}，第{page}页显示{number}",
+                    )
+                ]
+        return []
+
     def _table_geometry_findings(self, spec, generated, revision, job):
         if revision.get("base") != "template":
             return []
@@ -256,25 +545,49 @@ class DocxVerifier:
         path = job.get("template_contract_path")
         if path and Path(path).exists():
             contract = json.loads(Path(path).read_text(encoding="utf-8"))
-        actions = [
-            str(item.get("action") or "")
-            for item in list(contract.get("tables") or [])
-            if isinstance(item, dict)
-        ]
-        if "delete" in actions:
-            return []
         expected_tables = list(spec.get("tables") or [])
-        if len(generated.tables) != len(expected_tables):
-            return [self._finding("blocking", "tables", "生成文档表格数量与模板契约不一致")]
+        action_by_id = {
+            str(item.get("element_id")): str(item.get("action") or "confirm")
+            for item in list(contract.get("tables") or [])
+            if isinstance(item, dict) and item.get("element_id")
+        }
+        default_action = str((contract.get("defaults") or {}).get("tables") or "confirm")
         findings = []
-        for index, (expected, table) in enumerate(zip(expected_tables, generated.tables)):
-            actual = DocxTemplateAnalyzer._table_spec(table, index)
-            for key in ["columns", "grid_widths_dxa", "width", "indent", "cell_margins"]:
+        generated_specs = [
+            DocxTemplateAnalyzer._table_spec(table, index)
+            for index, table in enumerate(generated.tables)
+        ]
+        cursor = 0
+        for index, expected in enumerate(expected_tables):
+            element_id = str(expected.get("element_id") or f"body.tbl{index:04d}")
+            action = action_by_id.get(element_id, default_action)
+            if action == "delete":
+                continue
+            geometry_keys = ["columns", "grid_widths_dxa", "width", "indent", "cell_margins"]
+            match_index = next(
+                (
+                    candidate
+                    for candidate in range(cursor, len(generated_specs))
+                    if all(
+                        generated_specs[candidate].get(key) == expected.get(key)
+                        for key in geometry_keys
+                    )
+                ),
+                None,
+            )
+            if match_index is None:
+                findings.append(
+                    self._finding("blocking", element_id, "模板契约要求保留或复用的表格缺失")
+                )
+                continue
+            actual = generated_specs[match_index]
+            cursor = match_index + 1
+            for key in geometry_keys:
                 if actual.get(key) != expected.get(key):
                     findings.append(
                         self._finding(
                             "blocking",
-                            f"body.tbl{index:04d}",
+                            element_id,
                             f"表格几何 {key} 与模板不一致",
                         )
                     )

@@ -19,7 +19,7 @@ class VisionQAService:
                 "available": False,
                 "findings": [
                     {
-                        "severity": "warning",
+                        "severity": "blocking",
                         "page": None,
                         "anchor": "",
                         "issue": "视觉模型未配置，未执行逐页图片检查",
@@ -47,7 +47,8 @@ class VisionQAService:
         data = base64.b64encode(Path(image_path).read_bytes()).decode("ascii")
         prompt = (
             "你是Word文档视觉质检器。检查本页是否存在文本截断、重叠、表格或图片越界、字体层级明显漂移、"
-            "贴边、孤立标题、异常空白和页眉页脚错位。不要评价正文事实。只返回JSON对象："
+            "贴边、孤立标题、异常空白和页眉页脚错位。不要评价正文事实。正文或表格中的数字恰好与页脚页码相同不是重复页码；"
+            "只有页脚区域实际出现两个页码时才报告重复。只返回JSON对象："
             '{"findings":[{"severity":"blocking|warning","page":1,"anchor":"可定位文字",'
             '"issue":"问题","suggested_action":"修复建议"}]}。没有问题返回空数组。'
             f"当前页码：{page_number}。模板摘要：{json.dumps(template_summary, ensure_ascii=False)[:4000]}"
@@ -61,8 +62,20 @@ class VisionQAService:
                 ],
             }
         ]
-        response = invoke_llm(self.llm.think, messages, usage_kind="auxiliary")
-        payload = self._json_payload(response)
+        payload = None
+        for attempt in range(2):
+            response = invoke_llm(self.llm.think, messages, usage_kind="auxiliary")
+            payload = self._json_payload(response)
+            if payload is not None and isinstance(payload.get("findings"), list):
+                break
+            if attempt == 0:
+                messages.append({"role": "assistant", "content": str(response or "")})
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": "上一条响应不是有效 findings JSON。请只返回规定的 JSON 对象，不要附加解释。",
+                    }
+                )
         if payload is None or not isinstance(payload.get("findings"), list):
             return [
                 {

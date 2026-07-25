@@ -17,7 +17,7 @@ from yc_agents.cli.commands import parse_cli_input
 from yc_agents.documents.analyzer import DocxTemplateAnalyzer
 from yc_agents.documents.attachments import AttachmentManager
 from yc_agents.documents.broker import ExecutionBroker
-from yc_agents.documents.builder import DocxBuilder
+from yc_agents.documents.builder import DocxBuilder, _heading_text_for_paragraph
 from yc_agents.documents.content import DocumentContentStore
 from yc_agents.documents.editor import DocxEditor
 from yc_agents.documents.jobs import DocumentJobStore
@@ -28,6 +28,7 @@ from yc_agents.documents.verifier import DocxVerifier
 from yc_agents.documents.word_renderer import export_word_pdf
 from yc_agents.tools.document_job import DocumentJobTool
 from yc_agents.tools.document_content import DocumentContentTool
+from yc_agents.tools.docx_verify import DocxVerifyTool
 
 
 def make_template(path):
@@ -210,7 +211,9 @@ def test_content_generation_revision_and_rollback_are_immutable(document_workspa
     generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
 
     assert generated["version"] == 1
-    assert Path(generated["published_path"]).exists()
+    assert generated["published_path"] is None
+    assert generated["delivery_ready"] is False
+    assert not Path(generated["pending_published_path"]).exists()
     assert sha256_file(template) == original_hash
     generated_doc = Document(generated["docx_path"])
     assert any("新项目位于唐山市" in paragraph.text for paragraph in generated_doc.paragraphs)
@@ -230,6 +233,9 @@ def test_content_generation_revision_and_rollback_are_immutable(document_workspa
         ],
     )
     assert edited["version"] == 2
+    assert edited["published_path"] is None
+    assert edited["delivery_ready"] is False
+    assert not Path(edited["pending_published_path"]).exists()
     assert Path(generated["docx_path"]).exists()
     edited_doc = Document(edited["docx_path"])
     assert any("北京市" in paragraph.text for paragraph in edited_doc.paragraphs)
@@ -284,6 +290,15 @@ def test_builder_maps_outline_to_top_level_headings_and_uses_body_format(tmp_pat
 
     assert [paragraph.text for paragraph in headings] == [section["title"] for section in sections]
     assert body.style.name == "Normal"
+
+
+def test_numbered_heading_does_not_duplicate_manual_chapter_prefix():
+    document = Document()
+    paragraph = document.add_heading("旧标题", level=1)
+    num_pr = paragraph._p.get_or_add_pPr().get_or_add_numPr()
+    num_pr.get_or_add_numId().val = 1
+
+    assert _heading_text_for_paragraph("第一章 项目概述", paragraph, 1) == "项目概述"
 
 
 def test_outline_accepts_chapters_alias_and_preserves_nested_heading_levels(tmp_path):
@@ -566,6 +581,14 @@ def test_contract_partial_updates_merge_and_identical_repeat_is_idempotent(docum
     assert repeated["job"]["contract_confirmed"] is True
     assert repeated["contract"]["confirmed"] is True
 
+    with pytest.raises(ValueError, match="CONTRACT_LOCKED"):
+        tool.run(
+            "replace_contract",
+            job_id=job["id"],
+            contract={"tables": [{"element_id": "body.tbl0003", "action": "preserve"}]},
+        )
+    unlocked = tool.run("unlock_contract", job_id=job["id"])
+    assert unlocked["job"]["contract_locked"] is False
     replaced = tool.run(
         "replace_contract",
         job_id=job["id"],
@@ -776,6 +799,25 @@ def test_vision_qa_blocks_invalid_json_instead_of_false_pass(tmp_path):
     assert "findings JSON" in result["findings"][0]["issue"]
 
 
+def test_vision_qa_retries_invalid_json_once(tmp_path):
+    image = tmp_path / "page-1.png"
+    image.write_bytes(b"fake-png")
+
+    class RetryVisionLLM:
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            return "not-json" if self.calls == 1 else '{"findings":[]}'
+
+    llm = RetryVisionLLM()
+    result = VisionQAService(llm).inspect_pages([image])
+
+    assert llm.calls == 2
+    assert result == {"available": True, "findings": []}
+
+
 def test_windows_chinese_font_aliases_are_recognized():
     assert DocxVerifier._font_matches("黑体", {"simhei"})
     assert DocxVerifier._font_matches("宋体", {"simsun"})
@@ -813,3 +855,164 @@ def test_partial_verification_does_not_mark_revision_as_fully_qa_passed(document
     assert result["qa_report_path"].endswith("qa-report-deterministic.json")
     assert revision["qa_passed"] is False
     assert revision["qa_modes"]["deterministic"]["passed"] is True
+
+
+def test_full_verification_publishes_only_after_all_qa_passes(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(
+        job["id"],
+        {"sections": [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}]},
+    )
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "第一章", "这是第一章的新正文内容。")
+    content.upsert_section(job["id"], "s2", "第二章", "这是第二章的新正文内容。")
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    target = Path(generated["pending_published_path"])
+    assert not target.exists()
+
+    class FakeBroker:
+        def run(self, _key, _input, output):
+            Path(output).write_bytes(b"fake-pdf")
+            return {"ok": True, "stdout": "", "stderr": ""}
+
+    class FakeVision:
+        def inspect_pages(self, page_images, template_summary=None):
+            assert page_images
+            return {"available": True, "findings": []}
+
+    verifier = DocxVerifier(jobs, FakeBroker(), FakeVision())
+    verifier._page_number_findings = lambda _pdf: []
+
+    def fake_render(pdf_path, output_dir):
+        output_dir.mkdir(parents=True, exist_ok=True)
+        page = output_dir / "page-1.png"
+        page.write_bytes(b"fake-png")
+        return [page], []
+
+    verifier._render_pdf_pages = fake_render
+    result = DocxVerifyTool(verifier).run(
+        job["id"], version=1, mode="all"
+    )
+
+    assert result["passed"] is True
+    assert result["delivery_ready"] is True
+    assert Path(result["published_path"]).exists()
+    revision = jobs.revision(job["id"], 1)
+    assert revision["qa_passed"] is True
+    assert revision["delivery_ready"] is True
+
+
+def test_docx_verify_tool_raises_when_all_qa_is_blocked():
+    class BlockedVerifier:
+        def verify(self, *_args, **_kwargs):
+            return {
+                "passed": False,
+                "findings": [{"severity": "blocking", "issue": "目录书签损坏"}],
+            }
+
+    with pytest.raises(ValueError, match="DOCX_QA_BLOCKED.*目录书签损坏"):
+        DocxVerifyTool(BlockedVerifier()).run("job", mode="all")
+
+
+def test_markdown_table_becomes_real_word_table(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(
+        job["id"],
+        {"sections": [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}]},
+    )
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(
+        job["id"],
+        "s1",
+        "第一章",
+        "设备清单如下：\n\n| 设备 | 数量 | 负责人 |\n| --- | --- | --- |\n| 基站 | 10 | 李四 |",
+    )
+    content.upsert_section(job["id"], "s2", "第二章", "正文。")
+
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    result = Document(generated["docx_path"])
+    text = "\n".join(paragraph.text for paragraph in result.paragraphs)
+
+    assert "| --- |" not in text
+    assert any(table.rows[1].cells[0].text == "基站" for table in result.tables)
+
+
+def test_assumption_sections_are_visibly_marked(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(
+        job["id"],
+        {
+            "assumptions": ["总投资暂按5000万元测算"],
+            "sections": [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}],
+        },
+    )
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(
+        job["id"], "s1", "第一章", "项目总投资5000万元。", fact_status="assumption"
+    )
+    content.upsert_section(job["id"], "s2", "第二章", "正文。")
+
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    text = "\n".join(paragraph.text for paragraph in Document(generated["docx_path"]).paragraphs)
+
+    assert "【假设】" in text
+
+
+def test_brand_delete_blocks_old_company_left_in_preserved_table(tmp_path):
+    template = tmp_path / "brand-table.docx"
+    document = Document()
+    document.add_paragraph("旧项目报告", style="Title")
+    document.add_heading("第一章 旧内容", level=1)
+    document.add_paragraph("需要替换的旧正文。")
+    table = document.add_table(rows=1, cols=2)
+    table.style = "Table Grid"
+    table.rows[0].cells[0].text = "项目单位"
+    table.rows[0].cells[1].text = "唐山沃盈科技有限公司"
+    document.save(template)
+
+    workspace = tmp_path / "workspace"
+    session_path = workspace / ".ycore" / "sessions" / "brand"
+    session_path.mkdir(parents=True)
+    attachments = AttachmentManager(session_path)
+    attachment = attachments.import_file(template, role="template")
+    jobs = DocumentJobStore(workspace, "brand")
+    job = jobs.create(attachment, title="新报告")
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(
+        job["id"], {"topic": "新报告", "brand_info": "delete"}, pending_questions=[]
+    )
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "第一章 新内容"}]})
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "第一章 新内容", "这是新正文。")
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+
+    result = DocxVerifier(jobs).verify(job["id"], version=generated["version"], mode="deterministic")
+
+    assert result["passed"] is False
+    assert any("仍残留" in item["issue"] for item in result["findings"])

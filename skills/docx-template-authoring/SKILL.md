@@ -41,6 +41,7 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
 8. 用户明确确认且所有 `confirm` 项已有选择后，调用 `document_job.confirm_plan`。未确认不得写章节或生成 DOCX。
 9. 提纲统一使用递归 `sections[].children`；不要把二级、三级章节摊平成同级。输入中的顶层 `chapters` 会被兼容转换，但工具保存的是 canonical `sections`，每个节点都有 `level` 和 `parent_id`。
 10. 每次 `set_plan` 或 `set_outline` 都会撤销此前确认。看到 `requires_plan_confirmation=true` 时，下一步必须调用 `document_job.confirm_plan`；遇到 `PLAN_NOT_CONFIRMED` 后不得重复 `upsert_section`。
+11. `confirm_plan` 后模板契约会锁定。不要再次改写契约；只有用户明确改变保留/删除/重写决定时，才先调用 `unlock_contract`，再更新契约并重新确认计划。
 
 需求字段见 [references/requirement-schema.md](references/requirement-schema.md)，来源边界见 [references/source-policy.md](references/source-policy.md)。
 
@@ -48,11 +49,14 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
 
 1. 计划确认后按提纲逐章生成，使用 `document_content.upsert_section` 保存；长文不得挤在单次最终回答中。
 2. 每章记录 `source_ids` 和 `fact_status`。投资额、营收、面积、建设期、产能等项目指标只能是用户明确提供、经已确认来源支撑，或已在提纲假设中展示并确认；通用市场报告不能支撑某一家公司的项目指标，不得补造。
+   - `fact_status=assumption` 的章节必须在正文显示“【假设】”、暂按或测算假设等醒目标识，不能只保存在内部状态。
 3. 调用 `document_content.get_missing`；required 章节齐全后才能调用 `docx_generate`。
-4. `docx_generate` 必须从模板副本开始并生成不可变新版本。不要调用 `workspace_write` 修改 DOCX 或模板原件。
+4. `docx_generate` 必须从模板副本开始并生成不可变待验证版本。它返回的 `delivery_ready=false` 不是交付物，且此时 `outputs/` 中不应出现该版本。不要调用 `workspace_write` 修改 DOCX 或模板原件。
 5. 生成后立即调用 `docx_verify(mode="all")`。
-6. 验证存在 blocking finding 时不得宣称完成；根据可靠文字锚点调用 `docx_edit` 修复，最多两轮，然后重新验证。
-7. 视觉模型无结果、Word 渲染不可用或字体缺失时，明确说明未通过对应门槛。
+6. 章节中的 Markdown 表格必须转换为真实 Word 表格，不得把竖线和分隔线作为正文插入。
+7. 验证存在 blocking finding 或工具返回 `DOCX_QA_BLOCKED` 时不得宣称完成、不得给出可下载路径；根据可靠文字锚点调用 `docx_edit` 修复，最多两轮，然后重新验证。
+8. 只有 `docx_verify(mode="all")` 返回 `passed=true`、`delivery_ready=true` 和 `published_path` 后，版本才会发布到 `outputs/`。
+9. 视觉模型无结果、Word 渲染不可用或字体缺失时，明确说明未通过对应门槛。
 
 质量门槛见 [references/quality-checklist.md](references/quality-checklist.md)。
 
@@ -73,6 +77,7 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
 - 模板哈希未改变；
 - required 章节齐全且来源边界已遵守；
 - 当前版本的 `docx_verify` 没有 blocking finding；
+- 当前 revision 同时满足 `qa_passed=true` 和 `delivery_ready=true`；
 - 最终 DOCX 存在于 `outputs/<job-slug>/` 且非空；
 - 最终回复给出版本、DOCX 路径、已使用来源、剩余 warning 和可继续修改的提示；
 - PDF 和 PNG 仅作为内部 QA 产物，除非用户明确要求，否则不作为交付物。
