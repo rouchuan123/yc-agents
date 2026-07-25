@@ -266,7 +266,10 @@ class YCAgentRuntime:
                 )
                 yield response
             else:
-                verification = self.verification_gate.verify_final_output(response)
+                verification = self.verification_gate.verify_final_output(
+                    response,
+                    execution_history=execution_history,
+                )
 
             writer.write_artifacts(execution_history)
             writer.write_final_output(response)
@@ -837,7 +840,10 @@ class YCAgentRuntime:
         process_entries,
         recovery,
     ):
-        verification = self.verification_gate.verify_final_output(response)
+        verification = self.verification_gate.verify_final_output(
+            response,
+            execution_history=execution_history,
+        )
         revise = getattr(self.agent, "run_with_verification_feedback", None)
         if verification["passed"] or not callable(revise):
             return response, verification
@@ -885,7 +891,10 @@ class YCAgentRuntime:
                 response = data.get("content", "")
             else:
                 response = revised
-            verification = self.verification_gate.verify_final_output(response)
+            verification = self.verification_gate.verify_final_output(
+                response,
+                execution_history=execution_history,
+            )
             if verification["passed"]:
                 self._record_recovery_succeeded(
                     retry_info,
@@ -1076,7 +1085,13 @@ class YCAgentRuntime:
         if self.tool_policy is None:
             return ToolExecutionPolicy()
 
-        return replace(self.tool_policy, call_count=0, repeated_calls={})
+        return replace(
+            self.tool_policy,
+            call_count=0,
+            repeated_calls={},
+            last_call_key="",
+            consecutive_repeated_calls=0,
+        )
 
     def _finish_stopped_run(
         self,

@@ -14,6 +14,8 @@ class ToolExecutionPolicy:
     max_retries: int = 1
     call_count: int = 0
     repeated_calls: dict[str, int] = field(default_factory=dict)
+    last_call_key: str = ""
+    consecutive_repeated_calls: int = 0
 
     def record_call(self, name, arguments):
         self.call_count += 1
@@ -25,7 +27,13 @@ class ToolExecutionPolicy:
             sort_keys=True,
             ensure_ascii=False,
         )
-        self.repeated_calls[key] = self.repeated_calls.get(key, 0) + 1
+        if key == self.last_call_key:
+            self.consecutive_repeated_calls += 1
+        else:
+            self.last_call_key = key
+            self.consecutive_repeated_calls = 1
+            self.repeated_calls.clear()
+        self.repeated_calls[key] = self.consecutive_repeated_calls
 
-        if self.repeated_calls[key] > self.max_repeated_calls:
+        if self.consecutive_repeated_calls > self.max_repeated_calls:
             raise ToolLoopError(f"Repeated tool call blocked: {name}")

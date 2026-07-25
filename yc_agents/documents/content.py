@@ -17,6 +17,44 @@ _HIGH_RISK_METRIC_PATTERNS = (
     ),
 )
 
+_LITERATURE_REVIEW_MARKERS = (
+    "文献综述",
+    "文献回顾",
+    "研究综述",
+    "系统综述",
+    "literature review",
+    "systematic review",
+)
+
+
+def is_literature_review_job(job):
+    requirements = job.get("requirements") or {}
+    values = [job.get("title", ""), job.get("slug", "")]
+    values.extend(
+        str(value)
+        for value in requirements.values()
+        if isinstance(value, (str, int, float))
+    )
+    text = " ".join(values).casefold()
+    return any(marker in text for marker in _LITERATURE_REVIEW_MARKERS)
+
+
+def legal_document_source_ids(job_store, job_id, job=None):
+    job = job or job_store.get(job_id)
+    legal = {
+        str(item.get("id"))
+        for item in job.get("confirmed_sources", [])
+        if item.get("id")
+    }
+    web_path = job_store.job_root(job_id) / "sources" / "web.json"
+    if web_path.exists():
+        legal.update(
+            str(item.get("id"))
+            for item in json.loads(web_path.read_text(encoding="utf-8"))
+            if item.get("id")
+        )
+    return legal
+
 
 class DocumentContentStore:
     def __init__(self, job_store):
@@ -56,6 +94,13 @@ class DocumentContentStore:
         metric_matches = self._high_risk_metrics(metric_text)
         if metric_matches:
             self._validate_metric_provenance(job_id, job, fact_status, source_ids, metric_matches)
+        self._validate_literature_provenance(
+            job_id,
+            job,
+            fact_status,
+            source_ids,
+            metric_text,
+        )
         record = {
             "id": str(section_id),
             "title": str(title or section_id),
@@ -67,6 +112,44 @@ class DocumentContentStore:
             "parent_id": outline_section.get("parent_id"),
             "tables": list(tables or []),
         }
+        path = self._section_path(job_id, section_id)
+        if path.exists() and not record["content"].strip() and not record["tables"]:
+            existing = json.loads(path.read_text(encoding="utf-8"))
+            if str(existing.get("content") or "").strip() or existing.get("tables"):
+                raise ValueError(
+                    "EMPTY_SECTION_OVERWRITE: refusing to erase an existing section with an empty "
+                    "upsert; use document_content.set_provenance to update source metadata"
+                )
+        self._write_json(path, record)
+        return {"ok": True, "section": record, "path": str(path)}
+
+    def set_provenance(self, job_id, section_id, source_ids, fact_status="grounded"):
+        job = self.job_store.get(job_id)
+        record = self.get_section(job_id, section_id)
+        source_ids = [str(item) for item in (source_ids or [])]
+        fact_status = str(fact_status or "grounded").strip().lower()
+        if fact_status == "grounded":
+            legal_ids = legal_document_source_ids(self.job_store, job_id, job)
+            invalid = [source_id for source_id in source_ids if source_id not in legal_ids]
+            if not source_ids or invalid:
+                raise ValueError(
+                    "INVALID_PROVENANCE: grounded sections require confirmed or recorded "
+                    f"source_ids; invalid={invalid or source_ids}"
+                )
+        self._validate_literature_provenance(
+            job_id,
+            job,
+            fact_status,
+            source_ids,
+            "\n".join(
+                (
+                    str(record.get("content") or ""),
+                    json.dumps(record.get("tables") or [], ensure_ascii=False),
+                )
+            ),
+        )
+        record["source_ids"] = source_ids
+        record["fact_status"] = fact_status
         path = self._section_path(job_id, section_id)
         self._write_json(path, record)
         return {"ok": True, "section": record, "path": str(path)}
@@ -85,10 +168,61 @@ class DocumentContentStore:
         for section in flatten_outline(outline) if outline else []:
             path = self._section_path(job_id, section["id"])
             if path.exists():
-                present.append(section["id"])
+                record = json.loads(path.read_text(encoding="utf-8"))
+                has_content = bool(str(record.get("content") or "").strip())
+                has_tables = bool(record.get("tables"))
+                is_leaf = not bool(section.get("children"))
+                if section.get("required", True) and is_leaf and not (has_content or has_tables):
+                    missing.append(section["id"])
+                else:
+                    present.append(section["id"])
             elif section.get("required", True):
                 missing.append(section["id"])
         return {"missing": missing, "present": present, "complete": not missing}
+
+    def get_grounding_gaps(self, job_id):
+        job = self.job_store.get(job_id)
+        if not is_literature_review_job(job):
+            return {
+                "required": False,
+                "legal_source_ids": [],
+                "gaps": [],
+                "complete": True,
+            }
+        legal_ids = legal_document_source_ids(self.job_store, job_id, job)
+        gaps = []
+        for section in flatten_outline(job.get("outline") or {}):
+            path = self._section_path(job_id, section["id"])
+            if not path.exists():
+                continue
+            record = json.loads(path.read_text(encoding="utf-8"))
+            if not str(record.get("content") or "").strip() and not record.get("tables"):
+                continue
+            source_ids = [str(item) for item in record.get("source_ids") or []]
+            invalid_ids = [source_id for source_id in source_ids if source_id not in legal_ids]
+            reasons = []
+            if not source_ids:
+                reasons.append("missing_source_ids")
+            if invalid_ids:
+                reasons.append("invalid_source_ids")
+            if str(record.get("fact_status") or "").lower() != "grounded":
+                reasons.append("fact_status_not_grounded")
+            if reasons:
+                gaps.append(
+                    {
+                        "section_id": record.get("id") or section["id"],
+                        "title": record.get("title") or section.get("title"),
+                        "source_ids": source_ids,
+                        "invalid_source_ids": invalid_ids,
+                        "reasons": reasons,
+                    }
+                )
+        return {
+            "required": True,
+            "legal_source_ids": sorted(legal_ids),
+            "gaps": gaps,
+            "complete": bool(legal_ids) and not gaps,
+        }
 
     def all_sections(self, job_id):
         job = self.job_store.get(job_id)
@@ -101,7 +235,7 @@ class DocumentContentStore:
     @staticmethod
     def _merge_outline_metadata(record, outline_section):
         value = dict(record)
-        for key in ("level", "parent_id", "target_role"):
+        for key in ("title", "level", "parent_id", "target_role"):
             value[key] = outline_section.get(key)
         return value
 
@@ -120,14 +254,7 @@ class DocumentContentStore:
                 f"must be user_provided, grounded, assumption, or test_fixture; found {matches}"
             )
         if fact_status == "grounded":
-            legal_ids = {str(item.get("id")) for item in job.get("confirmed_sources", []) if item.get("id")}
-            web_path = self.job_store.job_root(job_id) / "sources" / "web.json"
-            if web_path.exists():
-                legal_ids.update(
-                    str(item.get("id"))
-                    for item in json.loads(web_path.read_text(encoding="utf-8"))
-                    if item.get("id")
-                )
+            legal_ids = legal_document_source_ids(self.job_store, job_id, job)
             invalid = [source_id for source_id in source_ids if source_id not in legal_ids]
             if not source_ids or invalid:
                 raise ValueError(
@@ -154,6 +281,25 @@ class DocumentContentStore:
                     "UNCONFIRMED_PROJECT_ASSUMPTION: every project metric value must appear in "
                     f"outline.assumptions before confirm_plan; missing={missing_values}"
                 )
+
+    def _validate_literature_provenance(
+        self,
+        job_id,
+        job,
+        fact_status,
+        source_ids,
+        content,
+    ):
+        if not is_literature_review_job(job) or not str(content or "").strip():
+            return
+        legal_ids = legal_document_source_ids(self.job_store, job_id, job)
+        invalid = [source_id for source_id in source_ids if source_id not in legal_ids]
+        if fact_status != "grounded" or not source_ids or invalid:
+            raise ValueError(
+                "SOURCE_GROUNDING_REQUIRED: literature-review sections must use "
+                "fact_status=grounded and reference confirmed workspace or recorded web "
+                f"source_ids; invalid={invalid or source_ids}"
+            )
 
     def _section_path(self, job_id, section_id):
         safe_id = "".join(char for char in str(section_id) if char.isalnum() or char in "-_．。一二三四五六七八九十")

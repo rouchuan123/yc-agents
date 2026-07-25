@@ -1,14 +1,25 @@
 import asyncio
+import os
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from rich.console import Group
 from rich.markdown import Markdown
 from rich.text import Text
+from textual import events
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.widgets import Collapsible, ListView, Markdown as TextualMarkdown, RichLog
+from textual.screen import Screen
+from textual.widgets import Collapsible, ListView, RichLog
 
-from yc_agents.cli.app import YCAgentsTUIApp, build_default_status_collector
+from yc_agents.cli.app import (
+    PromptTextArea,
+    SafeSelectionScreen,
+    StableMarkdown,
+    YCAgentsTUIApp,
+    build_default_status_collector,
+)
 from yc_agents.cli.status import CLIStatus
 
 
@@ -103,6 +114,44 @@ class ProcessEventRuntime:
             }
         )
         yield "最终分析"
+
+
+class RetryingProcessEventRuntime:
+    def __init__(self):
+        self.event_callback = None
+
+    def stream(self, user_input):
+        self.event_callback(
+            {
+                "event_type": "assistant_process",
+                "payload": {
+                    "entry": {
+                        "type": "tool_call",
+                        "tool_name": "docx_generate",
+                        "summary": "Calling docx_generate...",
+                    }
+                },
+            }
+        )
+        self.event_callback(
+            {
+                "event_type": "tool_retry",
+                "payload": {"tool_name": "docx_generate", "attempt": 2},
+            }
+        )
+        self.event_callback(
+            {
+                "event_type": "assistant_process",
+                "payload": {
+                    "entry": {
+                        "type": "tool_result",
+                        "tool_name": "docx_generate",
+                        "summary": "生成成功。",
+                    }
+                },
+            }
+        )
+        yield "最终文档已生成"
 
 
 class CancellableRuntime:
@@ -303,6 +352,30 @@ class FakeStatic:
 
 
 class TestYCAgentsTUIApp(unittest.TestCase):
+    @unittest.skipUnless(os.name == "nt", "Windows console driver only")
+    def test_windows_console_shift_enter_is_encoded_with_modifier(self):
+        from yc_agents.cli.windows_driver import KITTY_SHIFT_ENTER, encode_console_key
+
+        event = SimpleNamespace(
+            wVirtualKeyCode=0x0D,
+            dwControlKeyState=0x0010,
+            uChar=SimpleNamespace(UnicodeChar="\r"),
+        )
+
+        self.assertEqual(encode_console_key(event), KITTY_SHIFT_ENTER)
+
+    @unittest.skipUnless(os.name == "nt", "Windows console driver only")
+    def test_windows_console_plain_enter_remains_enter(self):
+        from yc_agents.cli.windows_driver import encode_console_key
+
+        event = SimpleNamespace(
+            wVirtualKeyCode=0x0D,
+            dwControlKeyState=0,
+            uChar=SimpleNamespace(UnicodeChar="\r"),
+        )
+
+        self.assertEqual(encode_console_key(event), "\r")
+
     def test_render_status_uses_collector(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 
@@ -698,10 +771,38 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
         list(app.compose())
 
+        self.assertIsInstance(app.prompt, PromptTextArea)
         self.assertFalse(app.prompt.compact)
-        self.assertIn("#prompt > .input--cursor", app.CSS)
+        self.assertIn("#prompt .text-area--cursor", app.CSS)
         self.assertIn("background: #e1e1e1", app.CSS)
         self.assertIn("text-style: none", app.CSS)
+
+    def test_shift_enter_inserts_newline_and_enter_submits_prompt(self):
+        async def run_app():
+            runtime = FakeRuntime()
+            app = YCAgentsTUIApp(
+                runtime,
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test() as pilot:
+                app.prompt.focus()
+                app.prompt.value = "第一行"
+                app.prompt.action_end()
+                await pilot.press("shift+enter")
+                await pilot.press("第", "二", "行")
+
+                self.assertEqual(app.prompt.text, "第一行\n第二行")
+
+                await pilot.press("enter")
+                await asyncio.wait_for(app.current_run_task, timeout=1)
+
+                self.assertEqual(runtime.calls, ["第一行\n第二行"])
+                self.assertEqual(app.prompt.text, "")
+
+        asyncio.run(run_app())
 
     def test_turn_widgets_use_semantic_visual_classes(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
@@ -746,13 +847,58 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         async def run_app():
             app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 
-            async with app.run_test():
+            async with app.run_test() as pilot:
                 app.append_turn("Assistant", "**bold**\n\n- item")
-                await asyncio.sleep(0)
+                await pilot.pause()
 
-                self.assertTrue(list(app.query(TextualMarkdown)))
+                markdown_widgets = list(app.query(StableMarkdown))
+                self.assertTrue(markdown_widgets)
+                self.assertEqual(markdown_widgets[-1].markdown_source, "**bold**\n\n- item")
 
         asyncio.run(run_app())
+
+    def test_incremental_markdown_update_keeps_stable_widget_and_skips_unchanged_text(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+            async with app.run_test() as pilot:
+                app.append_turn("Assistant", "first")
+                await pilot.pause()
+                body = app._turn_views[-1]["body"]
+
+                app.transcript_entries[-1] = ("Assistant", "second")
+                app.redraw_transcript()
+                await pilot.pause()
+
+                self.assertIs(body, app._turn_views[-1]["body"])
+                self.assertEqual(body.markdown_source, "second")
+                self.assertFalse(body.update_markdown("second"))
+
+        asyncio.run(run_app())
+
+    def test_safe_selection_screen_swallows_only_stale_mouse_selection_race(self):
+        screen = SafeSelectionScreen()
+        event = events.MouseDown(None, 1, 1, 0, 0, 1, False, False, False)
+
+        with patch.object(
+            Screen,
+            "_forward_event",
+            side_effect=AttributeError("'NoneType' object has no attribute 'region'"),
+        ), patch.object(screen, "clear_selection") as clear_selection:
+            screen._forward_event(event)
+
+        clear_selection.assert_called_once_with()
+
+    def test_safe_selection_screen_does_not_hide_unrelated_attribute_errors(self):
+        screen = SafeSelectionScreen()
+        event = events.MouseDown(None, 1, 1, 0, 0, 1, False, False, False)
+
+        with patch.object(
+            Screen,
+            "_forward_event",
+            side_effect=AttributeError("unrelated failure"),
+        ), self.assertRaisesRegex(AttributeError, "unrelated failure"):
+            screen._forward_event(event)
 
     def test_running_app_streams_elapsed_status_and_keeps_transcript_selectable(self):
         async def run_app():
@@ -970,6 +1116,64 @@ class TestYCAgentsTUIApp(unittest.TestCase):
             self.assertEqual(len(content["process_entries"]), 2)
             self.assertTrue(content["process_collapsed"])
             self.assertFalse(content["process_running"])
+
+        asyncio.run(run_app())
+
+    def test_tool_retry_log_stays_in_process_order(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                RetryingProcessEventRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("生成文档"))
+            await asyncio.wait_for(app.current_run_task, timeout=1)
+
+            speaker, content = app.transcript_entries[1]
+            self.assertEqual(speaker, "Assistant")
+            self.assertEqual(
+                [entry["type"] for entry in content["process_entries"]],
+                ["tool_call", "tool_retry", "tool_result"],
+            )
+            self.assertIn("工具重试 · docx_generate · 第 2 次", app._render_process_entries_text(content["process_entries"]))
+            self.assertNotIn("Tool", [speaker for speaker, _content in app.transcript_entries])
+
+        asyncio.run(run_app())
+
+    def test_process_updates_reuse_widgets_and_preserve_manual_collapse(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test() as pilot:
+                app.current_run_has_process_events = True
+                app.active_process_entries.append(
+                    {"type": "assistant_step", "content": "开始执行。"}
+                )
+                app._update_active_assistant_content()
+                await pilot.pause()
+                collapsible = list(app.query(Collapsible))[0]
+                collapsible.collapsed = True
+                await asyncio.sleep(0)
+
+                app.active_process_entries.append(
+                    {"type": "tool_retry", "content": "工具重试 · fake_tool · 第 2 次"}
+                )
+                app._update_active_assistant_content()
+                await pilot.pause()
+
+                updated = list(app.query(Collapsible))[0]
+                content = app.transcript_entries[app.active_assistant_index][1]
+                self.assertIs(updated, collapsible)
+                self.assertTrue(updated.collapsed)
+                self.assertTrue(content["process_collapsed"])
+                self.assertTrue(content["process_user_toggled"])
 
         asyncio.run(run_app())
 

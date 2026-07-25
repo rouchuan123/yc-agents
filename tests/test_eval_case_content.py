@@ -31,6 +31,13 @@ def test_docx_template_authoring_cases_cover_business_workflow():
     contract_case = next(case for case in cases if case["id"] == "docx-contract-rewrite-shape-001")
     assert "action=rewrite" in contract_case["failure_notes"]
     assert "confirm[].decision" in contract_case["failure_notes"]
+    literature_case = next(
+        case for case in cases if case["id"] == "docx-literature-source-grounding-001"
+    )
+    assert {"web_search", "document_source", "document_content"}.issubset(
+        literature_case["required_tools"]
+    )
+    assert "docx_generate" in literature_case["forbidden_tools"]
 
 
 def test_eval_case_files_are_generic_workspace_focused():

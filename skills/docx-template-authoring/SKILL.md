@@ -39,6 +39,8 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
 4. 调用 `document_source.discover` 只列候选资料；用户确认前不得调用 `ingest` 或 `search`。
 5. 用户确认来源后调用 `confirm`、`ingest`，再按章节调用 `search`。
 6. 只有用户允许且确认资料不足、过时或确需外部信息时才调用 `web_search`；用 `document_source.record_web` 保存实际使用的网页来源。
+   - 文献综述、研究综述和系统综述属于必须检索并落来源的文档类型。不得用 `fact_status=draft/assumption` 编造作者、年份、论文名、系统名或编号引用；每章使用 `fact_status=grounded` 和实际来源 ID。
+   - 恢复旧任务时先调用 `document_content.get_grounding_gaps`。已有正文只用 `set_provenance` 更新 `source_ids`/`fact_status`；不得调用 `set_outline`，也不得用空的 `upsert_section` 覆盖正文。叶子章节正文为空时仍视为缺失，必须重新写入。
 7. 生成前用 `document_job.set_plan` 保存并展示一次：文档提纲、确认来源、联网计划、保留项、替换项、假设和复杂对象限制。
 8. 用户明确确认且所有 `confirm` 项已有选择后，调用 `document_job.confirm_plan`。未确认不得写章节或生成 DOCX。
 9. 提纲统一使用递归 `sections[].children`；不要把二级、三级章节摊平成同级。输入中的顶层 `chapters` 会被兼容转换，但工具保存的是 canonical `sections`，每个节点都有 `level` 和 `parent_id`。
@@ -54,6 +56,7 @@ description: 从用户附加的一篇已写好的 Word .docx 中提取页面、�
 2. 每章记录 `source_ids` 和 `fact_status`。投资额、营收、面积、建设期、产能等项目指标只能是用户明确提供、经已确认来源支撑，或已在提纲假设中展示并确认；通用市场报告不能支撑某一家公司的项目指标，不得补造。
    - `fact_status=assumption` 的章节必须在正文显示“【假设】”、暂按或测算假设等醒目标识，不能只保存在内部状态。
 3. 调用 `document_content.get_missing`；required 章节齐全后才能调用 `docx_generate`。
+   - 契约中的 `tables[].action` 只决定表格是保留、重写或删除。重写数据必须随目标章节的 `upsert_section.tables` 传入，格式为 `{"target_element_id":"body.tbl0000","headers":[...],"rows":[...]}`；不要把新任务的数据放在契约 `replacement_data` 中。
 4. `docx_generate` 必须从模板副本开始并生成不可变待验证版本。它返回的 `delivery_ready=false` 不是交付物，且此时 `outputs/` 中不应出现该版本。不要调用 `workspace_write` 修改 DOCX 或模板原件。
 5. 生成后立即调用 `docx_verify(mode="all")`。
 6. 章节中的 Markdown 表格必须转换为真实 Word 表格，不得把竖线和分隔线作为正文插入。

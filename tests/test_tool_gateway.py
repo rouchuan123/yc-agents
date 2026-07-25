@@ -307,6 +307,15 @@ class TestToolGateway(unittest.TestCase):
         with self.assertRaises(ToolLoopError):
             policy.record_call("rag_search", {"query": "abc"})
 
+    def test_tool_policy_resets_repetition_after_different_state_changing_call(self):
+        policy = ToolExecutionPolicy(max_repeated_calls=1)
+
+        policy.record_call("docx_generate", {"job_id": "job-1"})
+        policy.record_call("document_job", {"operation": "confirm_plan"})
+        policy.record_call("docx_generate", {"job_id": "job-1"})
+
+        self.assertEqual(policy.consecutive_repeated_calls, 1)
+
     def test_tool_policy_blocks_max_calls(self):
         policy = ToolExecutionPolicy(max_calls=1)
         policy.record_call("rag_search", {"query": "abc"})

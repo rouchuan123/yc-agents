@@ -521,6 +521,183 @@ def test_generation_requires_confirmed_plan_and_table_replacements(document_work
         DocxBuilder(workspace, jobs, content).generate(job["id"])
 
 
+def test_generation_accepts_legacy_contract_table_replacement_data(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(
+        job["id"],
+        {
+            "tables": [
+                {
+                    "element_id": "body.tbl0000",
+                    "action": "rewrite",
+                    "replacement_data": {
+                        "rows": [["阶段", "说明"], ["当前", "兼容旧任务"]]
+                    },
+                }
+            ],
+            "unresolved": [],
+        },
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "第一章"}]})
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "第一章", "正文")
+
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    result = Document(generated["docx_path"])
+
+    assert result.tables[0].cell(0, 0).text == "阶段"
+    assert result.tables[0].cell(1, 1).text == "兼容旧任务"
+
+
+def test_literature_review_sections_require_recorded_sources(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update(job["id"], title="室内定位文献综述", slug="室内定位文献综述")
+    jobs.update_requirements(job["id"], {"topic": "室内定位"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "研究进展"}]})
+    jobs.confirm_plan(job["id"])
+
+    with pytest.raises(ValueError, match="SOURCE_GROUNDING_REQUIRED"):
+        content.upsert_section(job["id"], "s1", "研究进展", "Chen等（2024）提出了新方法。")
+
+    source = DocumentSourceService(_workspace, jobs).record_web(
+        job["id"],
+        {"url": "https://example.com/paper", "title": "Verified paper"},
+    )
+    result = content.upsert_section(
+        job["id"],
+        "s1",
+        "研究进展",
+        "该研究提出了新的室内定位方法。",
+        source_ids=[source["id"]],
+        fact_status="grounded",
+    )
+
+    assert result["section"]["source_ids"] == [source["id"]]
+
+
+def test_literature_provenance_repair_preserves_existing_content(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update_requirements(job["id"], {"topic": "室内定位"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "研究进展"}]})
+    jobs.confirm_plan(job["id"])
+    original = "已有正文不能在修复来源时被覆盖。"
+    content.upsert_section(job["id"], "s1", "研究进展", original)
+    jobs.update(job["id"], title="室内定位系统综述", slug="室内定位系统综述")
+    source = DocumentSourceService(workspace, jobs).record_web(
+        job["id"],
+        {"url": "https://example.com/paper", "title": "Verified paper"},
+    )
+
+    tool = DocumentContentTool(content)
+    gaps = tool.run("get_grounding_gaps", job["id"])
+    repaired = tool.run(
+        "set_provenance",
+        job["id"],
+        section_id="s1",
+        source_ids=[source["id"]],
+        fact_status="grounded",
+        reason="修复旧章节来源",
+    )
+
+    assert gaps["gaps"][0]["section_id"] == "s1"
+    assert "missing_source_ids" in gaps["gaps"][0]["reasons"]
+    assert repaired["section"]["characters"] == len(original)
+    assert content.get_section(job["id"], "s1")["content"] == original
+    assert content.get_grounding_gaps(job["id"])["complete"] is True
+
+
+def test_empty_upsert_cannot_erase_existing_section(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "第一章"}]})
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "第一章", "已有正文")
+
+    with pytest.raises(ValueError, match="EMPTY_SECTION_OVERWRITE.*set_provenance"):
+        content.upsert_section(job["id"], "s1", "第一章", "")
+
+    assert content.get_section(job["id"], "s1")["content"] == "已有正文"
+
+
+def test_empty_required_leaf_section_remains_missing(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "第一章"}]})
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "第一章", "")
+
+    assert content.get_missing(job["id"])["missing"] == ["s1"]
+
+
+def test_literature_review_table_only_section_also_requires_sources(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update(job["id"], title="室内定位系统综述", slug="室内定位系统综述")
+    jobs.update_requirements(job["id"], {"topic": "室内定位"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "方法对比"}]})
+    jobs.confirm_plan(job["id"])
+
+    with pytest.raises(ValueError, match="SOURCE_GROUNDING_REQUIRED"):
+        content.upsert_section(
+            job["id"],
+            "s1",
+            "方法对比",
+            "",
+            tables=[{"headers": ["方法"], "rows": [["LLM-Loc"]]}],
+        )
+
+    source = DocumentSourceService(workspace, jobs).record_web(
+        job["id"],
+        {"url": "https://example.com/paper", "title": "Verified paper"},
+    )
+    content.upsert_section(
+        job["id"],
+        "s1",
+        "方法对比",
+        "",
+        source_ids=[source["id"]],
+        fact_status="grounded",
+        tables=[{"headers": ["方法"], "rows": [["Verified method"]]}],
+    )
+
+    assert content.get_grounding_gaps(job["id"])["complete"] is True
+
+
+def test_generation_reaudits_existing_literature_review_sections(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "室内定位"}, pending_questions=[])
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": [{"id": "s1", "title": "研究进展"}]})
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "研究进展", "未标注来源的旧章节。")
+    source = DocumentSourceService(workspace, jobs).record_web(
+        job["id"],
+        {"url": "https://example.com/paper", "title": "Verified paper"},
+    )
+    assert source["id"].startswith("web_")
+    jobs.update(job["id"], title="室内定位文献综述", slug="室内定位文献综述")
+
+    with pytest.raises(ValueError, match="sections lack grounded source_ids.*s1"):
+        DocxBuilder(workspace, jobs, content).generate(job["id"])
+
+
 def test_contract_legacy_id_is_normalized_and_deletes_table(document_workspace):
     workspace, _template, attachments, jobs, job = document_workspace
     DocxTemplateAnalyzer(jobs).analyze(job["id"])
@@ -941,6 +1118,56 @@ def test_windows_chinese_font_aliases_are_recognized():
     assert DocxVerifier._font_matches("黑体", {"simhei"})
     assert DocxVerifier._font_matches("宋体", {"simsun"})
     assert DocxVerifier._font_matches("微软雅黑", {"microsoftyahei"})
+    assert DocxVerifier._font_matches("楷体_GB2312", {"simkai"})
+
+
+def test_missing_template_font_is_disclosed_as_warning():
+    verifier = DocxVerifier.__new__(DocxVerifier)
+    verifier._installed_font_names = lambda: {"simsun"}
+    spec = {
+        "elements": [
+            {
+                "runs": [
+                    {
+                        "effective_font": {
+                            "name": "Euclid",
+                            "names": {"ascii": "Euclid"},
+                        }
+                    }
+                ]
+            }
+        ]
+    }
+
+    findings = verifier._font_findings(spec)
+
+    assert findings[0]["severity"] == "warning"
+    assert "无法声明字体级高保真" in findings[0]["issue"]
+
+
+def test_content_uses_canonical_outline_title_over_cached_internal_id(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(
+        job["id"],
+        {"sections": [{"id": "section-1", "title": "第一章 正确标题"}]},
+    )
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "section-1", "section-1", "新的章节正文。")
+
+    sections = content.all_sections(job["id"])
+
+    assert sections[0]["title"] == "第一章 正确标题"
+
+
+def test_next_version_skips_orphan_revision_directory(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    orphan = jobs.job_root(job["id"]) / "revisions" / "v003"
+    orphan.mkdir(parents=True)
+
+    assert jobs.next_version(job["id"]) == 4
 
 
 def test_partial_verification_does_not_mark_revision_as_fully_qa_passed(document_workspace):

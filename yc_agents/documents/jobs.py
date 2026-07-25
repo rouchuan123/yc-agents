@@ -279,6 +279,13 @@ class DocumentJobStore:
     def next_version(self, job_id):
         data = self.get(job_id)
         revisions = [int(item.get("version", 0)) for item in data.get("revisions", [])]
+        revisions_root = self.root / job_id / "revisions"
+        if revisions_root.exists():
+            revisions.extend(
+                int(match.group(1))
+                for path in revisions_root.iterdir()
+                if path.is_dir() and (match := re.fullmatch(r"v(\d+)", path.name))
+            )
         return max(revisions, default=0) + 1
 
     def revision(self, job_id, version=None):

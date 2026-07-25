@@ -131,6 +131,10 @@ ListView > ListItem.active {
     height: 1;
 }
 
+.turn-view {
+    height: auto;
+}
+
 .process-block {
     margin: 0 1;
     padding: 0 1;
@@ -182,18 +186,19 @@ ListView > ListItem.active {
 }
 
 #prompt {
-    height: 1;
+    height: 3;
+    max-height: 6;
     padding: 0 1;
     border: none;
     background: #141414;
     color: #e1e1e1;
 }
 
-#prompt > .input--placeholder {
+#prompt .text-area--placeholder {
     color: #6c6c6c;
 }
 
-#prompt > .input--cursor {
+#prompt .text-area--cursor {
     background: #e1e1e1;
     color: #141414;
     text-style: none;
