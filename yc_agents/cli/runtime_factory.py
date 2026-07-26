@@ -1,4 +1,8 @@
 import sys
+import threading
+from contextlib import suppress
+from dataclasses import dataclass, field
+from pathlib import Path
 
 from yc_agents.analytics.config import AnalyticsConfig
 from yc_agents.analytics.recorder import AnalyticsRecorder
@@ -6,6 +10,7 @@ from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.config.ycore import YCoreConfig
 from yc_agents.core.config import ProviderConfig
 from yc_agents.core.llm import YCAgentsLLM
+from yc_agents.core.model_router import ModelRouter
 from yc_agents.documents.analyzer import DocxTemplateAnalyzer
 from yc_agents.documents.attachments import AttachmentManager
 from yc_agents.documents.broker import ExecutionBroker
@@ -19,6 +24,7 @@ from yc_agents.documents.vision import VisionQAService
 from yc_agents.harness.permissions import HumanApprovalGate
 from yc_agents.harness.recovery import RecoveryPolicy
 from yc_agents.harness.runtime import YCAgentRuntime
+from yc_agents.harness.token_budget import TokenBudgetPolicy
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.intent.llm_classifier import LLMIntentClassifier
@@ -58,21 +64,278 @@ from yc_agents.tools.docx_edit import DocxEditTool
 from yc_agents.tools.docx_verify import DocxVerifyTool
 
 
-def build_cli_runtime(session, llm=None, skills_dir=None):
-    ycore_config = YCoreConfig.load(session.workspace.path)
+@dataclass
+class WorkspaceServices:
+    """workspace 级共享组件：配置解析、RAG 索引、workspace 工具与 MCP
+    sqlite 子进程。同一 workspace 内切换 session 时按引用复用，避免每次
+    重建 runtime 都重扫知识库、重启子进程。"""
+
+    workspace_path: Path
+    ycore_config: YCoreConfig
+    analytics_config: AnalyticsConfig
+    keyword_index: KeywordIndex
+    rag_index_report: dict
+    rag_search_tool: RAGSearchTool
+    workspace_tools: list = field(default_factory=list)
+    sqlite_client: object = None
+    sqlite_tools: list = field(default_factory=list)
+
+    @property
+    def workspace_tools_by_name(self):
+        return {tool.name: tool for tool in self.workspace_tools}
+
+    def close(self):
+        client = self.sqlite_client
+        self.sqlite_client = None
+        if client is not None:
+            with suppress(Exception):
+                client.close()
+
+
+_workspace_services_cache = {}
+_workspace_services_lock = threading.Lock()
+
+
+def _workspace_cache_key(workspace_path):
+    return str(Path(workspace_path).resolve())
+
+
+def get_workspace_services(workspace_path):
+    """按 workspace 路径缓存的 services 入口：首次访问构建并缓存，之后
+    的 session 切换直接复用；workspace 切换时调用
+    invalidate_workspace_services 失效。"""
+    key = _workspace_cache_key(workspace_path)
+    with _workspace_services_lock:
+        cached = _workspace_services_cache.get(key)
+    if cached is not None:
+        return cached
+
+    services = build_workspace_services(workspace_path)
+    with _workspace_services_lock:
+        existing = _workspace_services_cache.get(key)
+        if existing is not None:
+            # 并发构建竞态：保留先入缓存的实例，释放自己这份资源。
+            services.close()
+            return existing
+        _workspace_services_cache[key] = services
+    return services
+
+
+def invalidate_workspace_services(workspace_path=None):
+    """失效 workspace 级缓存并释放其持有的资源；不传路径时清空全部。"""
+    with _workspace_services_lock:
+        if workspace_path is None:
+            stale = list(_workspace_services_cache.values())
+            _workspace_services_cache.clear()
+        else:
+            services = _workspace_services_cache.pop(
+                _workspace_cache_key(workspace_path), None
+            )
+            stale = [services] if services is not None else []
+    for services in stale:
+        services.close()
+
+
+def build_workspace_services(workspace_path, ycore_config=None):
+    """构建 workspace 级组件（配置解析、RAG 索引、workspace 工具、MCP
+    sqlite client）。session 级组件见 build_cli_runtime。"""
+    workspace_path = Path(workspace_path)
+    if ycore_config is None:
+        ycore_config = YCoreConfig.load(workspace_path)
+
+    analytics_config = AnalyticsConfig.from_ycore(
+        workspace_path,
+        ycore_config.analytics_data(),
+    )
+    rag_config = ycore_config.rag_data()
+    enabled_tool_names = set(ycore_config.enabled_tools())
+
+    keyword_index = KeywordIndex()
+    rag_enabled = bool(rag_config.get("enabled", True))
+    rag_retrieval = str(rag_config.get("retrieval", "bm25")).lower()
+    if rag_retrieval != "bm25":
+        raise ValueError(
+            f"Unsupported RAG retrieval mode: {rag_retrieval}. "
+            "The minimal RAG pipeline currently supports only bm25."
+        )
+    rag_index_report = {
+        "enabled": rag_enabled,
+        "retrieval": rag_retrieval,
+        "documents": 0,
+        "chunks": 0,
+        "scopes": [],
+        "errors": [],
+    }
+    if rag_enabled and "rag_search" in enabled_tool_names:
+        scope_configs = [
+            (
+                ycore_config.global_config_root(),
+                rag_config.get("globalDir", "data/RAG_knowledge"),
+                "global",
+                False,
+            ),
+            (
+                workspace_path,
+                rag_config.get(
+                    "workspaceDir",
+                    ".ycore/memory/RAG_knowledge",
+                ),
+                "workspace",
+                True,
+            ),
+        ]
+        for root_dir, knowledge_dir, scope, create in scope_configs:
+            scope_report = RAGKnowledgeIndex(
+                root_dir,
+                knowledge_dir,
+                scope=scope,
+                chunk_size=int(rag_config.get("chunkSize", 1200)),
+                chunk_overlap=int(rag_config.get("chunkOverlap", 150)),
+                keyword_index=keyword_index,
+                create=create,
+            ).build()
+            rag_index_report["scopes"].append(scope_report)
+            rag_index_report["documents"] += scope_report["documents"]
+            rag_index_report["chunks"] += scope_report["chunks"]
+            rag_index_report["errors"].extend(scope_report["errors"])
+    rag_search_tool = RAGSearchTool(
+        keyword_index,
+        default_top_k=int(rag_config.get("topK", 4)),
+    )
+
+    workspace_tools = [
+        MarkdownWriterTool(output_dir=workspace_path),
+        WorkspaceFilesTool(workspace_path),
+        FileReaderTool(workspace_path),
+        WorkspaceWriteTool(workspace_path),
+        GitInspectorTool(workspace_path),
+        CodeSearchTool(workspace_path),
+        CommandReaderTool(workspace_path),
+        VerificationRunnerTool(workspace_path),
+        WebSearchTool(
+            provider=TavilyWebSearchProvider(
+                api_key=ycore_config.resolve_web_search_api_key()
+            )
+        ),
+    ]
+
+    sqlite_client = None
+    sqlite_tools = []
+    sqlite_tool_names = {
+        "mcp_sqlite_list_tables",
+        "mcp_sqlite_describe_table",
+        "mcp_sqlite_query_readonly",
+    }
+    if analytics_config.sqlite_mcp_enabled and (enabled_tool_names & sqlite_tool_names):
+        sqlite_client = StdioMCPClient(
+            command=[
+                sys.executable,
+                "-m",
+                "yc_agents.mcp.sqlite_server",
+                "--db",
+                str(analytics_config.db_path),
+                "--workspace",
+                str(workspace_path),
+                "--max-rows",
+                str(analytics_config.max_rows),
+            ],
+            server_name="sqlite",
+            timeout_seconds=10,
+        )
+        try:
+            sqlite_client.start()
+        except Exception:
+            pass
+        sqlite_tools = [
+            MCPToolAdapter(
+                name="mcp_sqlite_list_tables",
+                description="List YCore analytics SQLite tables.",
+                server_name="sqlite",
+                tool_name="sqlite.list_tables",
+                client=sqlite_client,
+            ),
+            MCPToolAdapter(
+                name="mcp_sqlite_describe_table",
+                description="Describe one YCore analytics SQLite table.",
+                server_name="sqlite",
+                tool_name="sqlite.describe_table",
+                client=sqlite_client,
+                schema=ToolSchema(
+                    fields=[ToolField(name="table", type="str", required=True)]
+                ),
+            ),
+            MCPToolAdapter(
+                name="mcp_sqlite_query_readonly",
+                description=(
+                    "Run one read-only SELECT query against YCore analytics SQLite."
+                ),
+                server_name="sqlite",
+                tool_name="sqlite.query_readonly",
+                client=sqlite_client,
+                schema=ToolSchema(
+                    fields=[ToolField(name="sql", type="str", required=True)]
+                ),
+            ),
+        ]
+
+    return WorkspaceServices(
+        workspace_path=workspace_path,
+        ycore_config=ycore_config,
+        analytics_config=analytics_config,
+        keyword_index=keyword_index,
+        rag_index_report=rag_index_report,
+        rag_search_tool=rag_search_tool,
+        workspace_tools=workspace_tools,
+        sqlite_client=sqlite_client,
+        sqlite_tools=sqlite_tools,
+    )
+
+
+def _build_primary_llm(ycore_config, provider_config, runtime_config):
+    """构造主模型 LLM；配置了有效 fallbacks 时用 ModelRouter 包装成
+    容灾链（vision LLM 不走这里，保持单模型）。"""
+    llm = YCAgentsLLM(config=provider_config)
+    fallback_refs = ycore_config.fallback_model_refs()
+    if not fallback_refs:
+        return llm
+    chain = [llm]
+    for ref in fallback_refs:
+        try:
+            settings = ycore_config.resolve_model_provider(ref)
+            fallback_config = ProviderConfig.from_ycore(settings)
+        except (ValueError, RuntimeError):
+            # fallback 是容灾配置：某个 ref 配错（provider 缺失、缺 API
+            # key）不应拖垮主模型启动，跳过该 ref 即可；主模型自身的
+            # 配置错误仍会在上层正常抛出。
+            continue
+        chain.append(
+            YCAgentsLLM(config=fallback_config, usage_ledger=llm.usage_ledger)
+        )
+    if len(chain) == 1:
+        return llm
+    return ModelRouter(
+        chain,
+        retries_per_model=int(runtime_config.get("providerRetryCount", 1)),
+        backoff_seconds=float(runtime_config.get("providerRetryBackoffSeconds", 1)),
+    )
+
+
+def build_cli_runtime(session, llm=None, skills_dir=None, workspace_services=None):
+    # workspace 层：外部传入（TUI 缓存复用）或内部自建（保持旧行为，
+    # 自建时 runtime 接管 MCP 子进程等资源的生命周期）。
+    runtime_owns_workspace_resources = workspace_services is None
+    services = workspace_services or build_workspace_services(session.workspace.path)
+    ycore_config = services.ycore_config
     provider_settings = ycore_config.resolve_model_provider()
     provider_config = ProviderConfig.from_ycore(provider_settings)
+    runtime_config = ycore_config.runtime_data()
     if llm is None:
-        llm = YCAgentsLLM(config=provider_config)
+        llm = _build_primary_llm(ycore_config, provider_config, runtime_config)
     set_usage_path = getattr(llm, "set_usage_path", None)
     if callable(set_usage_path):
         set_usage_path(session.usage_path)
 
-    analytics_config = AnalyticsConfig.from_ycore(
-        session.workspace.path,
-        ycore_config.analytics_data(),
-    )
-    runtime_config = ycore_config.runtime_data()
+    analytics_config = services.analytics_config
     memory_config = ycore_config.memory_data()
     rag_config = ycore_config.rag_data()
     documents_config = ycore_config.documents_data()
@@ -111,58 +374,9 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             dream_config=memory_config.get("dream") or {},
             llm=llm,
         )
-    keyword_index = KeywordIndex()
     rag_enabled = bool(rag_config.get("enabled", True))
-    rag_retrieval = str(rag_config.get("retrieval", "bm25")).lower()
-    if rag_retrieval != "bm25":
-        raise ValueError(
-            f"Unsupported RAG retrieval mode: {rag_retrieval}. "
-            "The minimal RAG pipeline currently supports only bm25."
-        )
-    rag_index_report = {
-        "enabled": rag_enabled,
-        "retrieval": rag_retrieval,
-        "documents": 0,
-        "chunks": 0,
-        "scopes": [],
-        "errors": [],
-    }
-    if rag_enabled and "rag_search" in enabled_tool_names:
-        scope_configs = [
-            (
-                ycore_config.global_config_root(),
-                rag_config.get("globalDir", "data/RAG_knowledge"),
-                "global",
-                False,
-            ),
-            (
-                session.workspace.path,
-                rag_config.get(
-                    "workspaceDir",
-                    ".ycore/memory/RAG_knowledge",
-                ),
-                "workspace",
-                True,
-            ),
-        ]
-        for root_dir, knowledge_dir, scope, create in scope_configs:
-            scope_report = RAGKnowledgeIndex(
-                root_dir,
-                knowledge_dir,
-                scope=scope,
-                chunk_size=int(rag_config.get("chunkSize", 1200)),
-                chunk_overlap=int(rag_config.get("chunkOverlap", 150)),
-                keyword_index=keyword_index,
-                create=create,
-            ).build()
-            rag_index_report["scopes"].append(scope_report)
-            rag_index_report["documents"] += scope_report["documents"]
-            rag_index_report["chunks"] += scope_report["chunks"]
-            rag_index_report["errors"].extend(scope_report["errors"])
-    rag_search_tool = RAGSearchTool(
-        keyword_index,
-        default_top_k=int(rag_config.get("topK", 4)),
-    )
+    rag_index_report = services.rag_index_report
+    rag_search_tool = services.rag_search_tool
     project_instructions = ProjectInstructionLoader(session.workspace.path).load()
     prompt_builder = PromptBuilder(project_instructions=project_instructions)
     intent_router = IntentRouter(
@@ -175,35 +389,26 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
         timeout_seconds=int(runtime_config.get("toolTimeoutSeconds", 30)),
         max_retries=int(runtime_config.get("toolExecutionRetryCount", 1)),
     )
-    recovery_policy = RecoveryPolicy(
-        protocol_retries=int(runtime_config.get("invalidJsonRetryCount", 2)),
-        provider_retries=int(runtime_config.get("providerRetryCount", 1)),
-        verification_retries=int(runtime_config.get("verificationRetryCount", 1)),
-        max_attempts=int(runtime_config.get("maxRecoveryAttempts", 4)),
-        provider_backoff_seconds=float(
-            runtime_config.get("providerRetryBackoffSeconds", 1)
-        ),
+    recovery_policy = RecoveryPolicy.from_runtime_config(runtime_config)
+    token_budget_policy = TokenBudgetPolicy.from_runtime_config(runtime_config)
+    # 原生 function calling 需要两个条件同时满足：runtime.toolCalling 配置
+    # 为 'native'，且 model entry 声明了 toolCalling 能力；否则一律走
+    # json-protocol 文本协议（MiMo 等未标记的模型自动保持旧链路）。
+    tool_calling_mode = str(
+        runtime_config.get("toolCalling", "json-protocol") or "json-protocol"
+    ).strip().lower()
+    native_tool_calling = (
+        tool_calling_mode == "native"
+        and bool(getattr(provider_settings, "tool_calling", False))
     )
+    tool_calling = "native" if native_tool_calling else "json-protocol"
     tool_registry = ToolRegistry()
     def register_enabled(tool):
         if tool.name in enabled_tool_names:
             tool_registry.register(tool)
 
-    register_enabled(MarkdownWriterTool(output_dir=session.workspace.path))
-    register_enabled(WorkspaceFilesTool(session.workspace.path))
-    register_enabled(FileReaderTool(session.workspace.path))
-    register_enabled(WorkspaceWriteTool(session.workspace.path))
-    register_enabled(GitInspectorTool(session.workspace.path))
-    register_enabled(CodeSearchTool(session.workspace.path))
-    register_enabled(CommandReaderTool(session.workspace.path))
-    register_enabled(VerificationRunnerTool(session.workspace.path))
-    register_enabled(
-        WebSearchTool(
-            provider=TavilyWebSearchProvider(
-                api_key=ycore_config.resolve_web_search_api_key()
-            )
-        )
-    )
+    for workspace_tool in services.workspace_tools:
+        register_enabled(workspace_tool)
     if rag_enabled:
         register_enabled(rag_search_tool)
 
@@ -269,65 +474,12 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             token_budget=int(memory_config.get("retrievalTokenBudget", 4_000)),
         )
         tool_registry.register(memory_search_tool)
-    sqlite_tool_names = {
-        "mcp_sqlite_list_tables",
-        "mcp_sqlite_describe_table",
-        "mcp_sqlite_query_readonly",
-    }
-    enabled_sqlite_tools = enabled_tool_names & sqlite_tool_names
-    if analytics_config.sqlite_mcp_enabled and enabled_sqlite_tools:
-        sqlite_client = StdioMCPClient(
-            command=[
-                sys.executable,
-                "-m",
-                "yc_agents.mcp.sqlite_server",
-                "--db",
-                str(analytics_config.db_path),
-                "--workspace",
-                str(session.workspace.path),
-                "--max-rows",
-                str(analytics_config.max_rows),
-            ],
-            server_name="sqlite",
-            timeout_seconds=10,
-        )
-        try:
-            sqlite_client.start()
-        except Exception:
-            pass
-        managed_resources.append(sqlite_client)
-        sqlite_tools = [
-            MCPToolAdapter(
-                name="mcp_sqlite_list_tables",
-                description="List YCore analytics SQLite tables.",
-                server_name="sqlite",
-                tool_name="sqlite.list_tables",
-                client=sqlite_client,
-            ),
-            MCPToolAdapter(
-                name="mcp_sqlite_describe_table",
-                description="Describe one YCore analytics SQLite table.",
-                server_name="sqlite",
-                tool_name="sqlite.describe_table",
-                client=sqlite_client,
-                schema=ToolSchema(
-                    fields=[ToolField(name="table", type="str", required=True)]
-                ),
-            ),
-            MCPToolAdapter(
-                name="mcp_sqlite_query_readonly",
-                description=(
-                    "Run one read-only SELECT query against YCore analytics SQLite."
-                ),
-                server_name="sqlite",
-                tool_name="sqlite.query_readonly",
-                client=sqlite_client,
-                schema=ToolSchema(
-                    fields=[ToolField(name="sql", type="str", required=True)]
-                ),
-            ),
-        ]
-        for sqlite_tool in sqlite_tools:
+    if services.sqlite_client is not None:
+        if runtime_owns_workspace_resources:
+            # 自建 services：MCP 子进程随 runtime.close() 一起关闭，
+            # 维持旧行为；注入的缓存 services 则由 workspace 层持有。
+            managed_resources.append(services.sqlite_client)
+        for sqlite_tool in services.sqlite_tools:
             register_enabled(sqlite_tool)
 
     registered_names = set(tool_registry.tools)
@@ -358,6 +510,10 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
             "rag": rag_index_report,
         },
         enabled_skills=enabled_skill_names,
+        tool_calling=tool_calling,
+        native_tools=(
+            tool_registry.to_openai_schema() if native_tool_calling else None
+        ),
     )
 
     return YCAgentRuntime(
@@ -365,13 +521,18 @@ def build_cli_runtime(session, llm=None, skills_dir=None):
         expects_json=True,
         tool_registry=tool_registry,
         allowed_tools=available_tools,
-        approval_gate=HumanApprovalGate(project_root=session.workspace.path),
+        approval_gate=HumanApprovalGate(
+            project_root=session.workspace.path,
+            mode=ycore_config.approval_mode(),
+        ),
         output_root=session.runs_path,
         tool_policy=tool_policy,
         recovery_policy=recovery_policy,
+        token_budget_policy=token_budget_policy,
         invalid_json_retry_count=int(runtime_config.get("invalidJsonRetryCount", 0)),
         fail_on_invalid_json=bool(runtime_config.get("failOnInvalidJson", False)),
         analytics_recorder=analytics_recorder,
         managed_resources=managed_resources,
         context_limit=provider_config.context_window or 8000,
+        tool_calling=tool_calling,
     )

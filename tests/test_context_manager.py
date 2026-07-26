@@ -68,23 +68,47 @@ class TestContextManager(unittest.TestCase):
             ],
         )
 
-    def test_build_skill_selection_context_includes_memory_and_workspace(self):
+    def test_build_skill_selection_context_slims_memory_and_workspace(self):
         memory = {
-            "session": [{"role": "user", "content": "previous question"}],
+            "session": [
+                {"role": "user", "content": "第一问"},
+                {
+                    "role": "assistant",
+                    "content": "第一答",
+                    "process_entries": [{"type": "assistant_step", "content": "步骤"}],
+                },
+                {"role": "user", "content": "第二问"},
+            ],
             "summary": "Already discussed project structure",
             "profile": {"preferred_output": "concise"},
+            "retrieved": [{"source": "session-0", "text": "old note"}],
         }
 
         result = ContextManager().build_skill_selection_context(
             "continue",
             [make_skill()],
             memory_context=memory,
-            workspace_context={"path": r"E:\project"},
+            workspace_context={
+                "path": r"E:\project",
+                "available_tools": ["file_reader"],
+                "tool_catalog": [{"name": "file_reader", "parameters": {"file_path": "str"}}],
+            },
         )
 
-        self.assertEqual(result["memory"], memory)
+        self.assertEqual(
+            result["memory"]["session"],
+            [
+                {"role": "assistant", "content": "第一答"},
+                {"role": "user", "content": "第二问"},
+            ],
+        )
+        self.assertEqual(result["memory"]["summary"], "Already discussed project structure")
+        self.assertNotIn("profile", result["memory"])
+        self.assertNotIn("retrieved", result["memory"])
         self.assertNotIn("recent_messages", result)
         self.assertEqual(result["workspace"]["path"], r"E:\project")
+        self.assertEqual(result["workspace"]["available_tools"], ["file_reader"])
+        self.assertNotIn("tool_catalog", result["workspace"])
 
     def test_skill_selection_context_can_include_context_report(self):
         manager = ContextManager()

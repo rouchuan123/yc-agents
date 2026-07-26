@@ -384,6 +384,9 @@ class DocxBuilder:
                 f"Published document version already exists: {published}. "
                 "Pass a different output_name to docx_generate instead of deleting user files."
             )
+        # The manifest is the single source of truth for revision metadata;
+        # job.json only keeps a slim index pointing at manifest_path.
+        manifest_path = revision_dir / "artifact-manifest.json"
         manifest = {
             "version": version,
             "base": "template",
@@ -397,10 +400,9 @@ class DocxBuilder:
             "created_at": _now_iso(),
             "qa_passed": False,
             "delivery_ready": False,
+            "manifest_path": str(manifest_path),
         }
-        manifest_path = revision_dir / "artifact-manifest.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-        manifest["manifest_path"] = str(manifest_path)
         self.job_store.add_revision(job_id, manifest)
         self.job_store.update(job_id, status="verifying")
         return {

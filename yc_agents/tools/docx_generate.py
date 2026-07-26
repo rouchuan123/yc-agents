@@ -10,6 +10,7 @@ class DocxGenerateTool(BaseTool):
         "Generation is deterministic: calling it again without changing sections or the contract is "
         "rejected with NO_CONTENT_CHANGE instead of minting an identical version."
     )
+    risk = "write"
     schema = ToolSchema(
         fields=[
             ToolField(name="job_id", type="str", required=True),

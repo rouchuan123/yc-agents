@@ -4,12 +4,40 @@ from yc_agents.core.llm_call import invoke_llm
 from yc_agents.memory.summary import SummaryMemory
 
 
+# CJK ideographs, kana, and hangul cost roughly one token per character;
+# the old len//4 rule undercounted Chinese history 3-4x and the compaction
+# threshold was never reached.
+_CJK_RANGES = (
+    (0x4E00, 0x9FFF),
+    (0x3400, 0x4DBF),
+    (0x3040, 0x30FF),
+    (0x31F0, 0x31FF),
+    (0xAC00, 0xD7AF),
+    (0x1100, 0x11FF),
+    (0xF900, 0xFAFF),
+    (0x20000, 0x3134F),
+)
+
+
+def _is_cjk(code):
+    return any(start <= code <= end for start, end in _CJK_RANGES)
+
+
 def estimate_tokens(value):
     if not value:
         return 0
     if not isinstance(value, str):
         value = json.dumps(value, ensure_ascii=False, sort_keys=True)
-    return max(1, len(value) // 4)
+    cjk_count = ascii_count = other_count = 0
+    for char in value:
+        code = ord(char)
+        if code < 128:
+            ascii_count += 1
+        elif _is_cjk(code):
+            cjk_count += 1
+        else:
+            other_count += 1
+    return max(1, cjk_count + ascii_count // 4 + other_count // 3)
 
 
 class MemoryCompressor:
@@ -144,26 +172,35 @@ class MemoryCompressor:
             return ""
 
     def _deterministic_summary(self, previous_summary, messages, old_tokens):
-        max_chars = max(100, int(old_tokens * 0.78) * 4)
+        # Budget in estimated tokens, not characters, so CJK-heavy history
+        # still compresses below the 0.8 * old_tokens acceptance line.
+        budget = max(25, int(old_tokens * 0.7))
         lines = ["# Conversation Summary"]
         if previous_summary.strip():
             lines.extend(["", "## Previous", previous_summary.strip()])
         lines.extend(["", "## Compacted History"])
-        remaining = max(0, max_chars - len("\n".join(lines)) - 1)
         for message in messages:
             role = str(message.get("role") or "unknown")
             content = str(message.get("content") or "").strip().replace("\n", " ")
             if not content:
                 continue
+            remaining = budget - estimate_tokens("\n".join(lines))
+            if remaining <= 5:
+                break
             entry = f"- {role}: {content}"
-            if len(entry) > remaining:
-                entry = entry[: max(0, remaining - 3)] + "..."
+            if estimate_tokens(entry) > remaining:
+                entry = self._truncate_to_tokens(entry, remaining)
             if entry:
                 lines.append(entry)
-                remaining -= len(entry)
-            if remaining <= 20:
-                break
         return "\n".join(lines).strip()
+
+    @staticmethod
+    def _truncate_to_tokens(text, max_tokens):
+        while text and estimate_tokens(text) > max_tokens:
+            text = text[: len(text) - max(8, len(text) // 5)]
+        if not text:
+            return ""
+        return text.rstrip() + "..."
 
     @staticmethod
     def _result(messages, summary, compacted, compacted_count, estimated_tokens):

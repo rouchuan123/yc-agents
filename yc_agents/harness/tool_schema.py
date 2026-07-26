@@ -15,6 +15,16 @@ TYPE_MAP = {
 }
 
 
+OPENAI_JSON_SCHEMA_TYPES = {
+    "str": "string",
+    "int": "integer",
+    "float": "number",
+    "bool": "boolean",
+    "dict": "object",
+    "list": "array",
+}
+
+
 @dataclass(frozen=True)
 class ToolField:
     name: str
@@ -52,3 +62,33 @@ class ToolSchema:
             raise ToolValidationError(f"Unknown fields: {sorted(extra)}")
 
         return validated
+
+    def to_openai_schema(self):
+        """把字段定义翻译成 OpenAI tools 的 parameters JSON Schema，让原生
+        function calling 与文本协议共用同一份工具契约。"""
+        properties = {}
+        required = []
+
+        for field in self.fields:
+            json_type = OPENAI_JSON_SCHEMA_TYPES.get(field.type)
+            if json_type is None:
+                raise ToolValidationError(
+                    f"Cannot export field {field.name} to an OpenAI schema: "
+                    f"unknown type {field.type}. Use one of "
+                    f"{sorted(OPENAI_JSON_SCHEMA_TYPES)}."
+                )
+            prop = {"type": json_type}
+            if not field.required and field.default is not None:
+                prop["default"] = field.default
+            properties[field.name] = prop
+            if field.required:
+                required.append(field.name)
+
+        schema = {
+            "type": "object",
+            "properties": properties,
+            "additionalProperties": False,
+        }
+        if required:
+            schema["required"] = required
+        return schema

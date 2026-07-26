@@ -1,9 +1,11 @@
 import json
 import shutil
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
+
+from yc_agents.memory.session import read_message_records
 
 
 def _now_iso():
@@ -37,21 +39,46 @@ class CLISessionStore:
         self.runs_dir = workspace.runs_dir
         self.current_session_path = workspace.current_session_path
 
-    def ensure_current_session(self):
+    def ensure_current_session(self, freshness_hours=None):
         current_id = self._read_current_session_id()
         if current_id:
             try:
-                return self.get_session(current_id)
+                session = self.get_session(current_id)
             except FileNotFoundError:
-                pass
+                session = None
+            if session is not None:
+                if self._session_is_stale(session, freshness_hours):
+                    return self.create_session()
+                return session
 
         sessions = self.list_sessions()
         if sessions:
             selected = sorted(sessions, key=lambda session: session.updated_at, reverse=True)[0]
+            if self._session_is_stale(selected, freshness_hours):
+                return self.create_session()
             self._write_current_session_id(selected.id)
             return selected
 
         return self.create_session()
+
+    def _session_is_stale(self, session, freshness_hours):
+        # Startup-only freshness policy: reuse a recent session, but do not
+        # keep piling new turns onto a conversation whose last update is old.
+        # Explicit switch_session never runs this check, and empty sessions
+        # are always reused so restarts do not spawn session garbage.
+        try:
+            hours = float(freshness_hours)
+        except (TypeError, ValueError):
+            return False
+        if hours <= 0:
+            return False
+        if not read_message_records(session.messages_path):
+            return False
+        try:
+            updated = datetime.fromisoformat(session.updated_at)
+        except (TypeError, ValueError):
+            return True
+        return datetime.now() - updated > timedelta(hours=hours)
 
     def create_session(self, title=None):
         session_id = _new_session_id()
@@ -124,11 +151,7 @@ class CLISessionStore:
 
     def load_transcript(self, limit=20):
         session = self.ensure_current_session()
-        if not session.messages_path.exists():
-            return []
-
-        with session.messages_path.open("r", encoding="utf-8") as f:
-            messages = json.load(f)
+        messages = read_message_records(session.messages_path)
 
         turns = []
         for message in messages[-limit:]:
@@ -151,7 +174,7 @@ class CLISessionStore:
         return turns
 
     def _session_from_metadata(self, path, metadata):
-        messages_path = path / "messages.json"
+        messages_path = path / "messages.jsonl"
         message_count = metadata.get("message_count")
         if message_count is None:
             message_count = self._count_messages(messages_path)
@@ -176,11 +199,12 @@ class CLISessionStore:
 
     def _ensure_files(self, session_path):
         session_path.mkdir(parents=True, exist_ok=True)
-        messages_path = session_path / "messages.json"
+        messages_path = session_path / "messages.jsonl"
+        legacy_messages_path = session_path / "messages.json"
         summary_path = session_path / "summary.md"
         profile_path = session_path / "profile.json"
-        if not messages_path.exists():
-            messages_path.write_text("[]", encoding="utf-8")
+        if not messages_path.exists() and not legacy_messages_path.exists():
+            messages_path.write_text("", encoding="utf-8")
         if not summary_path.exists():
             summary_path.write_text("", encoding="utf-8")
         if not profile_path.exists():
@@ -206,7 +230,4 @@ class CLISessionStore:
         return f"新会话 {index}"
 
     def _count_messages(self, messages_path):
-        if not messages_path.exists():
-            return 0
-        with messages_path.open("r", encoding="utf-8") as f:
-            return len(json.load(f))
+        return len(read_message_records(messages_path))

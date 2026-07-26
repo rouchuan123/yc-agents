@@ -24,9 +24,130 @@ JOB_STATUSES = {
     "generating",
     "verifying",
     "waiting_revision",
+    "delivered",
     "completed",
     "failed",
 }
+
+# Legal status transitions. Deliberately generous: re-analysis, source rounds,
+# contract unlocks and the waiting_revision loop may re-enter earlier stages,
+# and delivered jobs may return to revision without losing the delivery record.
+JOB_TRANSITIONS = {
+    "created": {
+        "analyzing_template",
+        "waiting_requirements",
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "failed",
+    },
+    "analyzing_template": {
+        "waiting_requirements",
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "drafting",
+        "failed",
+    },
+    "waiting_requirements": {
+        "analyzing_template",
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "drafting",
+        "verifying",
+        "waiting_revision",
+        "failed",
+    },
+    "waiting_source_confirmation": {
+        "analyzing_template",
+        "waiting_requirements",
+        "waiting_plan_confirmation",
+        "drafting",
+        "generating",
+        "verifying",
+        "waiting_revision",
+        "failed",
+    },
+    "waiting_plan_confirmation": {
+        "analyzing_template",
+        "waiting_requirements",
+        "waiting_source_confirmation",
+        "drafting",
+        "verifying",
+        "waiting_revision",
+        "failed",
+    },
+    "drafting": {
+        "analyzing_template",
+        "waiting_requirements",
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "generating",
+        "verifying",
+        "waiting_revision",
+        "failed",
+    },
+    "generating": {"drafting", "verifying", "waiting_revision", "failed"},
+    "verifying": {
+        "analyzing_template",
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "drafting",
+        "generating",
+        "waiting_revision",
+        "delivered",
+        "completed",
+        "failed",
+    },
+    "waiting_revision": {
+        "analyzing_template",
+        "waiting_plan_confirmation",
+        "waiting_source_confirmation",
+        "drafting",
+        "generating",
+        "verifying",
+        "delivered",
+        "completed",
+        "failed",
+    },
+    "delivered": {
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "waiting_revision",
+        "generating",
+        "verifying",
+        "failed",
+    },
+    "completed": {
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "waiting_revision",
+        "generating",
+        "verifying",
+        "delivered",
+        "failed",
+    },
+    "failed": {
+        "analyzing_template",
+        "waiting_requirements",
+        "waiting_source_confirmation",
+        "waiting_plan_confirmation",
+        "drafting",
+        "generating",
+        "verifying",
+        "waiting_revision",
+    },
+}
+
+# job.json only keeps this slim per-revision index; the full artifact metadata
+# lives in each revision's artifact-manifest.json, which is the single source
+# of truth and gets merged back in by get()/revision().
+REVISION_INDEX_FIELDS = (
+    "version",
+    "docx_sha256",
+    "qa_passed",
+    "delivery_ready",
+    "published_path",
+    "manifest_path",
+)
 
 
 def _now_iso():
@@ -87,6 +208,7 @@ class DocumentJobStore:
             "current_revision": None,
             "revisions": [],
             "qa": {},
+            "delivery": None,
             "created_at": now,
             "updated_at": now,
         }
@@ -116,17 +238,72 @@ class DocumentJobStore:
         if not job_path.exists():
             raise FileNotFoundError(f"Document job not found: {job_id}")
         with job_path.open("r", encoding="utf-8") as handle:
-            return json.load(handle)
+            data = json.load(handle)
+        data["revisions"] = [self._hydrate_revision(item) for item in data.get("revisions") or []]
+        return data
 
-    def update(self, job_id, **changes):
+    def update(self, job_id, expected_updated_at=None, force_status=False, **changes):
         data = self.get(job_id)
+        if expected_updated_at is not None and str(expected_updated_at) != str(data.get("updated_at") or ""):
+            raise ValueError(
+                "CONCURRENT_UPDATE: 作业已被并发修改，请重读后重试。"
+                f"expected updated_at={expected_updated_at}, actual={data.get('updated_at')}."
+            )
         for key, value in changes.items():
-            if key == "status" and value not in JOB_STATUSES:
-                raise ValueError(f"Unsupported document job status: {value}")
+            if key == "status":
+                self._validate_status_transition(data.get("status"), value, force_status)
+            if key == "delivery" and data.get("delivery") and not value:
+                raise ValueError(
+                    "DELIVERY_IMMUTABLE: the recorded delivery cannot be cleared. "
+                    "Append a demotion event with append_delivery_demotion(job_id, reason) instead."
+                )
             data[key] = value
         data["updated_at"] = _now_iso()
         self._write_job(self.root / job_id, data)
         return data
+
+    @staticmethod
+    def _validate_status_transition(current, value, force_status):
+        if value not in JOB_STATUSES:
+            raise ValueError(f"Unsupported document job status: {value}")
+        if force_status or value == current:
+            return
+        allowed = JOB_TRANSITIONS.get(current, set())
+        if value not in allowed:
+            raise ValueError(
+                f"ILLEGAL_STATUS_TRANSITION: the document job is '{current}' and cannot move to "
+                f"'{value}'. Allowed next statuses: {sorted(allowed)}. Follow the normal job flow, "
+                "or pass force_status=True only when recovering a corrupted job."
+            )
+
+    def record_delivery(self, job_id, version, published_path, qa_report_path=None, waivers=None):
+        data = self.get(job_id)
+        version = int(version)
+        self.revision(job_id, version)
+        previous = dict(data.get("delivery") or {})
+        delivery = {
+            "version": version,
+            "published_path": str(published_path),
+            "published_at": _now_iso(),
+            "qa_report_path": str(qa_report_path) if qa_report_path else None,
+            "waivers": list(waivers or []),
+            # Demotion history is append-only and survives re-deliveries.
+            "demotions": list(previous.get("demotions") or []),
+        }
+        return self.update(job_id, delivery=delivery, status="delivered")
+
+    def append_delivery_demotion(self, job_id, reason):
+        data = self.get(job_id)
+        delivery = dict(data.get("delivery") or {})
+        if not delivery:
+            raise ValueError(
+                "NO_DELIVERY_RECORDED: this job has no delivery to demote. "
+                "Record one first with record_delivery(job_id, version, published_path)."
+            )
+        demotions = list(delivery.get("demotions") or [])
+        demotions.append({"reason": str(reason), "at": _now_iso()})
+        delivery["demotions"] = demotions
+        return self.update(job_id, delivery=delivery)
 
     def update_requirements(self, job_id, requirements, pending_questions=None):
         data = self.get(job_id)
@@ -364,6 +541,41 @@ class DocumentJobStore:
         self.get(job_id)
         return self.root / job_id
 
+    def summary_lite(self, data):
+        """Decision-minimal job view for high-frequency tool responses.
+
+        Every tool response is re-sent with the whole context on later steps,
+        so this keeps only what the model needs to decide the next action;
+        fetch the full outline with document_job.get_outline when required.
+        """
+        if data is None:
+            return None
+        pending = list(data.get("pending_questions") or [])
+        delivery = data.get("delivery") or None
+        return {
+            "id": data["id"],
+            "title": data.get("title", ""),
+            "status": data.get("status"),
+            "pending_question_count": len(pending),
+            "pending_questions_head": pending[:3],
+            "plan_confirmed": bool(data.get("plan_confirmed")),
+            "contract_confirmed": bool(data.get("contract_confirmed")),
+            "contract_locked": bool(data.get("contract_locked")),
+            "current_revision": data.get("current_revision"),
+            "revision_count": len(data.get("revisions") or []),
+            "unresolved_confirm_count": len(self.unresolved_confirmation_items(data["id"])),
+            "delivery": (
+                {
+                    "version": delivery.get("version"),
+                    "published_path": delivery.get("published_path"),
+                    "demotion_count": len(delivery.get("demotions") or []),
+                }
+                if delivery
+                else None
+            ),
+            "updated_at": data.get("updated_at"),
+        }
+
     def summary(self, data):
         if data is None:
             return None
@@ -395,11 +607,48 @@ class DocumentJobStore:
                 }
                 for item in data.get("revisions", [])
             ],
+            "delivery": data.get("delivery"),
+            "demotion_count": len((data.get("delivery") or {}).get("demotions") or []),
             "updated_at": data.get("updated_at"),
         }
 
+    @staticmethod
+    def _hydrate_revision(entry):
+        entry = dict(entry or {})
+        manifest_path = entry.get("manifest_path")
+        if not manifest_path or not Path(manifest_path).exists():
+            return entry
+        try:
+            manifest = json.loads(Path(manifest_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return entry
+        if not isinstance(manifest, dict):
+            return entry
+        return {**entry, **manifest, "manifest_path": str(manifest_path)}
+
+    @staticmethod
+    def _slim_qa_record(job_root, key, record):
+        if not isinstance(record, dict):
+            return record
+        report_path = record.get("report_path") or record.get("qa_report_path")
+        if not report_path:
+            match = re.fullmatch(r"v(\d+):([\w-]+)", str(key))
+            if match:
+                name = "qa-report.json" if match.group(2) == "all" else f"qa-report-{match.group(2)}.json"
+                report_path = str(Path(job_root) / "qa" / f"v{int(match.group(1)):03d}" / name)
+        return {"passed": bool(record.get("passed")), "report_path": report_path}
+
     def _write_job(self, job_root, data):
-        self._write_json(job_root / "job.json", data)
+        stored = dict(data)
+        stored["revisions"] = [
+            {key: dict(item or {}).get(key) for key in REVISION_INDEX_FIELDS}
+            for item in stored.get("revisions") or []
+        ]
+        stored["qa"] = {
+            key: self._slim_qa_record(job_root, key, record)
+            for key, record in dict(stored.get("qa") or {}).items()
+        }
+        self._write_json(job_root / "job.json", stored)
 
     @staticmethod
     def _write_json(path, data):

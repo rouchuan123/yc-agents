@@ -1,5 +1,7 @@
 import asyncio
 import os
+import threading
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -21,6 +23,7 @@ from yc_agents.cli.app import (
     build_default_status_collector,
 )
 from yc_agents.cli.status import CLIStatus
+from yc_agents.harness.runtime import RunResult
 
 
 class ClosableRuntime:
@@ -152,6 +155,25 @@ class RetryingProcessEventRuntime:
             }
         )
         yield "最终文档已生成"
+
+
+class RunCompletedRuntime:
+    def __init__(self, result):
+        self.event_callback = None
+        self.result = result
+
+    def stream(self, user_input):
+        yield "最终回答"
+        self.event_callback(
+            {
+                "event_type": "run_completed",
+                "payload": {
+                    "status": self.result.status,
+                    "run_id": self.result.run_id,
+                    "result": self.result,
+                },
+            }
+        )
 
 
 class CancellableRuntime:
@@ -719,6 +741,7 @@ class TestYCAgentsTUIApp(unittest.TestCase):
                 item = list(app.workspace_list.children)[1]
                 app.handle_sidebar_entry_selected(item.entry)
                 await app.sidebar_refresh_task
+                await app.wait_for_runtime_rebuild()
 
                 self.assertEqual(workspace_store.switched_ids, ["workspace-other"])
                 self.assertEqual(app.workspace.id, "workspace-other")
@@ -742,6 +765,7 @@ class TestYCAgentsTUIApp(unittest.TestCase):
                 item = list(app.session_list.children)[1]
                 app.handle_sidebar_entry_selected(item.entry)
                 await app.sidebar_refresh_task
+                await app.wait_for_runtime_rebuild()
 
                 self.assertEqual(session_store.switched_ids, ["session-next"])
                 self.assertEqual(app.transcript_entries, [("You", "old"), ("Assistant", "answer")])
@@ -766,6 +790,93 @@ class TestYCAgentsTUIApp(unittest.TestCase):
         app.key_d()
         self.assertIsNotNone(app.pending_confirmation)
         self.assertEqual(app.pending_confirmation["action"], "session_delete")
+
+    def test_attach_runtime_event_callback_wires_approval_callback(self):
+        runtime = FakeRuntime()
+        app = YCAgentsTUIApp(runtime, status_collector=FakeStatusCollector())
+
+        # 绑定方法每次访问都是新对象，用相等性而非同一性比较。
+        self.assertEqual(runtime.approval_callback, app.handle_approval_request)
+
+    def _wait_for_pending_approval(self, app, timeout=2.0):
+        deadline = time.monotonic() + timeout
+        while app.pending_approval is None and time.monotonic() < deadline:
+            time.sleep(0.01)
+        self.assertIsNotNone(app.pending_approval)
+
+    def test_confirm_command_approves_pending_tool_approval(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        results = []
+
+        def worker():
+            results.append(
+                app.handle_approval_request(
+                    {
+                        "tool_name": "workspace_write",
+                        "risk": "write",
+                        "reason": "写盘操作需要人工批准",
+                    }
+                )
+            )
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            self._wait_for_pending_approval(app)
+            asyncio.run(app.handle_cli_input("/confirm"))
+        finally:
+            thread.join(timeout=2)
+
+        self.assertEqual(results, [True])
+        self.assertIsNone(app.pending_approval)
+        approval_lines = [
+            content for role, content in app.transcript_entries if role == "Approval"
+        ]
+        self.assertTrue(approval_lines)
+        self.assertIn("workspace_write", approval_lines[0])
+        self.assertIn("/confirm", approval_lines[0])
+
+    def test_cancel_command_denies_pending_tool_approval(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        results = []
+
+        def worker():
+            results.append(
+                app.handle_approval_request(
+                    {"tool_name": "verification_runner", "risk": "execute"}
+                )
+            )
+
+        thread = threading.Thread(target=worker)
+        thread.start()
+        try:
+            self._wait_for_pending_approval(app)
+            asyncio.run(app.handle_cli_input("/cancel"))
+        finally:
+            thread.join(timeout=2)
+
+        self.assertEqual(results, [False])
+        self.assertIsNone(app.pending_approval)
+
+    def test_approval_request_times_out_to_denial(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.approval_wait_seconds = 0.05
+
+        result = app.handle_approval_request(
+            {"tool_name": "workspace_write", "risk": "write"}
+        )
+
+        self.assertFalse(result)
+        self.assertIsNone(app.pending_approval)
+
+    def test_cancel_without_pending_approval_keeps_confirmation_flow(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        app.pending_confirmation = {"action": "session_delete", "target": None}
+
+        asyncio.run(app.handle_cli_input("/cancel"))
+
+        self.assertIsNone(app.pending_confirmation)
+        self.assertIn(("Status", "Cancelled."), app.transcript_entries)
 
     def test_prompt_keeps_visible_input_box_and_cursor_style(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
@@ -1119,6 +1230,34 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         asyncio.run(run_app())
 
+    def test_run_completed_event_updates_last_run_result_without_tool_turn(self):
+        async def run_app():
+            result = RunResult(
+                "最终回答",
+                status="finished",
+                run_id="run_20260726_abc",
+                run_dir=Path("outputs/runs/run_20260726_abc"),
+                verification={"passed": True, "checks": []},
+            )
+            app = YCAgentsTUIApp(
+                RunCompletedRuntime(result),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            await app.on_input_submitted(FakeInputEvent("查询结果"))
+            await asyncio.wait_for(app.current_run_task, timeout=1)
+
+            self.assertIs(app.last_run_result, result)
+            status_text = app.render_runtime_status()
+            self.assertIn("Last run: run_20260726_abc (finished)", status_text)
+            self.assertIn("Verification: passed", status_text)
+            speakers = [speaker for speaker, _content in app.transcript_entries]
+            self.assertNotIn("Tool", speakers)
+
+        asyncio.run(run_app())
+
     def test_tool_retry_log_stays_in_process_order(self):
         async def run_app():
             app = YCAgentsTUIApp(
@@ -1365,6 +1504,94 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         self.assertTrue(old_runtime.closed)
         self.assertIs(app.runtime, new_runtime)
+
+    def test_rebuild_runtime_runs_builder_off_event_loop_thread(self):
+        async def run_app():
+            main_thread = threading.get_ident()
+            built_threads = []
+
+            def builder(session):
+                built_threads.append(threading.get_ident())
+                return FakeRuntime()
+
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                session=object(),
+                runtime_builder=builder,
+            )
+
+            app.rebuild_runtime()
+
+            self.assertIsNotNone(app.runtime_rebuild_task)
+            await app.wait_for_runtime_rebuild()
+            self.assertEqual(len(built_threads), 1)
+            self.assertNotEqual(built_threads[0], main_thread)
+
+        asyncio.run(run_app())
+
+    def test_default_runtime_builder_passes_cached_workspace_services(self):
+        sentinel_services = object()
+        fake_runtime = FakeRuntime()
+        workspace = FakeWorkspace()
+
+        with patch("yc_agents.cli.app.build_cli_runtime") as build_mock, patch(
+            "yc_agents.cli.app.get_workspace_services",
+            return_value=sentinel_services,
+        ) as services_mock:
+            build_mock.return_value = fake_runtime
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                workspace=workspace,
+                session=object(),
+            )
+
+            app.rebuild_runtime()
+
+        services_mock.assert_called_once_with(workspace.path)
+        self.assertIs(app.runtime, fake_runtime)
+        self.assertIs(
+            build_mock.call_args.kwargs["workspace_services"],
+            sentinel_services,
+        )
+
+    def test_unmount_releases_cached_workspace_services(self):
+        app = YCAgentsTUIApp(
+            ClosableRuntime(),
+            status_collector=FakeStatusCollector(),
+        )
+
+        with patch(
+            "yc_agents.cli.app.invalidate_workspace_services"
+        ) as invalidate_mock:
+            app.on_unmount()
+
+        invalidate_mock.assert_called_once_with()
+        self.assertTrue(app.runtime.closed)
+
+    def test_workspace_switch_invalidates_departed_workspace_services(self):
+        workspace_store = FakeWorkspaceStore()
+        session_store = FakeSessionStore()
+        departed_path = workspace_store.current.path
+
+        with patch(
+            "yc_agents.cli.app.invalidate_workspace_services"
+        ) as invalidate_mock:
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                workspace_store=workspace_store,
+                workspace=workspace_store.current,
+                session_store=session_store,
+                session=session_store.current,
+                session_store_builder=lambda workspace: session_store,
+                runtime_builder=lambda session: FakeRuntime(),
+            )
+
+            app.switch_workspace("workspace-other")
+
+        invalidate_mock.assert_called_once_with(departed_path)
 
     def test_session_command_opens_interactive_list_and_enter_switches_selection(self):
         session_store = FakeSessionStore()

@@ -16,7 +16,7 @@ __pycache__/
 .superpowers/
 htmlcov/
 tmp/
-.pytest-tmp
+.pytest-tmp*
 
 
 # 运行输出与本地数据

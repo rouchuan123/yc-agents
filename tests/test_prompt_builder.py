@@ -155,10 +155,54 @@ def test_observation_messages_include_execution_context_and_anti_repeat_rules():
     system_prompt = messages[0]["content"]
     payload = json.loads(messages[1]["content"])
     assert payload["execution_context"]["selected_skill"]["name"] == "code-review"
-    assert "Inspect evidence before reporting findings." in messages[1]["content"]
     assert len(payload["observation"]["execution_history"]) == 1
     assert "Never repeat a successful tool call" in system_prompt
     assert "I will read README next" not in system_prompt
+
+
+def test_observation_messages_strip_skill_body_from_execution_context():
+    messages = make_builder().observation_messages(
+        user_input="review this project",
+        memory={"session": [], "summary": "", "profile": {}},
+        workspace_context={"path": "C:/project"},
+        execution_context={
+            "selected_skill": {
+                "name": "code-review",
+                "allowed_tools": ["workspace_files"],
+                "stage_hint": "Skill instructions already sent.",
+                "body": "Inspect evidence before reporting findings.",
+                "scripts": [{"name": "check.py"}],
+            },
+            "allowed_tools": ["workspace_files"],
+            "plain_answer": False,
+        },
+        observation={"tool_result": {"ok": True}},
+    )
+
+    payload = json.loads(messages[1]["content"])
+    selected_skill = payload["execution_context"]["selected_skill"]
+    assert selected_skill == {
+        "name": "code-review",
+        "allowed_tools": ["workspace_files"],
+        "stage_hint": "Skill instructions already sent.",
+    }
+    assert "Inspect evidence before reporting findings." not in messages[1]["content"]
+
+
+def test_observation_messages_default_execution_context_when_missing():
+    messages = make_builder().observation_messages(
+        user_input="list files",
+        memory={"session": [], "summary": "", "profile": {}},
+        workspace_context={"path": "C:/project"},
+        observation={"tool_result": {"files": []}},
+    )
+
+    payload = json.loads(messages[1]["content"])
+    assert payload["execution_context"] == {
+        "selected_skill": None,
+        "available_tools": [],
+        "plain_answer": True,
+    }
 
 
 def test_protocol_repair_messages_include_expected_schema_and_bad_examples():
@@ -185,6 +229,25 @@ def test_protocol_repair_messages_include_expected_schema_and_bad_examples():
     assert user_payload["execution_context"]["selected_skill"]["name"] == "code-review"
     assert user_payload["execution_history"][0]["tool_call"]["tool_name"] == "workspace_files"
     assert user_payload["stage"] == "tool_follow_up"
+
+
+def test_protocol_repair_messages_strip_skill_body_from_execution_context():
+    messages = make_builder().protocol_repair_messages(
+        raw_text="not json",
+        error_message="Model output is not valid JSON",
+        allowed_types={"final_answer", "tool_call"},
+        execution_context={
+            "selected_skill": {
+                "name": "code-review",
+                "body": "Full skill body that JSON repair never needs.",
+            },
+            "plain_answer": False,
+        },
+    )
+
+    user_payload = json.loads(messages[1]["content"])
+    assert user_payload["execution_context"]["selected_skill"] == {"name": "code-review"}
+    assert "Full skill body that JSON repair never needs." not in messages[1]["content"]
 
 
 def test_verification_revision_messages_preserve_context_and_forbid_tools():

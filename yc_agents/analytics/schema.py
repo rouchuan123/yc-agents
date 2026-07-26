@@ -1,4 +1,12 @@
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+
+
+AGENT_RUN_TOKEN_COLUMNS = (
+    ("input_tokens", "INTEGER"),
+    ("output_tokens", "INTEGER"),
+    ("cached_tokens", "INTEGER"),
+    ("total_tokens", "INTEGER"),
+)
 
 
 SCHEMA_SQL = [
@@ -25,7 +33,11 @@ SCHEMA_SQL = [
         tool_call_count INTEGER NOT NULL DEFAULT 0,
         verification_passed INTEGER,
         error_type TEXT,
-        error_message TEXT
+        error_message TEXT,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        cached_tokens INTEGER,
+        total_tokens INTEGER
     )
     """,
     """
@@ -74,10 +86,20 @@ SCHEMA_SQL = [
 ]
 
 
+def _migrate_agent_run_token_columns(conn):
+    # 旧库的 agent_runs 没有 token 列，CREATE TABLE IF NOT EXISTS 不会补列，
+    # 这里按 PRAGMA table_info 检查后 ALTER TABLE 增量迁移。
+    existing = {row[1] for row in conn.execute("PRAGMA table_info(agent_runs)")}
+    for name, column_type in AGENT_RUN_TOKEN_COLUMNS:
+        if name not in existing:
+            conn.execute(f"ALTER TABLE agent_runs ADD COLUMN {name} {column_type}")
+
+
 def initialize_schema(conn):
     conn.execute("PRAGMA journal_mode=WAL")
     for statement in SCHEMA_SQL:
         conn.execute(statement)
+    _migrate_agent_run_token_columns(conn)
     conn.execute(
         """
         INSERT INTO schema_meta(key, value)

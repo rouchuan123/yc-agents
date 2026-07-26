@@ -25,6 +25,29 @@ class ToolRegistry:
         tool = self.get_tool(name)
         return tool.run(*args, **kwargs)
 
+    def to_openai_schema(self):
+        """把注册表导出成 OpenAI tools 数组，供原生 function calling 传给模型。
+        没有声明 schema 的工具导出开放对象参数，由工具自身在运行时校验。"""
+        tools = []
+        for tool in self.tools.values():
+            schema = getattr(tool, "schema", None)
+            parameters = (
+                schema.to_openai_schema()
+                if schema is not None
+                else {"type": "object", "properties": {}}
+            )
+            tools.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "parameters": parameters,
+                    },
+                }
+            )
+        return tools
+
     def list_tools(self):
         tools = []
         for tool in self.tools.values():

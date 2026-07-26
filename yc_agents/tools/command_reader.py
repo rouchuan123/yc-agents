@@ -23,6 +23,7 @@ class CommandReaderTool(BaseTool):
         "Run a tiny allowlist of read-only project inspection commands. "
         "This is a fallback for development analysis, not a free shell."
     )
+    risk = "execute"
     schema = ToolSchema(
         fields=[
             ToolField(name="command_key", type="str", required=True),

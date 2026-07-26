@@ -62,6 +62,48 @@ def test_recorder_starts_run_records_events_and_final_output(tmp_path):
     assert check_row == ("final_output_non_empty", 1)
 
 
+def test_recorder_records_run_level_token_usage(tmp_path):
+    config = AnalyticsConfig(
+        workspace_path=tmp_path,
+        db_path=tmp_path / ".ycore" / "sqlite" / "analytics.sqlite",
+        analytics_enabled=True,
+    )
+    recorder = AnalyticsRecorder(config, session_id="session-1")
+    run = recorder.start_run(FakeContext())
+
+    run.record_token_usage(
+        {
+            "input_tokens": 120,
+            "output_tokens": 80,
+            "cached_tokens": 20,
+            "total_tokens": 200,
+        }
+    )
+    run.finish("finished", finished_at="2026-06-28T10:00:02")
+
+    with sqlite3.connect(config.db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT input_tokens, output_tokens, cached_tokens, total_tokens
+            FROM agent_runs
+            """
+        ).fetchone()
+
+    assert row == (120, 80, 20, 200)
+
+
+def test_null_run_analytics_accepts_token_usage(tmp_path):
+    config = AnalyticsConfig(
+        workspace_path=tmp_path,
+        db_path=tmp_path / ".ycore" / "sqlite" / "analytics.sqlite",
+        analytics_enabled=False,
+    )
+    recorder = AnalyticsRecorder(config, session_id="session-1")
+    run = recorder.start_run(FakeContext())
+
+    assert run.record_token_usage({"total_tokens": 10}) is None
+
+
 def test_recorder_strict_mode_raises_write_errors(tmp_path):
     config = AnalyticsConfig(
         workspace_path=tmp_path,

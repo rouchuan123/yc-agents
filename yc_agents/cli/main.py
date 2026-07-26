@@ -10,6 +10,7 @@ from yc_agents.cli.runtime_factory import build_cli_runtime
 from yc_agents.cli.sessions import CLISessionStore
 from yc_agents.cli.workspaces import WorkspaceStore
 from yc_agents.config.paths import env_template_path, source_checkout_root, ycore_home
+from yc_agents.config.ycore import YCoreConfig
 from yc_agents.tools.mcp_adapter import MCPToolAdapter
 from yc_agents.tools.mcp_client import MCPClientConfig
 
@@ -97,11 +98,20 @@ def build_mcp_tools(config_path="mcp_servers.json", client=None):
     return tools
 
 
+def session_freshness_hours(workspace):
+    # memory.sessionFreshnessHours: reuse the last session at startup only
+    # when it was updated recently; 0/null disables rotation.
+    memory_config = YCoreConfig.load(workspace.path).memory_data()
+    return memory_config.get("sessionFreshnessHours", 12)
+
+
 def build_runtime(startup_dir=None):
     startup_dir = Path(startup_dir or Path.cwd()).resolve()
     workspace_store = WorkspaceStore(startup_dir=startup_dir)
     workspace = workspace_store.add_workspace(startup_dir)
-    session = CLISessionStore(workspace).ensure_current_session()
+    session = CLISessionStore(workspace).ensure_current_session(
+        freshness_hours=session_freshness_hours(workspace)
+    )
     return build_cli_runtime(session)
 
 
@@ -113,7 +123,9 @@ def main(argv=None):
     workspace_store = WorkspaceStore(startup_dir=startup_dir)
     workspace = workspace_store.add_workspace(startup_dir)
     session_store = CLISessionStore(workspace)
-    session = session_store.ensure_current_session()
+    session = session_store.ensure_current_session(
+        freshness_hours=session_freshness_hours(workspace)
+    )
     runtime = build_cli_runtime(session)
     run_tui(
         runtime,

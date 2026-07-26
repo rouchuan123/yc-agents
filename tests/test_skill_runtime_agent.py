@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
+from yc_agents.harness.json_protocol import InvalidModelJSONError
 from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.memory.session import SessionMemory
 from yc_agents.prompts.builder import PromptBuilder
@@ -147,6 +148,35 @@ class FakeIntentRouter:
                 }
             ],
         }
+
+
+class SkipAwareIntentRouter(FakeIntentRouter):
+    def __init__(self):
+        super().__init__()
+        self.skip_flags = []
+
+    def route(self, user_input, skills, allow_llm_skip=False):
+        self.skip_flags.append(allow_llm_skip)
+        return super().route(user_input, skills)
+
+
+class CountingSessionMemory(SessionMemory):
+    def __init__(self, file_path):
+        super().__init__(file_path=file_path)
+        self.load_calls = 0
+
+    def load(self):
+        self.load_calls += 1
+        return super().load()
+
+
+class CountingLongTermMemory:
+    def __init__(self):
+        self.search_calls = []
+
+    def search(self, query, top_k=6, token_budget=4_000, exclude_session_id=None):
+        self.search_calls.append(query)
+        return [{"source": "session-1", "text": "past note"}]
 
 
 class TestSkillRuntimeAgent(unittest.TestCase):
@@ -297,8 +327,19 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(response, "Plain answer")
             self.assertEqual(saved_messages[-1]["content"], "Plain answer")
 
-    def test_runtime_treats_plain_skill_selection_output_as_final_answer(self):
-        llm = FakeLLM(["I can review code, read files, and run safe checks."])
+    def test_runtime_never_returns_raw_skill_selection_text_as_final_answer(self):
+        llm = FakeLLM(
+            [
+                "I can review code, read files, and run safe checks.",
+                "still not valid selection JSON",
+                json.dumps(
+                    {
+                        "type": "final_answer",
+                        "content": "我可以进行代码审查、读取文件并运行安全检查。",
+                    }
+                ),
+            ]
+        )
         agent = SkillRuntimeAgent(llm)
         runtime = YCAgentRuntime(
             agent,
@@ -308,8 +349,61 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
         response = runtime.run("what skills do you have?")
 
-        self.assertEqual(response, "I can review code, read files, and run safe checks.")
-        self.assertEqual(len(llm.messages), 1)
+        self.assertEqual(response, "我可以进行代码审查、读取文件并运行安全检查。")
+        self.assertEqual(len(llm.messages), 3)
+
+    def test_invalid_skill_selection_repairs_once_then_runs_selected_skill(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    "我觉得应该用 code-review 来处理",
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "repaired",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "审查完成"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+            )
+
+            response = agent.run("review this project")
+
+            self.assertEqual(json.loads(response)["content"], "审查完成")
+            self.assertEqual(len(llm.messages), 3)
+            repair_prompt = llm.messages[1][0]["content"]
+            self.assertIn("JSON protocol repairer", repair_prompt)
+            self.assertIn("skill_selection", repair_prompt)
+
+    def test_skill_selection_repair_failure_falls_back_to_plain_answer(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            llm = FakeLLM(
+                [
+                    "plain text instead of selection JSON",
+                    "still not JSON",
+                    json.dumps({"type": "final_answer", "content": "直接回答"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=Path(tmp_dir) / "skills",
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+            )
+
+            response = agent.run("hello")
+
+            self.assertEqual(json.loads(response)["content"], "直接回答")
+            self.assertNotIn("plain text instead of selection JSON", response)
+            self.assertEqual(len(llm.messages), 3)
 
     def test_runtime_agent_saves_structured_process_entries_to_session_memory(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -418,7 +512,8 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             self.assertEqual(response, "Audit note saved.")
             self.assertTrue((output_dir / "audit_note.md").exists())
             self.assertEqual(len(llm.messages), 3)
-            self.assertIn("tool_result", llm.messages[2][1]["content"])
+            # 工具结果通过追加的观察增量消息（列表末尾）送达模型。
+            self.assertIn("tool_result", llm.messages[2][-1]["content"])
 
     def test_project_analysis_flow_saves_process_entries_and_final_answer(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -521,7 +616,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         self.assertNotIn("Do not wrap final answers in JSON", system_prompt)
         self.assertIn("If another tool is needed", system_prompt)
 
-    def test_observation_prompt_keeps_full_selected_skill_context(self):
+    def test_observation_execution_context_is_compact_without_skill_body(self):
         llm = FakeLLM([json.dumps({"type": "final_answer", "content": "done"})])
         agent = SkillRuntimeAgent(
             llm,
@@ -549,15 +644,84 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         selected_skill = payload["execution_context"]["selected_skill"]
         self.assertEqual(selected_skill["name"], "code-review")
         self.assertEqual(
-            selected_skill["body"],
-            "Read the project, trace a critical path, then report evidence.",
+            selected_skill["allowed_tools"],
+            ["workspace_files", "file_reader"],
         )
+        self.assertNotIn("body", selected_skill)
+        self.assertIn("first execution message", selected_skill["stage_hint"])
+        self.assertNotIn("trace a critical path", llm.messages[0][1]["content"])
         self.assertEqual(
             payload["execution_context"]["available_tools"],
             ["workspace_files", "file_reader"],
         )
 
-    def test_verification_revision_keeps_skill_context_and_execution_history(self):
+    def test_skill_body_appears_only_in_first_execution_message(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "started"}),
+                    json.dumps({"type": "final_answer", "content": "finished"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+            )
+
+            agent.run("review this project")
+            agent.run_with_observation(
+                "review this project",
+                {
+                    "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                    "tool_result": {"files": [{"path": "app.py"}]},
+                    "execution_history": [],
+                },
+            )
+
+            body_line = "Summarize the project structure, architecture, risks, and test gaps."
+            self.assertIn(body_line, llm.messages[1][1]["content"])
+            # 追加式轮消息：观察步只在冻结前缀之后追加增量，技能正文在
+            # 整轮消息里出现且仅出现一次，绝不在增量消息中重发。
+            observation_call = llm.messages[2]
+            serialized = json.dumps(observation_call, ensure_ascii=False)
+            self.assertEqual(serialized.count(body_line), 1)
+            self.assertNotIn(body_line, observation_call[-1]["content"])
+
+    def test_protocol_repair_messages_do_not_carry_skill_body(self):
+        llm = FakeLLM([json.dumps({"type": "final_answer", "content": "repaired"})])
+        agent = SkillRuntimeAgent(llm)
+        agent._set_skill_tool_context(
+            SkillDefinition(
+                name="code-review",
+                description="Review a local project.",
+                allowed_tools=["workspace_files"],
+                body="FULL SKILL BODY TEXT",
+            )
+        )
+
+        agent.run_with_protocol_error(
+            "review this project",
+            InvalidModelJSONError("Model output is not valid JSON", raw_text="oops"),
+            expectation={"allowed_types": ["final_answer"]},
+        )
+
+        user_payload = llm.messages[0][1]["content"]
+        self.assertNotIn("FULL SKILL BODY TEXT", user_payload)
+        payload = json.loads(user_payload)
+        self.assertEqual(payload["execution_context"]["selected_skill"], "code-review")
+
+    def test_verification_revision_keeps_compact_skill_context_and_execution_history(self):
         llm = FakeLLM([json.dumps({"type": "final_answer", "content": "revised"})])
         agent = SkillRuntimeAgent(
             llm,
@@ -588,10 +752,8 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         payload = json.loads(llm.messages[0][1]["content"])
         self.assertEqual(json.loads(response)["content"], "revised")
         self.assertEqual(payload["execution_context"]["selected_skill"]["name"], "code-review")
-        self.assertEqual(
-            payload["execution_context"]["selected_skill"]["body"],
-            "Read evidence and report findings by severity.",
-        )
+        self.assertNotIn("body", payload["execution_context"]["selected_skill"])
+        self.assertNotIn("Read evidence and report findings by severity.", llm.messages[0][1]["content"])
         self.assertEqual(payload["execution_context"]["available_tools"], ["workspace_files", "file_reader"])
         self.assertEqual(payload["execution_history"], history)
 
@@ -708,6 +870,229 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         self.assertNotIn("docx" + "_format" + "_normalizer", plain_prompt)
         self.assertNotIn("Word document automation", plain_prompt)
         self.assertNotIn("论文", plain_prompt)
+
+    def test_memory_context_is_loaded_once_per_turn_and_reused_by_observations(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            memory = CountingSessionMemory(Path(tmp_dir) / "session.json")
+            long_term = CountingLongTermMemory()
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "plain"}),
+                    json.dumps({"type": "final_answer", "content": "after obs 1"}),
+                    json.dumps({"type": "final_answer", "content": "after obs 2"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=Path(tmp_dir) / "skills",
+                session_memory=memory,
+                long_term_memory=long_term,
+            )
+            observation = {
+                "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                "tool_result": {"files": []},
+                "execution_history": [],
+            }
+
+            agent.run("分析项目")
+            agent.run_with_observation("分析项目", observation)
+            agent.run_with_observation("分析项目", observation)
+
+            self.assertEqual(memory.load_calls, 1)
+            self.assertEqual(long_term.search_calls, ["分析项目"])
+            observation_payload = json.loads(llm.messages[2][1]["content"])
+            self.assertEqual(
+                observation_payload["memory"]["retrieved"],
+                [{"source": "session-1", "text": "past note"}],
+            )
+
+    def test_remember_turn_invalidates_turn_memory_cache(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            memory = CountingSessionMemory(Path(tmp_dir) / "session.json")
+            long_term = CountingLongTermMemory()
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "plain"}),
+                    json.dumps({"type": "final_answer", "content": "after turn"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=Path(tmp_dir) / "skills",
+                session_memory=memory,
+                long_term_memory=long_term,
+            )
+            observation = {
+                "tool_call": {"tool_name": "workspace_files", "arguments": {}},
+                "tool_result": {"files": []},
+                "execution_history": [],
+            }
+
+            agent.run("分析项目")
+            agent.remember_turn("分析项目", "回答")
+            agent.run_with_observation("分析项目", observation)
+
+            self.assertEqual(long_term.search_calls, ["分析项目", "分析项目"])
+
+    def test_next_turn_continuation_reuses_previous_skill_without_reselection(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir)
+            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "第一轮完成"}),
+                    json.dumps({"type": "final_answer", "content": "继续完成"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+            )
+
+            agent.run("review this project")
+            response = agent.run("继续下一步")
+
+            self.assertEqual(json.loads(response)["content"], "继续完成")
+            self.assertEqual(len(llm.messages), 3)
+            second_turn_payload = json.loads(llm.messages[2][1]["content"])
+            self.assertEqual(second_turn_payload["task"], "skill_execution")
+            self.assertEqual(second_turn_payload["selected_skill"]["name"], "code-review")
+            self.assertTrue(second_turn_payload["selection"].get("sticky"))
+
+    def test_continuation_mentioning_other_skill_reselects(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir)
+            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "code-review",
+                            "confidence": 0.9,
+                            "reason": "selected",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "第一轮完成"}),
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "eval-writer",
+                            "confidence": 0.9,
+                            "reason": "switch",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "评估完成"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+            )
+
+            agent.run("review this project")
+            response = agent.run("接下来用 eval-writer 帮我写评估")
+
+            self.assertEqual(json.loads(response)["content"], "评估完成")
+            self.assertEqual(len(llm.messages), 4)
+            second_selection_payload = json.loads(llm.messages[2][1]["content"])
+            self.assertEqual(second_selection_payload["task"], "skill_selection")
+
+    def test_plain_turn_does_not_stick_to_any_skill(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir)
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "第一轮"}),
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain again",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "第二轮"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+            )
+
+            agent.run("hello")
+            agent.run("继续")
+
+            self.assertEqual(len(llm.messages), 4)
+            second_selection_payload = json.loads(llm.messages[2][1]["content"])
+            self.assertEqual(second_selection_payload["task"], "skill_selection")
+
+    def test_agent_enables_llm_skip_when_router_supports_it(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            router = SkipAwareIntentRouter()
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": "eval-writer",
+                            "confidence": 0.9,
+                            "reason": "route",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "评估方案"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+                intent_router=router,
+            )
+
+            agent.run("帮我写 eval")
+
+            self.assertEqual(router.skip_flags, [True])
 
     def test_skill_runtime_agent_uses_intent_router_for_candidate_order(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1031,8 +1416,104 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             response = runtime.run("review python file")
 
             self.assertEqual(response, "read app.py")
-            observation_payload = json.loads(llm.messages[2][1]["content"])
+            observation_payload = json.loads(llm.messages[2][-1]["content"])
             self.assertIn("def handler", observation_payload["observation"]["tool_result"]["text"])
+
+    def test_memory_prompt_strips_process_entries_but_file_keeps_them(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            memory_file = Path(tmp_dir) / "session.json"
+            seeded = SessionMemory(file_path=memory_file)
+            seeded.add_message("user", "分析项目")
+            seeded.add_structured_message(
+                "assistant",
+                "最终分析",
+                process_entries=[
+                    {
+                        "type": "tool_result",
+                        "tool_name": "workspace_files",
+                        "summary": "找到 7 个文件。",
+                    }
+                ],
+            )
+            seeded.save()
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "好的"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=Path(tmp_dir) / "skills",
+                session_memory=SessionMemory(file_path=memory_file),
+            )
+
+            agent.run("hello")
+
+            payload = json.loads(llm.messages[-1][-1]["content"])
+            session_messages = payload["memory"]["session"]
+            self.assertEqual(
+                session_messages[-1],
+                {"role": "assistant", "content": "最终分析"},
+            )
+            for message in session_messages:
+                self.assertNotIn("process_entries", message)
+            saved = json.loads(memory_file.read_text(encoding="utf-8"))
+            self.assertIn("process_entries", saved[-1])
+
+    def test_compaction_persists_process_entries_while_prompt_stays_clean(self):
+        from yc_agents.memory.compressor import MemoryCompressor
+        from yc_agents.memory.summary import SummaryMemory
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            memory_file = Path(tmp_dir) / "session.json"
+            seeded = SessionMemory(file_path=memory_file)
+            for index in range(3):
+                seeded.add_message("user", f"问题{index}:" + "x" * 200)
+                seeded.add_structured_message(
+                    "assistant",
+                    f"回答{index}:" + "x" * 200,
+                    process_entries=[{"type": "assistant_step", "content": "看文件"}],
+                )
+            seeded.save()
+            llm = FakeLLM(
+                [
+                    json.dumps(
+                        {
+                            "type": "skill_selection",
+                            "selected_skill": None,
+                            "confidence": 0.1,
+                            "reason": "plain",
+                        }
+                    ),
+                    json.dumps({"type": "final_answer", "content": "好的"}),
+                ]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=Path(tmp_dir) / "skills",
+                session_memory=SessionMemory(file_path=memory_file),
+                memory_compressor=MemoryCompressor(
+                    summary_memory=SummaryMemory(Path(tmp_dir) / "summary.md")
+                ),
+                memory_config={"activeContextMaxTokens": 1},
+            )
+
+            agent.run("hello")
+
+            saved = json.loads(memory_file.read_text(encoding="utf-8"))
+            self.assertLess(len(saved), 6)
+            self.assertTrue(any("process_entries" in message for message in saved))
+            payload = json.loads(llm.messages[-1][-1]["content"])
+            for message in payload["memory"]["session"]:
+                self.assertNotIn("process_entries", message)
 
 
 if __name__ == "__main__":

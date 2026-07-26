@@ -23,7 +23,7 @@ class PromptBuilder:
             },
         ]
 
-    def plain_answer_messages(self, user_input, memory, workspace_context):
+    def plain_answer_messages(self, user_input, memory, workspace_context, native_tools=False):
         return [
             {
                 "role": "system",
@@ -31,8 +31,9 @@ class PromptBuilder:
                     [
                         self._core_identity(),
                         self._workspace_protocol(),
-                        self._tool_protocol(),
-                        self._runtime_json_protocol(),
+                        self._tool_protocol_section(native_tools),
+                        self._answer_protocol_section(native_tools),
+                        self._turn_loop_protocol_section(native_tools),
                         self._truthfulness_protocol(),
                         self._project_instruction_section(),
                     ]
@@ -52,7 +53,7 @@ class PromptBuilder:
             },
         ]
 
-    def skill_execution_messages(self, context):
+    def skill_execution_messages(self, context, native_tools=False):
         return [
             {
                 "role": "system",
@@ -60,11 +61,12 @@ class PromptBuilder:
                     [
                         self._core_identity(),
                         self._workspace_protocol(),
-                        self._tool_protocol(),
-                        self._runtime_json_protocol(),
+                        self._tool_protocol_section(native_tools),
+                        self._answer_protocol_section(native_tools),
+                        self._turn_loop_protocol_section(native_tools),
                         self._truthfulness_protocol(),
                         self._project_instruction_section(),
-                        self._skill_execution_protocol(),
+                        self._skill_execution_protocol_section(native_tools),
                     ]
                 ),
             },
@@ -74,16 +76,16 @@ class PromptBuilder:
             },
         ]
 
-    def retry_skill_execution_messages(self, user_input, context):
+    def retry_skill_execution_messages(self, user_input, context, native_tools=False):
         return [
             {
                 "role": "system",
                 "content": self._compose_system_prompt(
                     [
                         self._core_identity(),
-                        self._runtime_json_protocol(),
+                        self._answer_protocol_section(native_tools),
                         self._project_instruction_section(),
-                        self._retry_protocol(),
+                        self._retry_protocol_section(native_tools),
                     ]
                 ),
             },
@@ -130,7 +132,8 @@ class PromptBuilder:
                         "user_input": user_input,
                         "memory": memory,
                         "workspace": workspace_context or {},
-                        "execution_context": execution_context or {
+                        "execution_context": self._compact_execution_context(execution_context)
+                        or {
                             "selected_skill": None,
                             "available_tools": [],
                             "plain_answer": True,
@@ -142,6 +145,43 @@ class PromptBuilder:
                 ),
             },
         ]
+
+    def observation_delta_message(self, observation):
+        # 追加式轮内消息：观察增量只带最新一步的 tool_call/tool_result。
+        # 更早的历史已经作为消息前缀发出过，重发一遍只会击穿前缀缓存。
+        return {
+            "role": "user",
+            "content": json.dumps(
+                {"observation": observation},
+                ensure_ascii=False,
+                indent=2,
+            ),
+        }
+
+    def budget_notice_message(self, notice):
+        # 软预算收敛提示是一次性的独立 user 消息，只追加、不改写前缀。
+        return {"role": "user", "content": str(notice)}
+
+    def folded_history_message(self, entries):
+        # 折叠消息替换最老的一批工具交换对；内容紧凑且此后保持不变，
+        # 折叠完成之后它本身就是新稳定前缀的一部分。
+        return {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "folded_history_summary": {
+                        "note": (
+                            "Older tool exchanges were folded into this compact "
+                            "summary to keep the context small. Treat every entry "
+                            "as completed evidence and never repeat these calls."
+                        ),
+                        "entries": entries,
+                    }
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+        }
 
     def protocol_repair_messages(
         self,
@@ -171,7 +211,7 @@ class PromptBuilder:
                         "allowed_types": allowed,
                         "raw_text": raw_text,
                         "stage": stage,
-                        "execution_context": execution_context or {},
+                        "execution_context": self._compact_execution_context(execution_context),
                         "execution_history": execution_history or [],
                     },
                     ensure_ascii=False,
@@ -220,6 +260,20 @@ class PromptBuilder:
 
     def _compose_system_prompt(self, sections):
         return "\n\n".join(section for section in sections if section)
+
+    def _compact_execution_context(self, execution_context):
+        # Observation and repair steps only need to know which skill is
+        # active; the full skill body already went out in the first
+        # execution message and must not be resent on every step.
+        context = dict(execution_context or {})
+        selected = context.get("selected_skill")
+        if isinstance(selected, dict):
+            context["selected_skill"] = {
+                key: selected[key]
+                for key in ("name", "allowed_tools", "stage_hint")
+                if key in selected
+            }
+        return context
 
     def _core_identity(self):
         return (
@@ -301,6 +355,91 @@ class PromptBuilder:
             '- web_search example: {"type":"tool_call","message":"I will search for current sources first.","tool_name":"web_search","arguments":{"query":"latest Python packaging changes","max_results":5},"reason":"Search current web information"}'
         )
 
+    # ------------------------------------------------------------------
+    # 协议段选择器：native 模式换成精简版（不再教 JSON 工具调用格式，只保留
+    # final answer 与行为约束说明）；json-protocol 模式文本保持原样不变。
+    # ------------------------------------------------------------------
+
+    def _tool_protocol_section(self, native_tools):
+        return self._native_tool_protocol() if native_tools else self._tool_protocol()
+
+    def _answer_protocol_section(self, native_tools):
+        return (
+            self._native_answer_protocol()
+            if native_tools
+            else self._runtime_json_protocol()
+        )
+
+    def _turn_loop_protocol_section(self, native_tools):
+        return (
+            self._native_turn_loop_protocol()
+            if native_tools
+            else self._turn_loop_protocol()
+        )
+
+    def _skill_execution_protocol_section(self, native_tools):
+        return (
+            self._native_skill_execution_protocol()
+            if native_tools
+            else self._skill_execution_protocol()
+        )
+
+    def _retry_protocol_section(self, native_tools):
+        return self._native_retry_protocol() if native_tools else self._retry_protocol()
+
+    def _native_tool_protocol(self):
+        return (
+            "Tool protocol (native function calling):\n"
+            "- Tools are provided through the platform tool-calling interface together with their parameter schemas; call them there and never write tool-call JSON in your reply text.\n"
+            "- workspace.available_tools is the complete enabled tool-name list for this run; never call a tool that is not listed there.\n"
+            "- When web_search is available, use it for current, recent, latest, external, or web information.\n"
+            "- When workspace_write is available, use it only when the user explicitly asks to create, modify, or append a workspace file.\n"
+            "- Read an existing file before editing it and prefer an exact replace operation over rewriting the whole file.\n"
+            "- Use memory_search when the automatically retrieved memory is insufficient; use rag_search for workspace knowledge-base questions and cite the returned source paths.\n"
+            "\n"
+            "Tool priority:\n"
+            "1. workspace_files / code_search for project maps, symbol search, call-chain search, and file slices.\n"
+            "2. file_reader for full small files and document previews.\n"
+            "3. git_inspector for Git evidence.\n"
+            "4. verification_runner for allowlisted verification commands.\n"
+            "5. command_reader only as a fallback when the higher-level tools cannot express the read-only inspection."
+        )
+
+    def _native_answer_protocol(self):
+        return (
+            "Final answer protocol (native function calling):\n"
+            "- When another tool step is needed, issue a tool call; any assistant text alongside it is a short user-visible progress note.\n"
+            "- When the task is complete, reply with the final user-facing answer as plain text.\n"
+            "- Never wrap the final answer in protocol JSON and never print tool-call JSON in your reply text; plain text is the final answer."
+        )
+
+    def _native_turn_loop_protocol(self):
+        return (
+            "Turn conversation protocol (native function calling):\n"
+            '- Each tool result arrives as a role:"tool" message bound to your tool call id.\n'
+            "- Earlier messages in this conversation are the authoritative execution history; treat successful tool results already shown as known evidence.\n"
+            "- A folded_history_summary user message may replace older tool exchanges; treat its entries as completed calls and never repeat them.\n"
+            "- Never repeat a successful tool call with the same or equivalent arguments."
+        )
+
+    def _native_skill_execution_protocol(self):
+        return (
+            "Skill execution protocol:\n"
+            "- Follow the selected skill instructions when answering the user.\n"
+            "- The selected skill provides workflow guidance, not tool permissions.\n"
+            "- Call any tool listed in workspace.available_tools through the tool-calling interface when it helps complete the task.\n"
+            "- When the task is complete, reply with the final answer as plain text."
+        )
+
+    def _native_retry_protocol(self):
+        return (
+            "Skill retry protocol:\n"
+            "- Skill selection is already complete; execute the selected_skill.\n"
+            "- Do not return skill_selection JSON again.\n"
+            "- If a tool is needed, call it through the tool-calling interface.\n"
+            "- If no tool is needed, reply with the final answer as plain text."
+        )
+
     def _truthfulness_protocol(self):
         return (
             "Truthfulness rules:\n"
@@ -365,6 +504,20 @@ class PromptBuilder:
             "- Do not return skill_selection JSON again.\n"
             "- If a tool is needed, return only valid tool_call JSON.\n"
             "- If no tool is needed, return final_answer JSON."
+        )
+
+    def _turn_loop_protocol(self):
+        return (
+            "Turn conversation protocol:\n"
+            "- After each tool call, the result arrives as an appended user message "
+            'shaped like {"observation":{"tool_call":...,"tool_result":...}}.\n'
+            "- Earlier messages in this conversation are the authoritative execution "
+            "history; treat successful tool results already shown as known evidence.\n"
+            "- A folded_history_summary user message may replace older tool exchanges; "
+            "treat its entries as completed calls and never repeat them.\n"
+            "- Never repeat a successful tool call with the same or equivalent arguments.\n"
+            "- If another tool is needed, return only valid tool_call JSON; "
+            "if the task is complete, return final_answer JSON."
         )
 
     def _observation_protocol(self):

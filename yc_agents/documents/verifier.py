@@ -98,10 +98,22 @@ class DocxVerifier:
         findings.extend(self._font_findings(spec))
 
         pdf_path = qa_dir / "document.pdf"
+        pages_dir = qa_dir / "pages"
         page_images = []
-        render_result = None
+        render_summary = None
         if mode in {"all", "render", "visual"}:
-            if self.broker is None:
+            docx_sha256 = sha256_file(docx_path)
+            cached_render = self._load_render_cache(qa_dir, docx_sha256)
+            if cached_render is not None:
+                # 同一 DOCX 内容已渲染过：直接复用 PDF、页图与几何/页码结论，
+                # 跳过 Word 渲染子进程。
+                render_summary = {**dict(cached_render.get("render") or {}), "cache_hit": True}
+                page_images = [Path(item) for item in cached_render.get("page_images") or []]
+                findings.extend(cached_render.get("findings") or [])
+                artifacts.append(str(pdf_path))
+                if page_images:
+                    artifacts.append(str(pages_dir))
+            elif self.broker is None:
                 findings.append(
                     self._finding(
                         "blocking",
@@ -113,28 +125,69 @@ class DocxVerifier:
                 )
             else:
                 render_result = self.broker.run("word_export_pdf", docx_path, pdf_path)
-                (qa_dir / "render-result.json").write_text(
+                render_result_path = qa_dir / "render-result.json"
+                render_result_path.write_text(
                     json.dumps(render_result, ensure_ascii=False, indent=2), encoding="utf-8"
                 )
-                if not render_result["ok"]:
+                # The report keeps only the decision-minimal render view; the
+                # full stdout/stderr diagnostics stay in render-result.json.
+                render_summary = {
+                    "ok": bool(render_result.get("ok")),
+                    "returncode": render_result.get("exit_code"),
+                    "artifacts": [str(pdf_path)] if render_result.get("ok") else [],
+                    "stdout_tail": (render_result.get("stdout") or "")[-500:],
+                    "stderr_tail": (render_result.get("stderr") or "")[-500:],
+                    "result_path": str(render_result_path),
+                }
+                # broker 的安全声明只是声明（enforced=false）；渲染子进程
+                # 报告的安全设置降级要浮出成 environment 类 warning。
+                security_findings = self._security_degradation_findings(render_result)
+                if security_findings:
+                    render_summary["security_degraded"] = [
+                        str(item)
+                        for item in render_result.get("security_degraded") or []
+                    ]
+                findings.extend(security_findings)
+                if not render_result.get("ok"):
                     findings.append(
                         self._finding(
                             "blocking",
                             "renderer",
-                            render_result.get("stderr")
-                            or render_result.get("stdout")
+                            render_summary["stderr_tail"]
+                            or render_summary["stdout_tail"]
                             or "Word PDF导出失败",
+                            f"完整渲染诊断见 {render_result_path}",
                         )
                     )
                 else:
                     artifacts.append(str(pdf_path))
-                    page_images, geometry_findings = self._render_pdf_pages(pdf_path, qa_dir / "pages")
+                    page_images, geometry_findings = self._render_pdf_pages(pdf_path, pages_dir)
+                    page_number_findings = self._page_number_findings(pdf_path)
                     findings.extend(geometry_findings)
-                    findings.extend(self._page_number_findings(pdf_path))
-                    artifacts.extend(str(path) for path in page_images)
+                    findings.extend(page_number_findings)
+                    if page_images:
+                        artifacts.append(str(pages_dir))
+                        self._save_render_cache(
+                            qa_dir,
+                            docx_sha256,
+                            pdf_path,
+                            page_images,
+                            geometry_findings
+                            + page_number_findings
+                            + security_findings,
+                            render_summary,
+                        )
 
         if mode in {"all", "visual"} and page_images:
-            vision = self.vision_service.inspect_pages(page_images, template_summary=self._template_summary(spec)) if self.vision_service else {"available": False, "findings": []}
+            vision = (
+                self.vision_service.inspect_pages(
+                    page_images,
+                    template_summary=self._template_summary(spec),
+                    cache_path=self.job_store.job_root(job_id) / "vision-cache.json",
+                )
+                if self.vision_service
+                else {"available": False, "findings": []}
+            )
             if not vision.get("available") and not any(
                 item.get("severity") == "blocking" for item in vision.get("findings", [])
             ):
@@ -180,6 +233,9 @@ class DocxVerifier:
         environment_blocked = any(
             item.get("category") == "environment" for item in blocking
         )
+        document_blocked = any(
+            item.get("category") != "environment" for item in blocking
+        )
         report = {
             "passed": passed,
             "mode": mode,
@@ -190,8 +246,11 @@ class DocxVerifier:
             "environment_blocked": environment_blocked,
             "warning_count": len([item for item in findings if item.get("severity") == "warning"]),
             "pdf_path": str(pdf_path) if pdf_path.exists() else None,
-            "page_images": [str(path) for path in page_images],
-            "render": render_result,
+            "page_images": {
+                "count": len(page_images),
+                "dir": str(pages_dir) if page_images else None,
+            },
+            "render": render_summary,
             "published_path": published_path,
             "delivery_ready": bool(mode == "all" and passed and published_path),
         }
@@ -199,9 +258,28 @@ class DocxVerifier:
         report_path.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
         artifacts.append(str(report_path))
 
-        revisions = list(job.get("revisions") or [])
-        for item in revisions:
-            if int(item.get("version", -1)) == version:
+        # 发布落账的单一权威是 delivery 记录；重验失败只追加降级事件，
+        # 绝不清空已发布修订的 published_path。
+        if report["delivery_ready"]:
+            self._record_delivery(job_id, version, published_path, str(report_path))
+        elif mode == "all":
+            delivery = dict(self.job_store.get(job_id).get("delivery") or {})
+            if int(delivery.get("version") or -1) == version and delivery.get("published_path"):
+                first_blocking = blocking[0] if blocking else {}
+                self.job_store.append_delivery_demotion(
+                    job_id,
+                    f"v{version:03d} 重验未通过：{str(first_blocking.get('issue') or 'blocking findings')[:120]}",
+                )
+
+        # 渲染窗口可能跨分钟：回写前重读并带乐观并发标记，避免 last-writer-wins。
+        last_conflict = None
+        for attempt in range(2):
+            fresh = self.job_store.get(job_id)
+            delivered_version = int((fresh.get("delivery") or {}).get("version") or -1)
+            revisions = list(fresh.get("revisions") or [])
+            for item in revisions:
+                if int(item.get("version", -1)) != version:
+                    continue
                 modes = dict(item.get("qa_modes") or {})
                 modes[mode] = {"passed": passed, "qa_report_path": str(report_path)}
                 item["qa_modes"] = modes
@@ -213,7 +291,9 @@ class DocxVerifier:
                     item["delivery_ready"] = report["delivery_ready"]
                     if report["delivery_ready"]:
                         item["published_path"] = published_path
-                    elif not item.get("delivery_ready"):
+                    elif delivered_version == version and item.get("published_path"):
+                        pass
+                    else:
                         pending = item.get("pending_published_path") or item.get("published_path")
                         item["pending_published_path"] = pending
                         item["published_path"] = None
@@ -222,16 +302,229 @@ class DocxVerifier:
                     Path(manifest_path).write_text(
                         json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8"
                     )
-        next_status = job.get("status")
-        if mode == "all":
-            next_status = "waiting_revision" if passed else "failed"
-        self.job_store.update(
-            job_id,
-            revisions=revisions,
-            qa={**dict(job.get("qa") or {}), f"v{version:03d}:{mode}": report},
-            status=next_status,
-        )
+            next_status = fresh.get("status")
+            if mode == "all":
+                if passed:
+                    next_status = "delivered"
+                elif document_blocked:
+                    next_status = "failed"
+                # 纯环境受阻不再把 job 置为 failed：保留原状态，等待环境修复或豁免发布。
+            try:
+                self.job_store.update(
+                    job_id,
+                    revisions=revisions,
+                    qa={**dict(fresh.get("qa") or {}), f"v{version:03d}:{mode}": report},
+                    status=next_status,
+                    expected_updated_at=fresh.get("updated_at"),
+                )
+                last_conflict = None
+                break
+            except ValueError as exc:
+                if "CONCURRENT_UPDATE" not in str(exc):
+                    raise
+                last_conflict = exc
+        if last_conflict is not None:
+            raise last_conflict
         return {**report, "qa_report_path": str(report_path), "artifacts": artifacts}
+
+    def publish(self, job_id, version=None, waive_environment=False):
+        """Idempotent delivery gate that consumes the latest mode='all' QA verdict."""
+        job = self.job_store.get(job_id)
+        revision = self.job_store.revision(job_id, version)
+        version = int(revision["version"])
+        report, report_path = self._qa_report_for(job, version)
+        if report is None:
+            raise ValueError(
+                f"NO_QA_VERDICT: v{version:03d} 还没有 mode='all' 的 QA 报告可作为发布依据。"
+                "先运行 docx_verify(mode='deterministic')，通过后再 mode='all'；"
+                "环境受阻时 mode='all' 会返回 environment findings，届时可用 waive_environment 发布。"
+            )
+        blocking = [
+            item
+            for item in list(report.get("findings") or [])
+            if item.get("severity") == "blocking"
+        ]
+        document_blocking = [
+            item for item in blocking if (item.get("category") or "document") != "environment"
+        ]
+        environment_blocking = [
+            item for item in blocking if (item.get("category") or "document") == "environment"
+        ]
+        if document_blocking:
+            sample = document_blocking[0]
+            raise ValueError(
+                f"PUBLISH_BLOCKED: v{version:03d} 仍有 {len(document_blocking)} 条 category=document 的 "
+                f"blocking finding（如 anchor={sample.get('anchor')!r}：{sample.get('issue')}）。"
+                "先用 docx_edit 按 anchor 修复并重新 docx_verify；waive_environment 只豁免 environment 类阻塞。"
+            )
+        waivers = []
+        if environment_blocking:
+            if not waive_environment:
+                raise ValueError(
+                    f"ENVIRONMENT_BLOCKED: v{version:03d} 确定性检查全部通过，但存在 "
+                    f"{len(environment_blocking)} 条环境类阻塞（Word 渲染 / 视觉模型 / PyMuPDF / 字体）。"
+                    "修复环境后重新 docx_verify(mode='all')；或征得用户同意后用 "
+                    "docx_verify(operation='publish', waive_environment=True) 降级发布，"
+                    "豁免项会记入 delivery.waivers。"
+                )
+            waivers = [
+                str(item.get("issue") or item.get("anchor") or "environment")
+                for item in environment_blocking
+            ]
+        target_value = revision.get("published_path") or revision.get("pending_published_path")
+        if not target_value:
+            raise ValueError(
+                f"PUBLISH_BLOCKED: v{version:03d} 缺少待发布路径。用 docx_generate 产生新版本后重新验证发布。"
+            )
+        target = Path(target_value)
+        docx_path = Path(revision["docx_path"])
+        delivery = dict(job.get("delivery") or {})
+        if (
+            int(delivery.get("version") or -1) == version
+            and str(delivery.get("published_path") or "") == str(target)
+            and target.exists()
+        ):
+            return {
+                "published": True,
+                "already_published": True,
+                "version": version,
+                "published_path": str(target),
+                "waivers": list(delivery.get("waivers") or []),
+            }
+        if target.exists() and sha256_file(target) != sha256_file(docx_path):
+            raise ValueError(
+                f"PUBLISH_BLOCKED: 输出路径已存在不同内容，拒绝覆盖：{target}。"
+                "换一个 output_name 重新 docx_generate，或请用户处理已有文件。"
+            )
+        target.parent.mkdir(parents=True, exist_ok=True)
+        if not target.exists():
+            shutil.copyfile(docx_path, target)
+        self._record_delivery(job_id, version, str(target), report_path, waivers=waivers)
+        self._mark_revision_published(job_id, version, str(target))
+        return {
+            "published": True,
+            "already_published": False,
+            "version": version,
+            "published_path": str(target),
+            "waivers": waivers,
+        }
+
+    def _record_delivery(self, job_id, version, published_path, qa_report_path, waivers=None):
+        try:
+            return self.job_store.record_delivery(
+                job_id, version, published_path, qa_report_path=qa_report_path, waivers=waivers
+            )
+        except ValueError as exc:
+            if "ILLEGAL_STATUS_TRANSITION" not in str(exc):
+                raise
+            # 恢复桥：先回到 verifying 再落账，避免历史作业卡在无法转 delivered 的状态。
+            self.job_store.update(job_id, status="verifying", force_status=True)
+            return self.job_store.record_delivery(
+                job_id, version, published_path, qa_report_path=qa_report_path, waivers=waivers
+            )
+
+    def _mark_revision_published(self, job_id, version, published_path):
+        for attempt in range(2):
+            fresh = self.job_store.get(job_id)
+            revisions = list(fresh.get("revisions") or [])
+            for item in revisions:
+                if int(item.get("version", -1)) != int(version):
+                    continue
+                item["published_path"] = published_path
+                manifest_path = item.get("manifest_path")
+                if manifest_path:
+                    Path(manifest_path).write_text(
+                        json.dumps(item, ensure_ascii=False, indent=2), encoding="utf-8"
+                    )
+            try:
+                self.job_store.update(
+                    job_id,
+                    revisions=revisions,
+                    expected_updated_at=fresh.get("updated_at"),
+                )
+                return
+            except ValueError as exc:
+                if "CONCURRENT_UPDATE" not in str(exc) or attempt:
+                    raise
+
+    def _qa_report_for(self, job, version):
+        record = dict((job.get("qa") or {}).get(f"v{version:03d}:all") or {})
+        if isinstance(record.get("findings"), list):
+            return record, record.get("report_path") or record.get("qa_report_path")
+        path = record.get("report_path") or record.get("qa_report_path")
+        if not path:
+            candidate = self.job_store.job_root(job["id"]) / "qa" / f"v{version:03d}" / "qa-report.json"
+            path = str(candidate) if candidate.exists() else None
+        if not path or not Path(path).exists():
+            return None, None
+        try:
+            report = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None, None
+        if not isinstance(report, dict):
+            return None, None
+        return report, path
+
+    @staticmethod
+    def _load_render_cache(qa_dir, docx_sha256):
+        path = Path(qa_dir) / "render-cache.json"
+        if not path.exists():
+            return None
+        try:
+            cached = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if not isinstance(cached, dict) or cached.get("docx_sha256") != docx_sha256:
+            return None
+        pdf = cached.get("pdf_path")
+        pages = list(cached.get("page_images") or [])
+        if not pdf or not Path(pdf).exists() or not pages:
+            return None
+        if not all(Path(page).exists() for page in pages):
+            return None
+        return cached
+
+    @staticmethod
+    def _save_render_cache(qa_dir, docx_sha256, pdf_path, page_images, findings, render_summary):
+        try:
+            (Path(qa_dir) / "render-cache.json").write_text(
+                json.dumps(
+                    {
+                        "docx_sha256": docx_sha256,
+                        "pdf_path": str(pdf_path),
+                        "page_images": [str(page) for page in page_images],
+                        "findings": findings,
+                        "render": render_summary,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+        except OSError:
+            pass
+
+    @classmethod
+    def _security_degradation_findings(cls, render_result):
+        """渲染子进程报告的安全设置降级（AutomationSecurity、
+        UpdateLinksAtOpen 等未能生效）不是文档缺陷，转成 environment 类
+        warning，让用户知道宏防护/外链抑制在当前环境缺位。"""
+        degraded = [
+            str(item)
+            for item in (render_result or {}).get("security_degraded") or []
+        ]
+        if not degraded:
+            return []
+        return [
+            cls._finding(
+                "warning",
+                "renderer",
+                "Word 渲染安全设置未能生效：" + "、".join(degraded)
+                + "。渲染结果仍可用，但宏防护/外链更新抑制可能缺失。",
+                "环境问题：无法用 docx_edit 修复，请向用户说明",
+                category="environment",
+            )
+        ]
 
     @staticmethod
     def _finding(severity, anchor, issue, suggested_action="", category="document"):

@@ -2,6 +2,7 @@ import asyncio
 import json
 import os
 import subprocess
+import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -27,7 +28,11 @@ from textual.widgets import (
 
 from yc_agents.cli.commands import parse_cli_input
 from yc_agents.cli.formatting import format_context_usage
-from yc_agents.cli.runtime_factory import build_cli_runtime
+from yc_agents.cli.runtime_factory import (
+    build_cli_runtime,
+    get_workspace_services,
+    invalidate_workspace_services,
+)
 from yc_agents.cli.sidebar import SidebarListItem, build_session_entries, build_workspace_entries
 from yc_agents.cli.sessions import CLISessionStore
 from yc_agents.cli.status import StatusCollector
@@ -181,6 +186,10 @@ class YCAgentsTUIApp(App):
             session_provider=self._active_session_id,
         )
         self.pending_confirmation = None
+        # 挂起式工具审批：runtime 工作线程在 handle_approval_request 里
+        # 等待，UI 线程通过 /confirm 或 /cancel 决议；超时默认拒绝。
+        self.pending_approval = None
+        self.approval_wait_seconds = 60
         self.suggestion_registry = suggestion_registry or CommandSuggestionRegistry()
         self.filtered_suggestions = []
         self.selected_suggestion_index = 0
@@ -192,8 +201,10 @@ class YCAgentsTUIApp(App):
         self.selection_list_items = []
         self.selected_list_index = 0
         self.current_run_task = None
+        self.runtime_rebuild_task = None
         self.current_run_started_at = None
         self.current_run_input = ""
+        self.last_run_result = None
         self._direct_run_active = False
         self.runtime_event_queue = SimpleQueue()
         self.active_assistant_index = None
@@ -258,6 +269,9 @@ class YCAgentsTUIApp(App):
         if self.prompt is not None:
             self.prompt.value = ""
 
+        # 若有后台重建在途，先等它完成，避免消息发给已关闭的旧 runtime。
+        await self.wait_for_runtime_rebuild()
+
         if self.selection_list_visible and not str(value or "").strip():
             await self.execute_selected_list_item()
             return
@@ -300,6 +314,62 @@ class YCAgentsTUIApp(App):
         for attribute in ("event_callback", "tool_event_callback"):
             with suppress(Exception):
                 setattr(self.runtime, attribute, self.handle_runtime_event)
+        with suppress(Exception):
+            setattr(self.runtime, "approval_callback", self.handle_approval_request)
+
+    def handle_approval_request(self, request):
+        """工具审批回调：运行在 runtime 工作线程上（asyncio.to_thread），
+        阻塞等待不会卡住 Textual 事件循环。用线程事件把决定权交回 UI
+        线程（/confirm 批准、/cancel 拒绝），超时默认拒绝。"""
+        request = dict(request or {})
+        pending = {
+            "request": request,
+            "event": threading.Event(),
+            "approved": False,
+        }
+        self.pending_approval = pending
+        try:
+            self._announce_approval_request(request)
+            pending["event"].wait(timeout=self.approval_wait_seconds)
+        finally:
+            self.pending_approval = None
+        return bool(pending["approved"])
+
+    def _announce_approval_request(self, request):
+        tool_name = request.get("tool_name") or "tool"
+        risk = request.get("risk") or "unknown"
+        reason = str(request.get("reason") or "").strip()
+        reason_suffix = f"（{reason}）" if reason else ""
+        message = (
+            f"工具 {tool_name} 声明了 {risk} 风险，正在等待批准{reason_suffix}。"
+            f"输入 /confirm 批准，/cancel 拒绝；"
+            f"{int(self.approval_wait_seconds)} 秒内未确认将自动拒绝。"
+        )
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # runtime 工作线程：优先派回 UI 线程；应用未运行（headless
+            # 测试/脚本）时退回直接追加，transcript 列表追加是安全的。
+            call_from_thread = getattr(self, "call_from_thread", None)
+            if callable(call_from_thread):
+                try:
+                    call_from_thread(self.append_turn, "Approval", message)
+                    return
+                except Exception:
+                    pass
+            self.append_turn("Approval", message)
+            return
+        self.append_turn("Approval", message)
+
+    def resolve_pending_approval(self, approved):
+        """UI 线程决议挂起的工具审批；没有挂起审批时返回 False，让
+        /confirm、/cancel 继续走原有的确认流程。"""
+        pending = self.pending_approval
+        if pending is None:
+            return False
+        pending["approved"] = bool(approved)
+        pending["event"].set()
+        return True
 
     def handle_runtime_event(self, event):
         self.runtime_event_queue.put(event)
@@ -323,6 +393,10 @@ class YCAgentsTUIApp(App):
                 return
 
             event_type = event.get("event_type", "")
+            if event_type == "run_completed":
+                self.last_run_result = (event.get("payload") or {}).get("result")
+                continue
+
             if event_type == "assistant_process":
                 entry = (event.get("payload") or {}).get("entry")
                 if entry:
@@ -396,6 +470,12 @@ class YCAgentsTUIApp(App):
 
         if event_type == "tool_needs_approval":
             return f"{tool_name} needs approval."
+
+        if event_type == "tool_approved":
+            return f"Approved {tool_name}."
+
+        if event_type == "tool_approval_denied":
+            return f"Denied approval for {tool_name}."
 
         if event_type == "tool_validation_failed":
             return f"Invalid arguments for {tool_name}."
@@ -586,10 +666,17 @@ class YCAgentsTUIApp(App):
             return
 
         if command.action == "confirm":
+            if self.resolve_pending_approval(True):
+                self.append_turn("Status", "已批准本次工具执行。")
+                return
             self.confirm_pending_action()
+            await self.wait_for_runtime_rebuild()
             return
 
         if command.action == "cancel":
+            if self.resolve_pending_approval(False):
+                self.append_turn("Status", "已拒绝本次工具执行。")
+                return
             self.pending_confirmation = None
             self.append_turn("Status", "Cancelled.")
             return
@@ -600,10 +687,12 @@ class YCAgentsTUIApp(App):
 
         if command.action == "session_new":
             self.create_session(command.content or None)
+            await self.wait_for_runtime_rebuild()
             return
 
         if command.action == "session_switch":
             self.switch_session(command.content)
+            await self.wait_for_runtime_rebuild()
             return
 
         if command.action == "session_delete":
@@ -620,10 +709,12 @@ class YCAgentsTUIApp(App):
 
         if command.action == "workspace_add":
             self.add_workspace(command.content)
+            await self.wait_for_runtime_rebuild()
             return
 
         if command.action == "workspace_switch":
             self.switch_workspace(command.content)
+            await self.wait_for_runtime_rebuild()
             return
 
         if command.action == "workspace_current":
@@ -821,6 +912,17 @@ class YCAgentsTUIApp(App):
             lines.append(f"Elapsed: {format_elapsed(time.monotonic() - self.current_run_started_at)}")
             if self.current_run_input:
                 lines.append(f"Task: {self.current_run_input}")
+
+        result = self.last_run_result
+        if result is not None:
+            run_id = getattr(result, "run_id", None)
+            if run_id:
+                lines.append(f"Last run: {run_id} ({getattr(result, 'status', '')})")
+            verification = getattr(result, "verification", None)
+            if isinstance(verification, dict):
+                lines.append(
+                    f"Verification: {'passed' if verification.get('passed') else 'failed'}"
+                )
 
         return "\n".join(lines)
 
@@ -1453,12 +1555,14 @@ class YCAgentsTUIApp(App):
             self.append_turn("Error", "Workspace store is not configured.")
             return
 
+        previous_path = getattr(self.workspace, "path", None)
         try:
             self.workspace = self.workspace_store.add_workspace(path)
         except Exception as exc:
             self.append_turn("Error", str(exc))
             return
 
+        self._invalidate_departed_workspace(previous_path)
         self.session_store = self.session_store_builder(self.workspace)
         self.session = self.session_store.ensure_current_session()
         self.rebuild_runtime()
@@ -1471,12 +1575,14 @@ class YCAgentsTUIApp(App):
             self.append_turn("Error", "Workspace store is not configured.")
             return
 
+        previous_path = getattr(self.workspace, "path", None)
         try:
             self.workspace = self.workspace_store.switch_workspace(workspace_id)
         except Exception as exc:
             self.append_turn("Error", str(exc))
             return
 
+        self._invalidate_departed_workspace(previous_path)
         self.session_store = self.session_store_builder(self.workspace)
         self.session = self.session_store.ensure_current_session()
         self.rebuild_runtime()
@@ -1527,7 +1633,9 @@ class YCAgentsTUIApp(App):
             self.append_turn("Error", "Workspace store is not configured.")
             return
 
+        previous_path = getattr(self.workspace, "path", None)
         self.workspace = self.workspace_store.delete_workspace(path_or_id)
+        self._invalidate_departed_workspace(previous_path)
         self.session_store = self.session_store_builder(self.workspace)
         self.session = self.session_store.ensure_current_session()
         self.rebuild_runtime()
@@ -1539,9 +1647,59 @@ class YCAgentsTUIApp(App):
         if self.session is None:
             return
 
+        session = self.session
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            # 无事件循环（脚本/测试直连）：保持旧的同步语义。
+            self._rebuild_runtime_blocking(session)
+            return
+
+        # 事件循环线程上不做重量级装配（RAG 扫描、MCP 子进程启动会卡住
+        # 整个 TUI）：搬进线程执行，并与上一次未完成的重建串行。
+        previous_task = self.runtime_rebuild_task
+
+        async def rebuild():
+            if previous_task is not None and not previous_task.done():
+                with suppress(Exception):
+                    await previous_task
+            try:
+                await asyncio.to_thread(self._rebuild_runtime_blocking, session)
+            except Exception as exc:
+                self.append_turn("Error", f"Runtime rebuild failed: {exc}")
+
+        self.runtime_rebuild_task = loop.create_task(rebuild())
+
+    async def wait_for_runtime_rebuild(self):
+        task = self.runtime_rebuild_task
+        if task is None:
+            return
+        with suppress(Exception):
+            await task
+
+    def _rebuild_runtime_blocking(self, session):
         self.close_runtime()
-        self.runtime = self.runtime_builder(self.session)
+        self.runtime = self._invoke_runtime_builder(session)
         self.attach_runtime_event_callback()
+
+    def _invoke_runtime_builder(self, session):
+        if self.runtime_builder is build_cli_runtime and self.workspace is not None:
+            # 默认 builder 复用 workspace 级缓存：会话切换只重建 session
+            # 级组件，不再重扫 RAG、重启 MCP 子进程。
+            return build_cli_runtime(
+                session,
+                workspace_services=get_workspace_services(self.workspace.path),
+            )
+        return self.runtime_builder(session)
+
+    def _invalidate_departed_workspace(self, previous_path):
+        if previous_path is None:
+            return
+        current_path = getattr(self.workspace, "path", None)
+        if current_path is not None and Path(previous_path) == Path(current_path):
+            return
+        with suppress(Exception):
+            invalidate_workspace_services(previous_path)
 
     def close_runtime(self):
         close = getattr(self.runtime, "close", None)
@@ -1551,6 +1709,9 @@ class YCAgentsTUIApp(App):
 
     def on_unmount(self):
         self.close_runtime()
+        # workspace 层缓存持有 MCP 子进程等共享资源：应用退出时统一释放。
+        with suppress(Exception):
+            invalidate_workspace_services()
 
     def reload_transcript(self):
         if self.session_store is None:
@@ -1732,10 +1893,12 @@ class YCAgentsTUIApp(App):
 
         if kind == "session":
             self.switch_session(selected_id)
+            await self.wait_for_runtime_rebuild()
             return
 
         if kind == "workspace":
             self.switch_workspace(selected_id)
+            await self.wait_for_runtime_rebuild()
             return
 
         self.append_turn("Error", f"Unknown selection list: {kind}")

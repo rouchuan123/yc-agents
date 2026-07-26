@@ -338,6 +338,31 @@ class TestYCoreConfig(unittest.TestCase):
             self.assertNotIn("web_search", config.enabled_tools())
             self.assertFalse(config.tool_entries()["web_search"]["enabled"])
 
+    def test_approval_mode_defaults_to_off(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_path = root / "ycore.json"
+            config_path.write_text(json.dumps({}), encoding="utf-8")
+
+            config = YCoreConfig.load(root, global_path=config_path)
+
+            self.assertEqual(config.approval_mode(), "off")
+
+    def test_approval_mode_reads_tools_approval_entry(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            config_path = root / "ycore.json"
+            config_path.write_text(
+                json.dumps(
+                    {"tools": {"approval": {"mode": "Write_And_Execute"}}}
+                ),
+                encoding="utf-8",
+            )
+
+            config = YCoreConfig.load(root, global_path=config_path)
+
+            self.assertEqual(config.approval_mode(), "write_and_execute")
+
     def test_workspace_dot_ycore_models_merge_by_id(self):
         with TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
@@ -407,6 +432,43 @@ class TestYCoreConfig(unittest.TestCase):
             self.assertEqual(model["request"]["max_tokens"], 8192)
             self.assertEqual(model["request"]["temperature"], 0.2)
             self.assertEqual(model["request"]["top_p"], 0.95)
+
+    def test_fallback_model_refs_dedupes_primary_and_blank_entries(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "ycore.json").write_text(
+                json.dumps(
+                    {
+                        "agents": {
+                            "defaults": {
+                                "model": {
+                                    "primary": "deepseek/deepseek-v4-flash",
+                                    "fallbacks": [
+                                        "deepseek/deepseek-v4-flash",
+                                        "xiaomi/mimo-v2.5",
+                                        "",
+                                        "xiaomi/mimo-v2.5",
+                                    ],
+                                }
+                            }
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            config = YCoreConfig.load(root, global_path=root / "ycore.json")
+
+            self.assertEqual(config.fallback_model_refs(), ["xiaomi/mimo-v2.5"])
+
+    def test_fallback_model_refs_defaults_to_empty_list(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "ycore.json").write_text("{}", encoding="utf-8")
+
+            config = YCoreConfig.load(root, global_path=root / "ycore.json")
+
+            self.assertEqual(config.fallback_model_refs(), [])
 
     def test_loads_root_ycore_json_and_resolves_primary_model(self):
         with TemporaryDirectory() as tmp_dir:

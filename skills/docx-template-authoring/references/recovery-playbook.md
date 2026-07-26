@@ -31,7 +31,10 @@
 | `TABLE_COLUMN_MISMATCH` | 表格数据列数超过模板 | 压缩数据到模板列数，或与用户确认改为 preserve |
 | `Replacement data is required for template table` | rewrite 表格缺数据 | 数据放进目标章节 `upsert_section.tables`（target_element_id/headers/rows），不要放契约 |
 | `NO_CONTENT_CHANGE` | 内容没变，重新生成无意义 | 修 QA 问题：改章节内容或用 `docx_edit`；环境类问题向用户说明。不要再调 generate |
-| `DOCX_QA_BLOCKED`（verify 返回 ok=false） | 有 blocking finding | 读返回的 `findings[]`：`category=document` → 按 anchor 用 `docx_edit` 修复（≤2 轮）→ deterministic → all；`category=environment` → 如实告知用户，不修文档 |
+| `DOCX_QA_BLOCKED`（verify 返回 ok=false） | 有 blocking finding | 读返回的 `findings[]`：`category=document` → 按 anchor 用 `docx_edit` 修复（≤2 轮）→ deterministic → all；`category=environment` → 如实告知用户，不修文档；仅环境受阻且用户明确同意时可豁免发布（见下） |
+| `NO_QA_VERDICT`（operation=publish） | 该版本还没有 mode="all" 报告 | 先 `docx_verify(mode="deterministic")` → `mode="all"`，再考虑发布 |
+| `ENVIRONMENT_BLOCKED`（operation=publish） | 确定性检查全过，仅环境门槛受阻 | 请用户修环境后重新 `mode="all"`；或征得用户同意后重发 `docx_verify(operation="publish", waive_environment=true)` 降级发布 |
+| `PUBLISH_BLOCKED` | 有 category=document 阻塞或输出路径冲突 | document 阻塞 → 按 anchor `docx_edit` 修复后重新验证（豁免只覆盖环境类）；路径冲突 → 换 `output_name` 重新 generate |
 | `Published document version already exists` | 输出文件名被占用 | 换一个 `output_name` 重新 generate；不要删除用户文件 |
 | `Revision conflict: current is vNNN` | base_revision 过期 | `get_active` 读取最新 current_revision 后重发 docx_edit |
 | `Paragraph/Table target must resolve exactly once` | 定位有歧义 | 用更长的唯一文本、`body.pNNNN`/`body.tblNNNN` 精确定位；仍有歧义就问用户选哪个 |
@@ -39,3 +42,5 @@
 ## 环境类（不要修文档，向用户说明）
 
 Word ExecutionBroker 未配置、PyMuPDF 缺失、视觉模型未配置/失败、模板字体未安装——这些 finding 带 `category="environment"`。修复动作是装依赖/装字体/配模型，属于用户环境；继续 docx_edit 只会浪费轮次。说明哪一道门槛没过、需要用户做什么，然后停下。
+
+环境受阻的唯一发布出路：确定性检查全部通过、阻塞全部为 environment 类时，向用户如实说明并征得明确同意后，用 `docx_verify(operation="publish", waive_environment=true)` 降级发布。被豁免的检查项会写入 `delivery.waivers`，交付回复必须原样列出这些豁免项。

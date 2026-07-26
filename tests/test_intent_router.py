@@ -55,6 +55,49 @@ class NetworkErrorLLMClassifier:
         raise ConnectionError("provider unreachable")
 
 
+class CountingLLMClassifier:
+    def __init__(self):
+        self.calls = 0
+
+    def classify(self, user_input, skills):
+        self.calls += 1
+        return {
+            "type": "skill_selection",
+            "selected_skill": "code-review",
+            "confidence": 0.9,
+            "reason": "LLM selected project review",
+        }
+
+
+class WeakSemanticMatcher:
+    def match(self, user_input, skills):
+        return [
+            {"skill_name": "code-review", "confidence": 0.6, "reason": "weak"},
+            {"skill_name": "other-skill", "confidence": 0.5, "reason": "weak"},
+        ]
+
+
+class CloseRuleMatcher:
+    def match(self, user_input, skills):
+        return [
+            {"skill_name": "code-review", "confidence": 1.0, "reason": "close"},
+            {"skill_name": "other-skill", "confidence": 0.9, "reason": "close"},
+        ]
+
+
+class CloseSemanticMatcher:
+    def match(self, user_input, skills):
+        return [
+            {"skill_name": "code-review", "confidence": 0.8, "reason": "close"},
+            {"skill_name": "other-skill", "confidence": 0.75, "reason": "close"},
+        ]
+
+
+class EmptyMatcher:
+    def match(self, user_input, skills):
+        return []
+
+
 class TestIntentRouter(unittest.TestCase):
     def test_route_selects_highest_weighted_skill(self):
         skills = [
@@ -136,6 +179,57 @@ class TestIntentRouter(unittest.TestCase):
         self.assertEqual(result["selected_skill"], "code-review")
         self.assertEqual(result["candidates"][0]["components"]["llm"], 0.0)
         self.assertIn("provider unreachable", result["llm_error"])
+
+    def test_route_skips_llm_when_rule_and_semantic_lead_is_decisive(self):
+        classifier = CountingLLMClassifier()
+
+        result = IntentRouter(
+            rule_matcher=FakeRuleMatcher(),
+            semantic_matcher=FakeSemanticMatcher(),
+            llm_classifier=classifier,
+        ).route("review this project", self._skills(), allow_llm_skip=True)
+
+        self.assertEqual(classifier.calls, 0)
+        self.assertTrue(result["llm_skipped"])
+        self.assertEqual(result["selected_skill"], "code-review")
+        self.assertEqual(result["candidates"][0]["components"]["llm"], 0.0)
+        self.assertAlmostEqual(result["confidence"], 0.495)
+
+    def test_route_keeps_llm_when_fused_score_is_below_threshold(self):
+        classifier = CountingLLMClassifier()
+
+        result = IntentRouter(
+            rule_matcher=EmptyMatcher(),
+            semantic_matcher=WeakSemanticMatcher(),
+            llm_classifier=classifier,
+        ).route("review this project", self._skills(), allow_llm_skip=True)
+
+        self.assertEqual(classifier.calls, 1)
+        self.assertNotIn("llm_skipped", result)
+        self.assertEqual(result["candidates"][0]["components"]["llm"], 0.9)
+
+    def test_route_keeps_llm_when_runner_up_is_close(self):
+        classifier = CountingLLMClassifier()
+
+        result = IntentRouter(
+            rule_matcher=CloseRuleMatcher(),
+            semantic_matcher=CloseSemanticMatcher(),
+            llm_classifier=classifier,
+        ).route("review this project", self._skills(), allow_llm_skip=True)
+
+        self.assertEqual(classifier.calls, 1)
+        self.assertNotIn("llm_skipped", result)
+
+    def test_route_llm_skip_is_disabled_by_default(self):
+        classifier = CountingLLMClassifier()
+
+        IntentRouter(
+            rule_matcher=FakeRuleMatcher(),
+            semantic_matcher=FakeSemanticMatcher(),
+            llm_classifier=classifier,
+        ).route("review this project", self._skills())
+
+        self.assertEqual(classifier.calls, 1)
 
 
 if __name__ == "__main__":

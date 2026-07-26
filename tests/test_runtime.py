@@ -3,10 +3,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from yc_agents.core.exceptions import LLMCallError
+from yc_agents.core.exceptions import LLMCallError, TruncatedOutputError
 from yc_agents.harness.json_protocol import InvalidModelJSONError
 from yc_agents.harness.recovery import RecoveryPolicy
-from yc_agents.harness.runtime import ResearchAgentHarness, YCAgentRuntime
+from yc_agents.harness.runtime import ResearchAgentHarness, RunResult, YCAgentRuntime
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.memory.session import SessionMemory
@@ -431,6 +431,94 @@ class FakeTransientProviderAgent:
         return json.dumps({"type": "final_answer", "content": "provider recovered"})
 
 
+class FakeEscalatingLLM:
+    def __init__(self, max_output_tokens=4096):
+        self.config = type("Config", (), {"max_output_tokens": max_output_tokens})()
+        self.call_overrides = {}
+        self.override_calls = []
+        self.cleared = 0
+
+    def set_call_overrides(self, **overrides):
+        self.call_overrides = dict(overrides)
+        self.override_calls.append(dict(overrides))
+
+    def clear_call_overrides(self):
+        self.call_overrides = {}
+        self.cleared += 1
+
+
+class FakeTruncatedThenFinalAgent:
+    def __init__(self):
+        self.llm = FakeEscalatingLLM()
+        self.calls = 0
+
+    def run(self, user_input):
+        self.calls += 1
+        if not self.llm.call_overrides:
+            raise TruncatedOutputError(
+                "模型输出被截断（finish_reason=length）",
+                partial_text='{"type":"final_answer","content":"部分',
+                max_tokens=4096,
+            )
+        return json.dumps({"type": "final_answer", "content": "长文完成"})
+
+
+class FakeAlwaysTruncatedAgent:
+    def __init__(self):
+        self.llm = FakeEscalatingLLM()
+        self.calls = 0
+
+    def run(self, user_input):
+        self.calls += 1
+        raise TruncatedOutputError(
+            "模型输出被截断（finish_reason=length）",
+            partial_text="partial",
+            max_tokens=4096,
+        )
+
+
+class FakeScatteredTransientAgent(FakeToolCallAgent):
+    def __init__(self):
+        self.run_calls = 0
+        self.observation_calls = 0
+
+    def run(self, user_input):
+        self.run_calls += 1
+        if self.run_calls == 1:
+            raise LLMCallError(
+                "provider hiccup",
+                retryable=True,
+                status_code=503,
+                cause_type="ServiceUnavailable",
+            )
+        return super().run(user_input)
+
+    def run_with_observation(self, user_input, observation):
+        self.observation_calls += 1
+        if self.observation_calls == 1:
+            raise LLMCallError(
+                "provider hiccup again",
+                retryable=True,
+                status_code=503,
+                cause_type="ServiceUnavailable",
+            )
+        return json.dumps({"type": "final_answer", "content": "scattered recovered"})
+
+
+class FakeAlwaysRetryableProviderAgent:
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, user_input):
+        self.calls += 1
+        raise LLMCallError(
+            "provider flapping",
+            retryable=True,
+            status_code=503,
+            cause_type="ServiceUnavailable",
+        )
+
+
 class FakeVerificationAgent:
     def __init__(self):
         self.revisions = []
@@ -489,6 +577,14 @@ class FakeMissingTool(BaseTool):
 
     def run(self, text):
         raise FileNotFoundError(text)
+
+
+class FakeArtifactTool(BaseTool):
+    name = "fake_tool"
+    description = "Fake tool that reports artifacts."
+
+    def run(self, text):
+        return {"ok": True, "artifacts": [f"outputs/{text}"]}
 
 
 class FakeRunAnalytics:
@@ -912,11 +1008,14 @@ class TestYCAgentRuntime(unittest.TestCase):
         self.assertTrue(compacted[0]["tool_result"]["compacted"])
         self.assertNotIn("text", compacted[0]["tool_result"])
 
-    def test_runtime_passes_approval_gate_to_tool_gateway(self):
+    def test_runtime_turns_denied_approval_into_tool_feedback_instead_of_stopping(self):
+        # 审批拒绝不再是 RunStoppedError：拒绝作为普通失败 tool_result
+        # 回喂模型，让模型改道并正常收尾，而不是丢弃整轮进度。
         registry = ToolRegistry()
         registry.register(FakeTool())
+        agent = FakeToolFailureFeedbackAgent()
         runtime = YCAgentRuntime(
-            FakeToolCallAgent(),
+            agent,
             expects_json=True,
             tool_registry=registry,
             allowed_tools=["fake_tool"],
@@ -925,8 +1024,33 @@ class TestYCAgentRuntime(unittest.TestCase):
 
         response = runtime.run("trigger approval")
 
-        self.assertIn("任务未能完整完成", response)
-        self.assertIn("approval required", response)
+        self.assertEqual(response, "continued with an alternative after missing file")
+        self.assertEqual(len(agent.observations), 1)
+        tool_result = agent.observations[0]["tool_result"]
+        self.assertFalse(tool_result["ok"])
+        self.assertEqual(tool_result["error_type"], "approval_denied")
+        self.assertIn("用户拒绝了此操作", tool_result["error_message"])
+        self.assertIn("approval required", tool_result["error_message"])
+
+    def test_runtime_passes_approval_callback_to_tool_gateway(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakeToolFailureFeedbackAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            approval_gate=FakeApprovalGate(),
+            approval_callback=lambda request: True,
+        )
+
+        runtime.run("trigger approval")
+
+        self.assertEqual(
+            agent.observations[0]["tool_result"],
+            {"echo": "draft.docx"},
+        )
 
     def test_runtime_records_failed_state_and_trace_when_agent_raises(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -1096,6 +1220,114 @@ class TestYCAgentRuntime(unittest.TestCase):
         self.assertIn("任务未能完整完成", response)
         self.assertIn("temporary provider failure", response)
 
+    def test_runtime_recovers_scattered_transient_failures_without_exhausting_budget(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        agent = FakeScatteredTransientAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            recovery_policy=RecoveryPolicy(
+                protocol_retries=0,
+                provider_retries=1,
+                verification_retries=0,
+                max_attempts=1,
+                provider_backoff_seconds=0,
+            ),
+        )
+
+        response = runtime.run("long task with two scattered hiccups")
+
+        self.assertEqual(response, "scattered recovered")
+        self.assertEqual(agent.run_calls, 2)
+        self.assertEqual(agent.observation_calls, 2)
+        event_types = [event["event_type"] for event in runtime.last_trace_events]
+        self.assertEqual(event_types.count("recovery_succeeded"), 2)
+        self.assertNotIn("recovery_exhausted", event_types)
+
+    def test_runtime_marks_lifetime_recovery_exhaustion_in_trace(self):
+        agent = FakeAlwaysRetryableProviderAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            recovery_policy=RecoveryPolicy(
+                protocol_retries=0,
+                provider_retries=10,
+                verification_retries=0,
+                max_attempts=10,
+                provider_backoff_seconds=0,
+                lifetime_max_attempts=2,
+            ),
+        )
+
+        response = runtime.run("flapping provider")
+
+        self.assertIn("任务未能完整完成", response)
+        self.assertEqual(agent.calls, 3)
+        event_types = [event["event_type"] for event in runtime.last_trace_events]
+        self.assertIn("recovery_lifetime_exhausted", event_types)
+        self.assertNotIn("recovery_exhausted", event_types)
+
+    def test_runtime_retries_truncated_output_with_larger_budget_for_free(self):
+        agent = FakeTruncatedThenFinalAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            recovery_policy=RecoveryPolicy(
+                protocol_retries=0,
+                provider_retries=0,
+                verification_retries=0,
+                max_attempts=1,
+                provider_backoff_seconds=0,
+            ),
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("写一篇长报告")
+
+        self.assertEqual(response, "长文完成")
+        self.assertEqual(agent.calls, 2)
+        self.assertEqual(agent.llm.override_calls, [{"max_tokens": 8192}])
+        self.assertGreaterEqual(agent.llm.cleared, 1)
+        event_types = [event["event_type"] for event in runtime.last_trace_events]
+        self.assertIn("truncated_output_retry", event_types)
+        self.assertNotIn("recovery_attempt", event_types)
+        self.assertNotIn("invalid_model_json", event_types)
+
+    def test_runtime_treats_persistent_truncation_as_provider_error_not_protocol(self):
+        agent = FakeAlwaysTruncatedAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            recovery_policy=RecoveryPolicy(
+                protocol_retries=2,
+                provider_retries=1,
+                verification_retries=0,
+                max_attempts=1,
+                provider_backoff_seconds=0,
+            ),
+            fail_on_invalid_json=True,
+        )
+
+        response = runtime.run("写一篇长报告")
+
+        self.assertIn("任务未能完整完成", response)
+        self.assertEqual(agent.calls, 3)
+        self.assertGreaterEqual(agent.llm.cleared, 1)
+        event_types = [event["event_type"] for event in runtime.last_trace_events]
+        self.assertIn("truncated_output_retry", event_types)
+        self.assertIn("recovery_attempt", event_types)
+        self.assertIn("recovery_exhausted", event_types)
+        self.assertNotIn("invalid_model_json", event_types)
+        recovery_attempts = [
+            event["payload"]
+            for event in runtime.last_trace_events
+            if event["event_type"] == "recovery_attempt"
+        ]
+        self.assertEqual(recovery_attempts[0]["kind"], "provider")
+
     def test_runtime_revises_failed_final_output_verification_once(self):
         agent = FakeVerificationAgent()
         runtime = YCAgentRuntime(
@@ -1170,6 +1402,96 @@ class TestYCAgentRuntime(unittest.TestCase):
         event_types = [event["event_type"] for event in runtime.last_trace_events]
         self.assertIn("recovery_attempt", event_types)
         self.assertIn("recovery_succeeded", event_types)
+
+    def test_run_returns_run_result_with_metadata_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            registry = ToolRegistry()
+            registry.register(FakeArtifactTool())
+            runtime = YCAgentRuntime(
+                FakeToolCallAgent(),
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["fake_tool"],
+                output_root=Path(tmp_dir),
+            )
+
+            response = runtime.run("trigger tool")
+
+            self.assertEqual(response, "tool handled")
+            self.assertIsInstance(response, RunResult)
+            self.assertEqual(response.status, "finished")
+            self.assertEqual(response.run_id, runtime.last_run_id)
+            self.assertEqual(Path(response.run_dir), Path(runtime.last_run_dir))
+            self.assertTrue(response.verification["passed"])
+            self.assertIsNone(response.stop_reason)
+            self.assertEqual(
+                response.artifacts,
+                [{"tool": "fake_tool", "path": "outputs/draft.docx"}],
+            )
+
+    def test_stopped_run_returns_run_result_with_stop_reason(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            runtime = YCAgentRuntime(
+                FakeAlwaysInvalidAgent(),
+                expects_json=True,
+                output_root=Path(tmp_dir),
+                invalid_json_retry_count=1,
+                fail_on_invalid_json=True,
+            )
+
+            response = runtime.run("fail")
+
+            self.assertIsInstance(response, RunResult)
+            self.assertIn("任务未能完整完成", response)
+            self.assertEqual(response.status, "stopped")
+            self.assertEqual(response.stop_reason["kind"], "protocol")
+            self.assertTrue(response.stop_reason["exhausted"])
+            self.assertFalse(response.verification["passed"])
+            self.assertEqual(response.run_id, runtime.last_run_id)
+
+    def test_stream_emits_run_completed_event_with_run_result(self):
+        events = []
+        runtime = YCAgentRuntime(FakeStreamingAgent(), event_callback=events.append)
+
+        chunks = list(runtime.stream("hello"))
+
+        self.assertEqual(chunks, ["hello", " world"])
+        completed = [
+            event for event in events if event["event_type"] == "run_completed"
+        ]
+        self.assertEqual(len(completed), 1)
+        result = completed[0]["payload"]["result"]
+        self.assertIsInstance(result, RunResult)
+        self.assertEqual(str(result), "hello world")
+        self.assertEqual(result.status, "finished")
+        self.assertEqual(result.run_id, runtime.last_run_id)
+
+    def test_runtime_appends_step_records_to_jsonl_during_tool_loop(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            registry = ToolRegistry()
+            registry.register(FakeTool())
+            runtime = YCAgentRuntime(
+                FakeMultiToolCallAgent(),
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["fake_tool"],
+                output_root=Path(tmp_dir),
+            )
+
+            runtime.run("trigger multiple tools")
+
+            run_dir = next(Path(tmp_dir).iterdir())
+            steps_path = run_dir / "state-steps.jsonl"
+            self.assertTrue(steps_path.exists())
+            steps = [
+                json.loads(line)
+                for line in steps_path.read_text(encoding="utf-8").splitlines()
+                if line.strip()
+            ]
+            self.assertEqual([step["index"] for step in steps], [0, 1])
+            self.assertEqual(steps[0]["tool_call"]["tool_name"], "fake_tool")
+            self.assertEqual(steps[0]["tool_result"], {"echo": "list files"})
+            self.assertEqual(steps[0]["artifacts"], [])
 
     def test_runtime_mirrors_events_verification_and_output_to_analytics(self):
         recorder = FakeAnalyticsRecorder()

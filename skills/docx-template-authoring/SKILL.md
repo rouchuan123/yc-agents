@@ -65,7 +65,7 @@ get_active → create → analyzer(一次) → 契约 set_contract → 需求/�
 3. 验证失败返回 `ok=false, error=DOCX_QA_BLOCKED`，`findings[]` 里有每条问题的 `anchor`/`page`/`suggested_action`/`category`：
    - `category="document"`：按 anchor 用 `docx_edit` 修复（最多两轮），再从 deterministic 重新验证；
    - `category="environment"`（字体、Word、视觉模型、PyMuPDF）：文档编辑修不了，向用户如实说明，不要陷入修复循环。
-4. 只有 `mode="all"` 返回 `passed=true`、`delivery_ready=true` 和 `published_path` 后版本才发布到 `outputs/`。此前不得宣称完成或给出下载路径。
+4. 只有 `mode="all"` 返回 `passed=true`、`delivery_ready=true` 和 `published_path` 后版本才发布到 `outputs/`。此前不得宣称完成或给出下载路径。唯一例外：确定性检查全过、阻塞全部为环境类时，征得用户明确同意后可用 `docx_verify(operation="publish", waive_environment=true)` 降级发布——豁免项记入 `delivery.waivers`，交付回复必须原样列出。
 
 质量门槛见 [references/quality-checklist.md](references/quality-checklist.md)。
 

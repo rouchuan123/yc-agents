@@ -182,6 +182,62 @@ def test_document_job_tool_uses_active_job_when_job_id_is_omitted(tmp_path):
     assert "confirm" not in result["contract"]
 
 
+def test_document_job_high_frequency_operations_return_lite_view(document_workspace):
+    _workspace, _template, attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    tool = DocumentJobTool(jobs, attachments)
+
+    fetched = tool.run("get", job_id=job["id"])
+
+    # The lite view keeps decision fields only: no outline, requirements or
+    # per-revision dumps riding along on every call.
+    lite = fetched["job"]
+    assert lite["id"] == job["id"]
+    assert lite["status"] == "waiting_requirements"
+    assert lite["pending_question_count"] >= 3
+    assert len(lite["pending_questions_head"]) == 3
+    assert lite["plan_confirmed"] is False
+    assert lite["current_revision"] is None
+    assert lite["revision_count"] == 0
+    assert lite["unresolved_confirm_count"] == 0  # no contract recorded yet
+    for heavy in ("outline", "requirements", "revisions", "source_candidates"):
+        assert heavy not in lite
+
+    answered = tool.run(
+        "update_requirements",
+        job_id=job["id"],
+        requirements={"topic": "新项目"},
+        pending_questions=[],
+    )
+    undecided = tool.run("set_contract", job_id=job["id"], contract={"tables": []})
+    # The spec table defaults to confirm, so the ledger counts one open item.
+    assert undecided["job"]["unresolved_confirm_count"] == 1
+    contracted = tool.run(
+        "set_contract",
+        job_id=job["id"],
+        contract={"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    assert contracted["job"]["unresolved_confirm_count"] == 0
+    planned = tool.run(
+        "set_plan",
+        job_id=job["id"],
+        outline={"sections": [{"id": "s1", "title": "第一章 概况"}]},
+    )
+    confirmed = tool.run("confirm_plan", job_id=job["id"])
+
+    # set_plan echoes the canonical outline so the model can proof-read it.
+    assert planned["outline"]["sections"][0]["title"] == "第一章 概况"
+    assert "outline" not in planned["job"]
+    # get_outline fetches the full outline on demand instead of every response.
+    outline = tool.run("get_outline", job_id=job["id"])
+    assert outline["ok"] is True
+    assert outline["plan_confirmed"] is True
+    assert outline["outline"]["sections"][0]["id"] == "s1"
+
+    for response in (fetched, answered, contracted, confirmed, tool.run("get_active")):
+        assert len(json.dumps(response, ensure_ascii=False)) < 2048
+
+
 def test_document_job_tool_reports_missing_active_job_clearly(tmp_path):
     workspace = tmp_path / "workspace"
     session_path = workspace / ".ycore" / "sessions" / "session-empty"
@@ -1001,6 +1057,122 @@ def test_execution_broker_decodes_utf8_helper_output(tmp_path, monkeypatch):
     assert "渲染完成" in result["stdout"]
 
 
+def _passthrough_render_command(_key, _input, output_path):
+    return [
+        sys.executable,
+        "-c",
+        "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'ok')",
+        str(output_path),
+    ]
+
+
+def test_execution_broker_declares_scope_honestly_without_claiming_enforcement(tmp_path, monkeypatch):
+    root = tmp_path / "job"
+    root.mkdir()
+    source = root / "input.docx"
+    source.write_bytes(b"x")
+    output = root / "out.pdf"
+    broker = ExecutionBroker([root], [root], timeout_seconds=10)
+    monkeypatch.setattr(broker, "_build_command", _passthrough_render_command)
+
+    result = broker.run("word_export_pdf", source, output)
+
+    assert result["ok"] is True
+    # broker 不是 OS 级沙箱：作用域只是声明，必须带 enforced=False，
+    # 且不再用会被误读为已强制执行的旧字段名。
+    assert result["enforced"] is False
+    assert result["declared_write_scope"] == [str(Path(root).resolve())]
+    assert result["declared_network_policy"] == "not_enforced_local_backend"
+    assert "write_scope" not in result
+    assert "network_policy" not in result
+    assert result["security_degraded"] == []
+    assert result["out_of_scope_writes"] == []
+    assert result["job_object"] in {"active", "unavailable"}
+    # Word 是 out-of-process COM：Job Object 只能包住 python 子进程树，
+    # 结果字段要如实说明这个边界。
+    assert "WINWORD" in result["job_object_note"]
+
+
+def test_execution_broker_lifts_security_degraded_from_renderer_stdout(tmp_path, monkeypatch):
+    root = tmp_path / "job"
+    root.mkdir()
+    source = root / "input.docx"
+    source.write_bytes(b"x")
+    output = root / "out.pdf"
+    broker = ExecutionBroker([root], [root], timeout_seconds=10)
+
+    def fake_command(_key, _input, output_path):
+        payload = json.dumps(
+            {"ok": True, "security_degraded": ["automation_security"]},
+            ensure_ascii=False,
+        )
+        return [
+            sys.executable,
+            "-c",
+            "import pathlib,sys; pathlib.Path(sys.argv[1]).write_bytes(b'ok'); print(sys.argv[2])",
+            str(output_path),
+            payload,
+        ]
+
+    monkeypatch.setattr(broker, "_build_command", fake_command)
+    result = broker.run("word_export_pdf", source, output)
+
+    assert result["ok"] is True
+    assert result["security_degraded"] == ["automation_security"]
+
+
+def test_execution_broker_records_out_of_scope_writes_without_deleting(tmp_path, monkeypatch):
+    root = tmp_path / "job"
+    root.mkdir()
+    source = root / "input.docx"
+    source.write_bytes(b"x")
+    output = root / "out.pdf"
+    broker = ExecutionBroker([root], [root], timeout_seconds=10)
+
+    def fake_command(_key, _input, output_path):
+        return [
+            sys.executable,
+            "-c",
+            (
+                "import pathlib,sys; out=pathlib.Path(sys.argv[1]); "
+                "out.write_bytes(b'ok'); "
+                "(out.parent / 'unexpected.tmp').write_bytes(b'stray')"
+            ),
+            str(output_path),
+        ]
+
+    monkeypatch.setattr(broker, "_build_command", fake_command)
+    result = broker.run("word_export_pdf", source, output)
+
+    stray = root / "unexpected.tmp"
+    assert result["ok"] is True
+    assert result["out_of_scope_writes"] == [str(stray)]
+    # 仅记录不删除：复核是审计动作，不是清理动作。
+    assert stray.exists()
+
+
+def test_execution_broker_degrades_gracefully_when_job_object_fails(tmp_path, monkeypatch):
+    root = tmp_path / "job"
+    root.mkdir()
+    source = root / "input.docx"
+    source.write_bytes(b"x")
+    output = root / "out.pdf"
+    broker = ExecutionBroker([root], [root], timeout_seconds=10)
+    monkeypatch.setattr(broker, "_build_command", _passthrough_render_command)
+
+    def broken_limiter(_pid):
+        raise RuntimeError("win32job is unavailable")
+
+    monkeypatch.setattr(
+        "yc_agents.documents.broker._create_job_limiter", broken_limiter
+    )
+    result = broker.run("word_export_pdf", source, output)
+
+    # Job Object 是尽力而为的加固：失败绝不影响渲染本身。
+    assert result["ok"] is True
+    assert result["job_object"] == "unavailable"
+
+
 def test_word_renderer_uses_disposable_copy_and_does_not_save_revision(tmp_path, monkeypatch):
     source = tmp_path / "revision.docx"
     source.write_bytes(b"immutable-revision")
@@ -1055,9 +1227,101 @@ def test_word_renderer_uses_disposable_copy_and_does_not_save_revision(tmp_path,
     result = export_word_pdf(source, output)
 
     assert result["ok"] is True
+    assert result["security_degraded"] == []
     assert source.read_bytes() == b"immutable-revision"
     assert output.read_bytes() == b"pdf"
     assert opened_paths and not opened_paths[0].exists()
+
+
+def test_word_renderer_reports_security_degradation_instead_of_swallowing(tmp_path, monkeypatch):
+    source = tmp_path / "revision.docx"
+    source.write_bytes(b"immutable-revision")
+    output = tmp_path / "qa" / "document.pdf"
+
+    class FakeFields:
+        def Update(self):
+            return None
+
+    class FakeDocument:
+        Fields = FakeFields()
+        TablesOfContents = []
+
+        def ExportAsFixedFormat(self, **kwargs):
+            Path(kwargs["OutputFileName"]).write_bytes(b"pdf")
+
+        def Close(self, SaveChanges=False):
+            assert SaveChanges is False
+
+    class FakeDocuments:
+        def Open(self, path, **_kwargs):
+            return FakeDocument()
+
+    class FakeWord:
+        Documents = FakeDocuments()
+
+        def __setattr__(self, name, value):
+            if name == "AutomationSecurity":
+                raise OSError("AutomationSecurity is not supported")
+            object.__setattr__(self, name, value)
+
+        @property
+        def Options(self):
+            raise OSError("Options are unavailable")
+
+        def Quit(self):
+            return None
+
+    pythoncom = types.ModuleType("pythoncom")
+    pythoncom.CoInitialize = lambda: None
+    pythoncom.CoUninitialize = lambda: None
+    win32com = types.ModuleType("win32com")
+    client = types.ModuleType("win32com.client")
+    client.DispatchEx = lambda _name: FakeWord()
+    win32com.client = client
+    monkeypatch.setitem(sys.modules, "pythoncom", pythoncom)
+    monkeypatch.setitem(sys.modules, "win32com", win32com)
+    monkeypatch.setitem(sys.modules, "win32com.client", client)
+
+    result = export_word_pdf(source, output)
+
+    # 安全设置降级不再被静默吞掉：结果里逐项列出降级的设置。
+    assert result["ok"] is True
+    assert result["security_degraded"] == [
+        "automation_security",
+        "update_links_at_open",
+    ]
+
+
+def test_docx_verifier_turns_render_security_degradation_into_environment_warning(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    _generate_first_revision(workspace, jobs, job)
+
+    class DegradedBroker:
+        def run(self, _key, _input, output):
+            Path(output).write_bytes(b"fake-pdf")
+            return {
+                "ok": True,
+                "exit_code": 0,
+                "stdout": "",
+                "stderr": "",
+                "security_degraded": ["automation_security"],
+            }
+
+    verifier = DocxVerifier(jobs, DegradedBroker())
+    _stub_page_rendering(verifier)
+
+    result = verifier.verify(job["id"], version=1, mode="render")
+
+    assert result["passed"] is True
+    degradation = [
+        item
+        for item in result["findings"]
+        if item.get("severity") == "warning"
+        and item.get("category") == "environment"
+        and "automation_security" in item.get("issue", "")
+    ]
+    assert degradation, result["findings"]
+    assert result["render"]["security_degraded"] == ["automation_security"]
 
 
 def test_vision_qa_sends_page_image_and_returns_structured_findings(tmp_path):
@@ -1206,6 +1470,8 @@ def test_partial_verification_does_not_mark_revision_as_fully_qa_passed(document
     assert result["passed"] is True
     assert result["mode"] == "deterministic"
     assert result["qa_report_path"].endswith("qa-report-deterministic.json")
+    assert result["render"] is None
+    assert result["page_images"] == {"count": 0, "dir": None}
     assert revision["qa_passed"] is False
     assert revision["qa_modes"]["deterministic"]["passed"] is True
 
@@ -1233,10 +1499,10 @@ def test_full_verification_publishes_only_after_all_qa_passes(document_workspace
     class FakeBroker:
         def run(self, _key, _input, output):
             Path(output).write_bytes(b"fake-pdf")
-            return {"ok": True, "stdout": "", "stderr": ""}
+            return {"ok": True, "exit_code": 0, "stdout": "渲" * 5000, "stderr": ""}
 
     class FakeVision:
-        def inspect_pages(self, page_images, template_summary=None):
+        def inspect_pages(self, page_images, template_summary=None, cache_path=None):
             assert page_images
             return {"available": True, "findings": []}
 
@@ -1254,6 +1520,7 @@ def test_full_verification_publishes_only_after_all_qa_passes(document_workspace
         job["id"], version=1, mode="all"
     )
 
+    assert result["ok"] is True
     assert result["passed"] is True
     assert result["delivery_ready"] is True
     assert Path(result["published_path"]).exists()
@@ -1261,26 +1528,65 @@ def test_full_verification_publishes_only_after_all_qa_passes(document_workspace
     assert revision["qa_passed"] is True
     assert revision["delivery_ready"] is True
 
+    # The tool response is a decision-minimal view: no render diagnostics, no
+    # per-page image paths, only warning summaries — and it stays small.
+    assert set(result.keys()) == {
+        "ok",
+        "version",
+        "passed",
+        "delivery_ready",
+        "published_path",
+        "warning_count",
+        "qa_report_path",
+        "findings",
+    }
+    assert all(
+        set(item.keys()) == {"anchor", "issue", "suggested_action"}
+        for item in result["findings"]
+    )
+    assert len(json.dumps(result, ensure_ascii=False)) < 4096
+
+    # The persisted report keeps only render tails plus pointers; the complete
+    # diagnostics stay in render-result.json on disk.
+    report = json.loads(Path(result["qa_report_path"]).read_text(encoding="utf-8"))
+    qa_dir = Path(result["qa_report_path"]).parent
+    assert report["render"] == {
+        "ok": True,
+        "returncode": 0,
+        "artifacts": [str(qa_dir / "document.pdf")],
+        "stdout_tail": "渲" * 500,
+        "stderr_tail": "",
+        "result_path": str(qa_dir / "render-result.json"),
+    }
+    assert report["page_images"] == {"count": 1, "dir": str(qa_dir / "pages")}
+    full_render = json.loads((qa_dir / "render-result.json").read_text(encoding="utf-8"))
+    assert full_render["stdout"] == "渲" * 5000
+
 
 def test_docx_verify_tool_returns_structured_result_when_all_qa_is_blocked():
     class BlockedVerifier:
         def verify(self, *_args, **_kwargs):
             return {
                 "passed": False,
+                "version": 3,
                 "findings": [
                     {
                         "severity": "blocking",
                         "issue": "目录书签损坏",
                         "anchor": "第一章",
+                        "suggested_action": "修复书签后重新验证",
                         "category": "document",
+                        "page": 2,
                     },
                     {
-                        "severity": "blocking",
-                        "issue": "目录书签损坏",
-                        "anchor": "第二章",
-                        "category": "document",
+                        "severity": "warning",
+                        "issue": "模板字体未安装",
+                        "anchor": "fonts",
+                        "category": "environment",
                     },
                 ],
+                "render": {"stdout": "x" * 20000, "stderr": "y" * 20000},
+                "page_images": {"count": 5, "dir": "qa/v001/pages"},
                 "qa_report_path": "qa/v001/qa-report.json",
             }
 
@@ -1288,11 +1594,33 @@ def test_docx_verify_tool_returns_structured_result_when_all_qa_is_blocked():
 
     assert result["ok"] is False
     assert result["error"] == "DOCX_QA_BLOCKED"
-    # Findings with anchors survive so the agent can target docx_edit repairs.
-    assert result["findings"][0]["anchor"] == "第一章"
+    assert result["version"] == 3
+    # Only the blocking [anchor, issue, suggested_action] triples survive; the
+    # full report stays on disk at qa_report_path.
+    assert result["findings"] == [
+        {
+            "anchor": "第一章",
+            "issue": "目录书签损坏",
+            "suggested_action": "修复书签后重新验证",
+        }
+    ]
     assert result["qa_report_path"] == "qa/v001/qa-report.json"
-    assert result["blocking_issues"] == ["目录书签损坏"]  # deduplicated
     assert result["next_action"] == "docx_edit"
+    # The verifier report must not be passed through wholesale anymore.
+    assert "render" not in result
+    assert "page_images" not in result
+    assert "blocking_issues" not in result
+    assert set(result.keys()) == {
+        "ok",
+        "error",
+        "version",
+        "passed",
+        "environment_blocked",
+        "findings",
+        "qa_report_path",
+        "next_action",
+        "instruction",
+    }
 
 
 def test_docx_verify_tool_flags_environment_blockers():
@@ -1315,6 +1643,16 @@ def test_docx_verify_tool_flags_environment_blockers():
     assert result["ok"] is False
     assert result["environment_blocked"] is True
     assert "environment" in result["instruction"]
+    # 环境受阻时指引用户同意后的豁免发布路径，而不是继续 docx_edit 死循环。
+    assert "waive_environment" in result["instruction"]
+    assert result["next_action"] == "docx_verify"
+    assert result["findings"] == [
+        {
+            "anchor": "",
+            "issue": "视觉模型未配置，未执行逐页图片检查",
+            "suggested_action": "",
+        }
+    ]
 
 
 def test_markdown_table_becomes_real_word_table(document_workspace):
@@ -1677,3 +2015,502 @@ def test_file_reader_refuses_template_spec(document_workspace, tmp_path):
     reader = FileReaderTool(workspace)
     with pytest.raises(PermissionError, match="docx_template_query"):
         reader.run(str(spec_path.relative_to(workspace)), allow_large=True)
+
+
+def test_update_validates_status_transitions_with_teaching_error(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+
+    with pytest.raises(ValueError, match="ILLEGAL_STATUS_TRANSITION") as error:
+        jobs.update(job["id"], status="generating")
+    message = str(error.value)
+    assert "created" in message
+    assert "generating" in message
+    assert "Allowed" in message
+
+    # Same-status updates pass through untouched.
+    assert jobs.update(job["id"], status="created")["status"] == "created"
+    with pytest.raises(ValueError, match="Unsupported document job status"):
+        jobs.update(job["id"], status="teleporting")
+    # force_status stays available as a recovery escape hatch.
+    forced = jobs.update(job["id"], status="verifying", force_status=True)
+    assert forced["status"] == "verifying"
+
+
+def test_update_optimistic_concurrency_detects_stale_writers(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    current = jobs.get(job["id"])["updated_at"]
+
+    updated = jobs.update(job["id"], title="并发安全标题", expected_updated_at=current)
+
+    assert updated["title"] == "并发安全标题"
+    with pytest.raises(ValueError, match="并发修改"):
+        jobs.update(job["id"], title="过期写入", expected_updated_at="2000-01-01T00:00:00")
+
+
+def test_record_delivery_is_single_source_of_truth_and_append_only(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs, job, [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}]
+    )
+    content.upsert_section(job["id"], "s1", "第一章", "第一章正文。")
+    content.upsert_section(job["id"], "s2", "第二章", "第二章正文。")
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    jobs.update(job["id"], status="waiting_revision")
+
+    with pytest.raises(ValueError, match="Document revision does not exist"):
+        jobs.record_delivery(job["id"], 9, published_path="outputs/x.docx")
+
+    delivered = jobs.record_delivery(
+        job["id"],
+        generated["version"],
+        published_path=generated["pending_published_path"],
+        qa_report_path="qa/v001/qa-report.json",
+        waivers=["用户豁免：页码字体警告"],
+    )
+
+    assert delivered["status"] == "delivered"
+    raw = json.loads((jobs.job_root(job["id"]) / "job.json").read_text(encoding="utf-8"))
+    assert raw["delivery"]["version"] == 1
+    assert raw["delivery"]["published_path"] == generated["pending_published_path"]
+    assert raw["delivery"]["qa_report_path"] == "qa/v001/qa-report.json"
+    assert raw["delivery"]["waivers"] == ["用户豁免：页码字体警告"]
+    assert raw["delivery"]["published_at"]
+    assert raw["delivery"]["demotions"] == []
+
+    # A delivery is never cleared; failures append demotion events instead.
+    with pytest.raises(ValueError, match="DELIVERY_IMMUTABLE"):
+        jobs.update(job["id"], delivery=None)
+    demoted = jobs.append_delivery_demotion(job["id"], "重验失败：页边距漂移")
+    assert demoted["delivery"]["published_path"] == generated["pending_published_path"]
+    assert demoted["delivery"]["demotions"][0]["reason"] == "重验失败：页边距漂移"
+    assert demoted["delivery"]["demotions"][0]["at"]
+
+    summary = jobs.summary(jobs.get(job["id"]))
+    lite = jobs.summary_lite(jobs.get(job["id"]))
+    assert summary["delivery"]["demotions"][0]["reason"] == "重验失败：页边距漂移"
+    assert summary["demotion_count"] == 1
+    assert lite["delivery"] == {
+        "version": 1,
+        "published_path": generated["pending_published_path"],
+        "demotion_count": 1,
+    }
+
+    # A delivered job may re-enter the revision loop without losing the record.
+    revised = jobs.update(job["id"], status="waiting_revision")
+    assert revised["delivery"]["version"] == 1
+
+
+def test_append_delivery_demotion_requires_existing_delivery(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+
+    with pytest.raises(ValueError, match="record_delivery"):
+        jobs.append_delivery_demotion(job["id"], "没有交付记录")
+
+
+def test_job_json_keeps_slim_revision_index_and_manifest_is_authoritative(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs, job, [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}]
+    )
+    content.upsert_section(job["id"], "s1", "第一章", "第一章正文。")
+    content.upsert_section(job["id"], "s2", "第二章", "第二章正文。")
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+
+    raw = json.loads((jobs.job_root(job["id"]) / "job.json").read_text(encoding="utf-8"))
+    assert set(raw["revisions"][0]) == {
+        "version",
+        "docx_sha256",
+        "qa_passed",
+        "delivery_ready",
+        "published_path",
+        "manifest_path",
+    }
+    entry = raw["revisions"][0]
+    assert entry["version"] == 1
+    assert entry["qa_passed"] is False
+    assert entry["published_path"] is None
+
+    manifest = json.loads(Path(entry["manifest_path"]).read_text(encoding="utf-8"))
+    assert manifest["docx_path"] == generated["docx_path"]
+    assert manifest["package_parts"]
+    assert manifest["manifest_path"] == entry["manifest_path"]
+
+    # Store reads hydrate the slim index back from the authoritative manifest.
+    hydrated = jobs.revision(job["id"], 1)
+    assert hydrated["docx_path"] == generated["docx_path"]
+    assert hydrated["package_parts"]
+    assert jobs.get(job["id"])["revisions"][0]["docx_path"] == generated["docx_path"]
+
+
+def test_qa_records_are_stored_as_slim_pointers(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    report = {"passed": True, "version": 1, "mode": "all", "findings": [{"issue": "细节" * 200}]}
+
+    jobs.update(job["id"], qa={"v001:all": report, "v001:deterministic": {"passed": False}})
+
+    raw = json.loads((jobs.job_root(job["id"]) / "job.json").read_text(encoding="utf-8"))
+    qa_root = jobs.job_root(job["id"]) / "qa"
+    assert raw["qa"]["v001:all"] == {
+        "passed": True,
+        "report_path": str(qa_root / "v001" / "qa-report.json"),
+    }
+    assert raw["qa"]["v001:deterministic"] == {
+        "passed": False,
+        "report_path": str(qa_root / "v001" / "qa-report-deterministic.json"),
+    }
+
+
+def _generate_first_revision(workspace, jobs, job):
+    content = _confirm_simple_plan(
+        jobs, job, [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}]
+    )
+    content.upsert_section(job["id"], "s1", "第一章", "这是第一章的新正文内容。")
+    content.upsert_section(job["id"], "s2", "第二章", "这是第二章的新正文内容。")
+    return DocxBuilder(workspace, jobs, content).generate(job["id"])
+
+
+class _CountingBroker:
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, _key, _input, output):
+        self.calls += 1
+        Path(output).write_bytes(b"fake-pdf")
+        return {"ok": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+
+class _PassVision:
+    def __init__(self):
+        self.calls = 0
+
+    def inspect_pages(self, page_images, template_summary=None, cache_path=None):
+        self.calls += 1
+        assert page_images
+        return {"available": True, "findings": []}
+
+
+def _stub_page_rendering(verifier):
+    render_calls = []
+
+    def fake_render(pdf_path, output_dir):
+        render_calls.append(str(pdf_path))
+        output_dir.mkdir(parents=True, exist_ok=True)
+        page = output_dir / "page-1.png"
+        page.write_bytes(b"fake-png")
+        return [page], []
+
+    verifier._render_pdf_pages = fake_render
+    verifier._page_number_findings = lambda _pdf: []
+    return render_calls
+
+
+def test_environment_blocked_verify_keeps_status_and_waived_publish_delivers(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    generated = _generate_first_revision(workspace, jobs, job)
+    assert jobs.get(job["id"])["status"] == "verifying"
+
+    verifier = DocxVerifier(jobs)  # 无 broker → 环境类阻塞
+    result = verifier.verify(job["id"], version=1, mode="all")
+
+    assert result["passed"] is False
+    assert result["environment_blocked"] is True
+    # 环境故障不再把 job 置为 failed。
+    assert jobs.get(job["id"])["status"] == "verifying"
+
+    with pytest.raises(ValueError, match="ENVIRONMENT_BLOCKED"):
+        verifier.publish(job["id"], version=1)
+
+    published = verifier.publish(job["id"], version=1, waive_environment=True)
+
+    assert published["published"] is True
+    assert published["published_path"] == generated["pending_published_path"]
+    assert Path(published["published_path"]).exists()
+    assert published["waivers"]
+    data = jobs.get(job["id"])
+    assert data["status"] == "delivered"
+    assert data["delivery"]["version"] == 1
+    assert data["delivery"]["published_path"] == published["published_path"]
+    assert any("Word" in item or "渲染" in item for item in data["delivery"]["waivers"])
+    assert jobs.revision(job["id"], 1)["published_path"] == published["published_path"]
+
+    again = verifier.publish(job["id"], version=1, waive_environment=True)
+    assert again["already_published"] is True
+    assert again["published_path"] == published["published_path"]
+    assert len(jobs.get(job["id"])["delivery"].get("demotions") or []) == 0
+
+
+def test_publish_requires_full_qa_verdict_and_refuses_document_blockers(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    _generate_first_revision(workspace, jobs, job)
+    verifier = DocxVerifier(jobs)
+
+    with pytest.raises(ValueError, match="NO_QA_VERDICT"):
+        verifier.publish(job["id"], version=1)
+
+    report_path = jobs.job_root(job["id"]) / "qa" / "v001" / "qa-report.json"
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(
+            {
+                "passed": False,
+                "mode": "all",
+                "findings": [
+                    {
+                        "severity": "blocking",
+                        "anchor": "第一章",
+                        "issue": "目录书签损坏",
+                        "category": "document",
+                    }
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    jobs.update(job["id"], qa={"v001:all": {"passed": False, "report_path": str(report_path)}})
+
+    with pytest.raises(ValueError, match="PUBLISH_BLOCKED"):
+        verifier.publish(job["id"], version=1, waive_environment=True)
+
+
+def test_full_verify_records_delivery_and_reverify_failure_appends_demotion(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    _generate_first_revision(workspace, jobs, job)
+    broker = _CountingBroker()
+    verifier = DocxVerifier(jobs, broker, _PassVision())
+    _stub_page_rendering(verifier)
+
+    first = verifier.verify(job["id"], version=1, mode="all")
+
+    assert first["passed"] is True
+    data = jobs.get(job["id"])
+    assert data["status"] == "delivered"
+    assert data["delivery"]["version"] == 1
+    assert data["delivery"]["published_path"] == first["published_path"]
+
+    class BlockingVision:
+        def inspect_pages(self, page_images, template_summary=None, cache_path=None):
+            return {
+                "available": True,
+                "findings": [
+                    {
+                        "severity": "blocking",
+                        "page": 1,
+                        "anchor": "表1",
+                        "issue": "表格越界",
+                        "suggested_action": "缩小列宽",
+                    }
+                ],
+            }
+
+    reverifier = DocxVerifier(jobs, broker, BlockingVision())
+    _stub_page_rendering(reverifier)
+    second = reverifier.verify(job["id"], version=1, mode="all")
+
+    assert second["passed"] is False
+    data = jobs.get(job["id"])
+    # 重验失败绝不清空已发布修订的 published_path，改为追加降级事件。
+    assert jobs.revision(job["id"], 1)["published_path"] == first["published_path"]
+    assert data["delivery"]["published_path"] == first["published_path"]
+    assert len(data["delivery"]["demotions"]) == 1
+    assert "重验" in data["delivery"]["demotions"][0]["reason"]
+    assert Path(first["published_path"]).exists()
+
+
+def test_verify_write_back_preserves_concurrent_qa_records(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    _generate_first_revision(workspace, jobs, job)
+
+    class SideEffectBroker:
+        def run(self, _key, _input, output):
+            Path(output).write_bytes(b"fake-pdf")
+            data = jobs.get(job["id"])
+            jobs.update(
+                job["id"],
+                qa={
+                    **dict(data.get("qa") or {}),
+                    "v001:probe": {"passed": True, "report_path": "probe.json"},
+                },
+            )
+            return {"ok": True, "exit_code": 0, "stdout": "", "stderr": ""}
+
+    verifier = DocxVerifier(jobs, SideEffectBroker())
+    _stub_page_rendering(verifier)
+    result = verifier.verify(job["id"], version=1, mode="render")
+
+    assert result["passed"] is True
+    qa = jobs.get(job["id"])["qa"]
+    # 渲染窗口期间的并发写不允许被 last-writer-wins 抹掉。
+    assert qa["v001:probe"] == {"passed": True, "report_path": "probe.json"}
+    assert "v001:render" in qa
+
+
+def test_render_cache_skips_word_render_for_unchanged_docx(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    _generate_first_revision(workspace, jobs, job)
+    broker = _CountingBroker()
+    vision = _PassVision()
+    verifier = DocxVerifier(jobs, broker, vision)
+    render_calls = _stub_page_rendering(verifier)
+
+    first = verifier.verify(job["id"], version=1, mode="render")
+
+    assert first["passed"] is True
+    assert broker.calls == 1
+    assert len(render_calls) == 1
+    qa_dir = jobs.job_root(job["id"]) / "qa" / "v001"
+    manifest = json.loads((qa_dir / "render-cache.json").read_text(encoding="utf-8"))
+    assert manifest["docx_sha256"] == jobs.revision(job["id"], 1)["docx_sha256"]
+    assert manifest["pdf_path"] == str(qa_dir / "document.pdf")
+    assert manifest["page_images"]
+
+    second = verifier.verify(job["id"], version=1, mode="all")
+
+    # 同一版本第二次验证命中 sha256 缓存：不再拉起 Word 渲染子进程和逐页重绘。
+    assert broker.calls == 1
+    assert len(render_calls) == 1
+    assert second["passed"] is True
+    assert second["render"]["cache_hit"] is True
+    assert second["page_images"]["count"] == 1
+    assert vision.calls == 1
+
+
+def test_vision_page_cache_hits_skip_llm_and_survive_corruption(tmp_path):
+    page_one = tmp_path / "page-1.png"
+    page_two = tmp_path / "page-2.png"
+    page_one.write_bytes(b"png-one")
+    page_two.write_bytes(b"png-two")
+    cache_path = tmp_path / "vision-cache.json"
+
+    class CountingVisionLLM:
+        model = "mimo-vl"
+
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            return json.dumps(
+                {"findings": [{"severity": "warning", "anchor": "a", "issue": "贴边"}]},
+                ensure_ascii=False,
+            )
+
+    llm = CountingVisionLLM()
+    service = VisionQAService(llm)
+
+    first = service.inspect_pages([page_one, page_two], cache_path=cache_path)
+    assert llm.calls == 2
+    assert [item["page"] for item in first["findings"]] == [1, 2]
+
+    second = service.inspect_pages([page_one, page_two], cache_path=cache_path)
+    assert llm.calls == 2
+    assert second == first
+
+    # 内容换页位后命中同一缓存键，page 编号按当前位置重映射。
+    remapped = service.inspect_pages([page_two, page_one], cache_path=cache_path)
+    assert llm.calls == 2
+    assert [item["page"] for item in remapped["findings"]] == [1, 2]
+
+    cache_path.write_text("{not-json", encoding="utf-8")
+    rebuilt = service.inspect_pages([page_one], cache_path=cache_path)
+    assert llm.calls == 3
+    assert rebuilt["findings"][0]["page"] == 1
+    assert json.loads(cache_path.read_text(encoding="utf-8"))["entries"]
+
+
+def test_vision_environment_failures_are_not_cached(tmp_path):
+    page = tmp_path / "page-1.png"
+    page.write_bytes(b"png")
+    cache_path = tmp_path / "vision-cache.json"
+
+    class InvalidVisionLLM:
+        model = "mimo-vl"
+
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            return "not-json"
+
+    llm = InvalidVisionLLM()
+    service = VisionQAService(llm)
+
+    first = service.inspect_pages([page], cache_path=cache_path)
+    assert first["findings"][0]["category"] == "environment"
+    calls_after_first = llm.calls
+
+    second = service.inspect_pages([page], cache_path=cache_path)
+    assert second["findings"][0]["category"] == "environment"
+    assert llm.calls > calls_after_first
+
+
+def test_vision_concurrency_is_bounded_and_order_is_stable(tmp_path):
+    import threading
+    import time
+
+    pages = []
+    for index in range(4):
+        page = tmp_path / f"page-{index + 1}.png"
+        page.write_bytes(f"png-{index}".encode())
+        pages.append(page)
+
+    class SlowVisionLLM:
+        model = "mimo-vl"
+
+        def __init__(self):
+            self.lock = threading.Lock()
+            self.active = 0
+            self.max_active = 0
+
+        def think(self, messages, **_kwargs):
+            with self.lock:
+                self.active += 1
+                self.max_active = max(self.max_active, self.active)
+            time.sleep(0.05)
+            with self.lock:
+                self.active -= 1
+            prompt = messages[0]["content"][0]["text"]
+            marker = prompt.split("当前页码：")[1].split("。")[0]
+            return json.dumps(
+                {"findings": [{"severity": "warning", "anchor": f"p{marker}", "issue": "x"}]},
+                ensure_ascii=False,
+            )
+
+    llm = SlowVisionLLM()
+    result = VisionQAService(llm, max_workers=2).inspect_pages(pages)
+
+    assert llm.max_active <= 2
+    assert [item["page"] for item in result["findings"]] == [1, 2, 3, 4]
+    assert [item["anchor"] for item in result["findings"]] == ["p1", "p2", "p3", "p4"]
+
+
+def test_docx_verify_tool_publish_operation_and_validation():
+    class PublishVerifier:
+        def __init__(self):
+            self.calls = []
+
+        def publish(self, job_id, version=None, waive_environment=False):
+            self.calls.append((job_id, version, waive_environment))
+            return {
+                "published": True,
+                "already_published": False,
+                "version": 2,
+                "published_path": "outputs/x.docx",
+                "waivers": ["视觉模型未配置，未执行逐页图片检查"],
+            }
+
+    verifier = PublishVerifier()
+    result = DocxVerifyTool(verifier).run(
+        "job", version=2, operation="publish", waive_environment=True
+    )
+
+    assert verifier.calls == [("job", 2, True)]
+    assert result["ok"] is True
+    assert result["operation"] == "publish"
+    assert result["published_path"] == "outputs/x.docx"
+    assert result["waivers"] == ["视觉模型未配置，未执行逐页图片检查"]
+    assert "豁免" in result["instruction"]
+
+    with pytest.raises(ValueError, match="operation"):
+        DocxVerifyTool(verifier).run("job", operation="teleport")

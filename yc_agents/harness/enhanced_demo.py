@@ -17,7 +17,7 @@ def build_enhanced_demo_summary():
             },
             {
                 "name": "PermissionGate",
-                "description": "危险工具调用和敏感写入先返回 needs_approval。",
+                "description": "按工具 risk 声明与审批模式挂起等待人工批准，拒绝时回喂模型改道。",
             },
             {
                 "name": "EpisodePackage",
