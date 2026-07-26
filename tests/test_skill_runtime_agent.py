@@ -105,7 +105,7 @@ class FakeWebSearchProvider:
         }
 
 
-def write_skill(skills_dir, name="code-review", allowed_tools=None):
+def write_skill(skills_dir, name="code-review", allowed_tools=None, triggers=None):
     allowed_tools = allowed_tools or ["markdown_writer"]
     skill_dir = skills_dir / name
     skill_dir.mkdir(parents=True)
@@ -117,6 +117,9 @@ def write_skill(skills_dir, name="code-review", allowed_tools=None):
         "allowed_tools:",
     ]
     lines.extend(f"  - {tool}" for tool in allowed_tools)
+    if triggers:
+        lines.append("triggers:")
+        lines.extend(f"  - {trigger}" for trigger in triggers)
     lines.extend(
         [
             "---",
@@ -158,6 +161,13 @@ class SkipAwareIntentRouter(FakeIntentRouter):
     def route(self, user_input, skills, allow_llm_skip=False):
         self.skip_flags.append(allow_llm_skip)
         return super().route(user_input, skills)
+
+
+class DecisiveIntentRouter(SkipAwareIntentRouter):
+    def route(self, user_input, skills, allow_llm_skip=False):
+        result = super().route(user_input, skills, allow_llm_skip=allow_llm_skip)
+        result["llm_skipped"] = True
+        return result
 
 
 class CountingSessionMemory(SessionMemory):
@@ -1118,6 +1128,33 @@ class TestSkillRuntimeAgent(unittest.TestCase):
 
             self.assertEqual(agent.run("帮我写 eval"), "评估方案")
             self.assertTrue(router.calls)
+
+    def test_decisive_intent_route_bypasses_second_skill_selection(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            skills_dir = Path(tmp_dir) / "skills"
+            write_skill(
+                skills_dir,
+                name="docx-template-authoring",
+                allowed_tools=[],
+                triggers=["文档", "Word", "DOCX"],
+            )
+            router = DecisiveIntentRouter()
+            llm = FakeLLM(
+                [json.dumps({"type": "final_answer", "content": "Word 工作流"})]
+            )
+            agent = SkillRuntimeAgent(
+                llm,
+                skills_dir=skills_dir,
+                session_memory=SessionMemory(file_path=Path(tmp_dir) / "session.json"),
+                intent_router=router,
+            )
+
+            response = agent.run("请生成 Word 文档")
+
+            self.assertEqual(json.loads(response)["content"], "Word 工作流")
+            self.assertEqual(agent.current_selected_skill_name, "docx-template-authoring")
+            self.assertEqual(router.skip_flags, [True])
+            self.assertEqual(len(llm.messages), 1)
 
 
     def test_selected_skill_can_use_any_globally_enabled_tool(self):

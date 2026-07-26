@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from copy import deepcopy
 
 
 class ToolValidationError(ValueError):
@@ -31,6 +32,8 @@ class ToolField:
     type: str
     required: bool = True
     default: object = None
+    json_schema: dict | None = None
+    description: str = ""
 
 
 @dataclass(frozen=True)
@@ -77,7 +80,13 @@ class ToolSchema:
                     f"unknown type {field.type}. Use one of "
                     f"{sorted(OPENAI_JSON_SCHEMA_TYPES)}."
                 )
-            prop = {"type": json_type}
+            prop = (
+                deepcopy(field.json_schema)
+                if field.json_schema is not None
+                else {"type": json_type}
+            )
+            if field.description:
+                prop["description"] = field.description
             if not field.required and field.default is not None:
                 prop["default"] = field.default
             properties[field.name] = prop

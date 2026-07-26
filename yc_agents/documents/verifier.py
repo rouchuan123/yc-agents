@@ -11,9 +11,9 @@ from yc_agents.documents.ooxml import package_part_hashes, sha256_file, validate
 from yc_agents.documents.analyzer import _font_format, _paragraph_format, _role_for, DocxTemplateAnalyzer
 from yc_agents.documents.builder import (
     _has_field,
+    _heading_level,
     _heading_text_for_paragraph,
     _is_body_sample,
-    _styled_heading_level,
 )
 from yc_agents.documents.outline import flatten_outline
 
@@ -527,8 +527,15 @@ class DocxVerifier:
         ]
 
     @staticmethod
-    def _finding(severity, anchor, issue, suggested_action="", category="document"):
-        return {
+    def _finding(
+        severity,
+        anchor,
+        issue,
+        suggested_action="",
+        category="document",
+        **details,
+    ):
+        finding = {
             "severity": severity,
             "page": None,
             "anchor": anchor,
@@ -536,6 +543,8 @@ class DocxVerifier:
             "suggested_action": suggested_action,
             "category": category,
         }
+        finding.update(details)
+        return finding
 
     @staticmethod
     def _load_spec(job):
@@ -601,43 +610,117 @@ class DocxVerifier:
         actual_by_role = {}
         for index, paragraph in enumerate(paragraphs):
             role = _role_for(paragraph, index, first_nonempty)
-            if paragraph.text.strip() and role not in actual_by_role:
-                actual_by_role[role] = paragraph
+            if paragraph.text.strip():
+                actual_by_role.setdefault(role, []).append((index, paragraph))
         expected_by_role = {}
         for element in spec.get("elements", []):
             role = element.get("role")
             if element.get("text", "").strip() and role not in expected_by_role:
                 expected_by_role[role] = element
-        for role in ["title", "heading_1", "heading_2", "body", "caption"]:
+        roles = ["title", *(f"heading_{level}" for level in range(1, 10)), "body", "caption"]
+        for role in roles:
             expected = expected_by_role.get(role)
-            paragraph = actual_by_role.get(role)
-            if expected is None or paragraph is None:
+            candidates = actual_by_role.get(role) or []
+            if expected is None or not candidates:
                 continue
-            actual_paragraph = _paragraph_format(paragraph)
             expected_paragraph = expected.get("paragraph_format") or {}
-            for key in ["alignment", "line_spacing_rule", "raw_spacing", "raw_indent"]:
-                if actual_paragraph.get(key) != expected_paragraph.get(key):
-                    findings.append(
-                        self._finding(
-                            "blocking",
-                            role,
-                            f"代表性{role}段落格式 {key} 与模板不一致",
-                        )
-                    )
             expected_runs = expected.get("runs") or []
-            if expected_runs and paragraph.runs:
-                expected_font = expected_runs[0].get("effective_font") or {}
-                actual_font = _font_format(paragraph.runs[0], paragraph)
-                for key in ["names", "size", "bold"]:
-                    if actual_font.get(key) != expected_font.get(key):
-                        findings.append(
-                            self._finding(
-                                "blocking",
-                                role,
-                                f"代表性{role}字符格式 {key} 与模板不一致",
-                            )
-                        )
+            expected_font = (
+                expected_runs[0].get("effective_font") or {}
+                if expected_runs
+                else {}
+            )
+            target_ids = []
+            mismatched_fields = set()
+            role_candidates = (
+                candidates
+                if role.startswith("heading_")
+                else candidates[:1]
+            )
+            for index, paragraph in role_candidates:
+                paragraph_mismatches = []
+                actual_paragraph = _paragraph_format(paragraph)
+                for key in ["alignment", "line_spacing_rule", "raw_spacing", "raw_indent"]:
+                    if actual_paragraph.get(key) != expected_paragraph.get(key):
+                        paragraph_mismatches.append(f"paragraph.{key}")
+                if expected_runs and paragraph.runs:
+                    actual_font = _font_format(paragraph.runs[0], paragraph)
+                    for key in ["names", "size", "bold"]:
+                        if actual_font.get(key) != expected_font.get(key):
+                            paragraph_mismatches.append(f"font.{key}")
+                if paragraph_mismatches:
+                    target_ids.append(f"body.p{index:04d}")
+                    mismatched_fields.update(paragraph_mismatches)
+            if not target_ids:
+                continue
+            expected_style = self._expected_style_payload(expected)
+            findings.append(
+                self._finding(
+                    "blocking",
+                    role,
+                    (
+                        f"{role} 格式与模板不一致："
+                        + ", ".join(sorted(mismatched_fields))
+                    ),
+                    (
+                        "对 target_ids 中每个稳定段落 ID 执行扁平 docx_edit operation："
+                        '{"operation":"set_style","target":"body.pNNNN",'
+                        '"style":expected_style}'
+                    ),
+                    target_ids=target_ids,
+                    expected_style=expected_style,
+                    mismatched_fields=sorted(mismatched_fields),
+                )
+            )
         return findings
+
+    @staticmethod
+    def _expected_style_payload(element):
+        paragraph_format = element.get("paragraph_format") or {}
+        runs = element.get("runs") or []
+        font = (runs[0].get("effective_font") or {}) if runs else {}
+        style = {}
+
+        style_id = element.get("style_name") or element.get("style_id")
+        if style_id:
+            style["style_id"] = style_id
+        if paragraph_format.get("alignment") is not None:
+            style["alignment"] = paragraph_format["alignment"]
+        for source, target in (
+            ("left_indent", "left_indent_pt"),
+            ("right_indent", "right_indent_pt"),
+            ("first_line_indent", "first_line_indent_pt"),
+            ("space_before", "space_before_pt"),
+            ("space_after", "space_after_pt"),
+        ):
+            value = paragraph_format.get(source) or {}
+            if value.get("pt") is not None:
+                style[target] = value["pt"]
+        line_spacing = paragraph_format.get("line_spacing") or {}
+        if line_spacing.get("kind") == "length" and line_spacing.get("pt") is not None:
+            style["line_spacing_pt"] = line_spacing["pt"]
+        if paragraph_format.get("line_spacing_rule") is not None:
+            style["line_spacing_rule"] = paragraph_format["line_spacing_rule"]
+        for key in (
+            "keep_together",
+            "keep_with_next",
+            "page_break_before",
+            "widow_control",
+        ):
+            if paragraph_format.get(key) is not None:
+                style[key] = paragraph_format[key]
+        font_name = font.get("name")
+        if not font_name:
+            names = font.get("names") or {}
+            font_name = names.get("eastAsia") or names.get("ascii") or names.get("hAnsi")
+        if font_name:
+            style["font_name"] = font_name
+        size = font.get("size") or {}
+        if size.get("pt") is not None:
+            style["font_size_pt"] = size["pt"]
+        if font.get("bold") is not None:
+            style["bold"] = font["bold"]
+        return style
 
     def _structural_content_findings(self, job, spec, generated):
         findings = []
@@ -645,39 +728,7 @@ class DocxVerifier:
         outline_sections = flatten_outline(job.get("outline") or {})
         expected_titles = {str(item.get("title") or "").strip() for item in outline_sections}
 
-        title_groups = {}
-        for section in outline_sections:
-            title = str(section.get("title") or "").strip()
-            title_groups.setdefault(title, []).append(section)
-        for title, group in title_groups.items():
-            level = int(group[0].get("level") or 1)
-            matches = [
-                paragraph
-                for paragraph in paragraphs
-                if paragraph.text.strip()
-                == _heading_text_for_paragraph(title, paragraph, level)
-            ]
-            expected_count = len(group)
-            if len(matches) != expected_count:
-                findings.append(
-                    self._finding(
-                        "blocking",
-                        title or group[0].get("id") or "outline",
-                        f"提纲标题应在生成文档中出现 {expected_count} 次，实际为 {len(matches)} 次",
-                        "标题缺失时检查章节标题是否被改写；多余时检查正文是否包含与标题完全相同的整行文本",
-                    )
-                )
-                continue
-            if expected_count == 1:
-                actual_level = _styled_heading_level(matches[0])
-                if actual_level != level:
-                    findings.append(
-                        self._finding(
-                            "blocking",
-                            title,
-                            f"标题必须使用可导航的 Heading {level} 语义，实际层级为 {actual_level}",
-                        )
-                    )
+        findings.extend(self._outline_title_findings(outline_sections, paragraphs))
 
         for paragraph in paragraphs:
             style_name = str(paragraph.style.name or "").strip().lower()
@@ -774,12 +825,70 @@ class DocxVerifier:
             )
         return findings
 
+    def _outline_title_findings(self, outline_sections, paragraphs):
+        findings = []
+        title_groups = {}
+        for section in outline_sections:
+            title = str(section.get("title") or "").strip()
+            title_groups.setdefault(title, []).append(section)
+        for title, group in title_groups.items():
+            level = int(group[0].get("level") or 1)
+            indexed_matches = [
+                (index, paragraph)
+                for index, paragraph in enumerate(paragraphs)
+                if paragraph.text.strip()
+                == _heading_text_for_paragraph(title, paragraph, level)
+            ]
+            matches = [paragraph for _index, paragraph in indexed_matches]
+            expected_count = len(group)
+            if len(matches) != expected_count:
+                semantic_matches = [
+                    (index, paragraph)
+                    for index, paragraph in indexed_matches
+                    if _heading_level(paragraph) == level
+                ]
+                unexpected_target_ids = []
+                if len(semantic_matches) == expected_count:
+                    semantic_indexes = {index for index, _paragraph in semantic_matches}
+                    unexpected_target_ids = [
+                        f"body.p{index:04d}"
+                        for index, _paragraph in indexed_matches
+                        if index not in semantic_indexes
+                    ]
+                findings.append(
+                    self._finding(
+                        "blocking",
+                        title or group[0].get("id") or "outline",
+                        f"提纲标题应在生成文档中出现 {expected_count} 次，实际为 {len(matches)} 次",
+                        (
+                            "用 docx_edit 删除 unexpected_target_ids 指向的多余段落；"
+                            "没有稳定目标时先检查章节标题是否被改写或正文是否包含同名整行文本"
+                        ),
+                        expected_count=expected_count,
+                        actual_count=len(matches),
+                        unexpected_target_ids=unexpected_target_ids,
+                    )
+                )
+                continue
+            if expected_count == 1:
+                actual_level = _heading_level(matches[0])
+                if actual_level != level:
+                    findings.append(
+                        self._finding(
+                            "blocking",
+                            title,
+                            f"标题必须使用可导航的 Heading {level} 语义，实际层级为 {actual_level}",
+                        )
+                    )
+
+        return findings
+
     def _legacy_content_findings(self, job, generated, expected_titles):
         template = Document(job["template"]["path"])
         template_paragraphs = list(template.paragraphs)
         generated_texts = {paragraph.text.strip() for paragraph in generated.paragraphs if paragraph.text.strip()}
         first_heading = next(
-            (index for index, paragraph in enumerate(template_paragraphs) if _styled_heading_level(paragraph)),
+            (index for index, paragraph in enumerate(template_paragraphs) if _heading_level(paragraph)),
             0,
         )
         stale = []

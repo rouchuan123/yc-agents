@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 
 from docx import Document
-from docx.enum.text import WD_LINE_SPACING
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
@@ -37,11 +37,13 @@ class DocxEditor:
                 f"Revision conflict: current is v{int(job.get('current_revision') or 0):03d}, "
                 f"requested base is v{int(base_revision):03d}"
             )
-        if not list(operations or []):
+        operations = list(operations or [])
+        if not operations:
             raise ValueError(
                 "docx_edit requires at least one operation; an empty edit would create a "
                 "byte-identical revision."
             )
+        self._validate_operations(operations)
         base = self.job_store.revision(job_id, base_revision)
         version = self.job_store.next_version(job_id)
         revision_dir = self.job_store.job_root(job_id) / "revisions" / f"v{version:03d}"
@@ -128,6 +130,102 @@ class DocxEditor:
         "set_format": "set_style",
         "update_style": "set_style",
     }
+
+    _OPERATION_FIELDS = {
+        "replace_text": {
+            "operation",
+            "old_text",
+            "target",
+            "new_text",
+            "expected_replacements",
+        },
+        "replace_section": {"operation", "target", "content", "title"},
+        "insert": {"operation", "target", "content"},
+        "delete": {"operation", "target", "type"},
+        "move": {"operation", "target", "before"},
+        "update_table": {"operation", "target", "rows"},
+        "delete_table_column": {"operation", "target", "column"},
+        "set_style": {"operation", "target", "style"},
+        "replace_image": {"operation", "target", "image_path"},
+    }
+
+    _STYLE_FIELDS = {
+        "style_id",
+        "alignment",
+        "line_spacing_pt",
+        "line_spacing_rule",
+        "left_indent_pt",
+        "right_indent_pt",
+        "first_line_indent_pt",
+        "space_before_pt",
+        "space_after_pt",
+        "keep_together",
+        "keep_with_next",
+        "page_break_before",
+        "widow_control",
+        "font_name",
+        "font_size_pt",
+        "bold",
+    }
+
+    @classmethod
+    def _validate_operations(cls, operations):
+        for index, operation in enumerate(operations):
+            if not isinstance(operation, dict):
+                raise ValueError(
+                    f"Each edit operation must be an object; operations[{index}] "
+                    f"is {type(operation).__name__}"
+                )
+            name = str(operation.get("operation") or "").strip().lower()
+            name = cls._OPERATION_ALIASES.get(name, name)
+            if not name:
+                raise ValueError(
+                    f"operations[{index}] requires a flat 'operation' field. "
+                    "Example: {'operation':'set_style','target':'body.p0010',"
+                    "'style':{'style_id':'Heading 1'}}. Do not nest the operation "
+                    "under 'set_style' or 'args', and do not use 'type' as the operation name."
+                )
+            if name not in cls._OPERATION_FIELDS:
+                raise ValueError(
+                    f"Unsupported DOCX edit operation: {name}. Supported operations: "
+                    + ", ".join(cls._OPERATION_FIELDS)
+                    + "."
+                )
+            unknown = set(operation) - cls._OPERATION_FIELDS[name]
+            if unknown:
+                raise ValueError(
+                    f"operations[{index}] {name} has unsupported fields: {sorted(unknown)}. "
+                    f"Allowed fields: {sorted(cls._OPERATION_FIELDS[name])}"
+                )
+            if name == "set_style":
+                target = str(operation.get("target") or "").strip()
+                if not target:
+                    raise ValueError(
+                        f"operations[{index}] set_style requires target; use the "
+                        "body.pNNNN ID returned by docx_verify"
+                    )
+                style = operation.get("style")
+                if not isinstance(style, dict) or not style:
+                    raise ValueError(
+                        f"operations[{index}] set_style requires style to be a non-empty "
+                        "object, for example {'style_id':'Heading 1'}; a style name string "
+                        "is not valid"
+                    )
+                unknown_style = set(style) - cls._STYLE_FIELDS
+                if unknown_style:
+                    raise ValueError(
+                        f"operations[{index}] set_style has unsupported style fields: "
+                        f"{sorted(unknown_style)}. Allowed style fields: "
+                        f"{sorted(cls._STYLE_FIELDS)}"
+                    )
+            if name == "replace_text":
+                old = str(operation.get("old_text") or operation.get("target") or "")
+                new = str(operation.get("new_text") or "")
+                if old and old == new:
+                    raise ValueError(
+                        f"operations[{index}] replace_text is a no-op because old_text "
+                        "and new_text are identical; it cannot repair QA findings"
+                    )
 
     def _apply(self, document, operation):
         if not isinstance(operation, dict):
@@ -331,16 +429,46 @@ class DocxEditor:
 
     def _set_style(self, document, operation):
         paragraph = self._find_paragraph(document, operation.get("target"))
-        style = dict(operation.get("style") or {})
+        style = dict(operation["style"])
         if style.get("style_id"):
             paragraph.style = style["style_id"]
         if style.get("alignment") is not None:
-            paragraph.alignment = int(style["alignment"])
+            paragraph.alignment = self._enum_value(
+                WD_ALIGN_PARAGRAPH,
+                style["alignment"],
+                "alignment",
+            )
         if style.get("line_spacing_pt") is not None:
             paragraph.paragraph_format.line_spacing = Pt(float(style["line_spacing_pt"]))
+        if style.get("line_spacing_rule") is not None:
+            paragraph.paragraph_format.line_spacing_rule = self._enum_value(
+                WD_LINE_SPACING,
+                style["line_spacing_rule"],
+                "line_spacing_rule",
+            )
+        elif style.get("line_spacing_pt") is not None:
             paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.EXACTLY
-        if style.get("first_line_indent_pt") is not None:
-            paragraph.paragraph_format.first_line_indent = Pt(float(style["first_line_indent_pt"]))
+        for key, attribute in (
+            ("left_indent_pt", "left_indent"),
+            ("right_indent_pt", "right_indent"),
+            ("first_line_indent_pt", "first_line_indent"),
+            ("space_before_pt", "space_before"),
+            ("space_after_pt", "space_after"),
+        ):
+            if style.get(key) is not None:
+                setattr(
+                    paragraph.paragraph_format,
+                    attribute,
+                    Pt(float(style[key])),
+                )
+        for key in (
+            "keep_together",
+            "keep_with_next",
+            "page_break_before",
+            "widow_control",
+        ):
+            if style.get(key) is not None:
+                setattr(paragraph.paragraph_format, key, bool(style[key]))
         for run in paragraph.runs:
             if style.get("font_name"):
                 run.font.name = style["font_name"]
@@ -350,6 +478,26 @@ class DocxEditor:
             if style.get("bold") is not None:
                 run.bold = bool(style["bold"])
         return {"operation": "set_style", "target": operation.get("target")}
+
+    @staticmethod
+    def _enum_value(enum_type, value, field):
+        if isinstance(value, str):
+            normalized = value.strip().upper()
+            member = getattr(enum_type, normalized, None)
+            if member is None:
+                choices = ", ".join(
+                    name
+                    for name in dir(enum_type)
+                    if name.isupper() and not name.startswith("_")
+                )
+                raise ValueError(
+                    f"Unsupported {field}: {value}. Use one of: {choices}"
+                )
+            return member
+        try:
+            return enum_type(int(value))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(f"Unsupported {field}: {value}") from exc
 
     def _replace_image(self, document, operation):
         image_path = Path(str(operation.get("image_path") or "")).resolve()

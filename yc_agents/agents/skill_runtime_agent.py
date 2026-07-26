@@ -100,6 +100,7 @@ class SkillRuntimeAgent:
         self._turn_summary_message = None
         self._turn_last_response = None
         self._turn_pending_entry = None
+        self._current_intent_route = None
 
     def run(self, user_input):
         self._reset_turn_state()
@@ -118,6 +119,17 @@ class SkillRuntimeAgent:
 
         skills = self._discover_candidate_skills(registry, user_input)
         memory_context = self._begin_turn_memory(user_input, skills)
+
+        routed = self._decisive_routed_skill(registry)
+        if routed is not None:
+            selected_skill, selection = routed
+            self._set_skill_tool_context(selected_skill)
+            return self._answer_with_skill(
+                user_input,
+                selected_skill,
+                selection,
+                memory_context,
+            )
 
         selection_context = self.context_manager.build_skill_selection_context(
             user_input,
@@ -165,6 +177,18 @@ class SkillRuntimeAgent:
 
         skills = self._discover_candidate_skills(registry, user_input)
         memory_context = self._begin_turn_memory(user_input, skills)
+
+        routed = self._decisive_routed_skill(registry)
+        if routed is not None:
+            selected_skill, selection = routed
+            self._set_skill_tool_context(selected_skill)
+            yield from self._stream_answer_with_skill(
+                user_input,
+                selected_skill,
+                selection,
+                memory_context,
+            )
+            return
 
         selection_context = self.context_manager.build_skill_selection_context(
             user_input,
@@ -393,6 +417,7 @@ class SkillRuntimeAgent:
 
         if self.intent_router is not None:
             route = self._route_intent(user_input, skills)
+            self._current_intent_route = route
             ordered_names = [
                 item["skill_name"]
                 for item in route.get("candidates", [])
@@ -407,6 +432,20 @@ class SkillRuntimeAgent:
             return skills
 
         return [result.skill for result in discovered]
+
+    def _decisive_routed_skill(self, registry):
+        route = self._current_intent_route or {}
+        selected_name = route.get("selected_skill")
+        if not route.get("llm_skipped") or selected_name not in registry.skills:
+            return None
+        selection = {
+            "type": "skill_selection",
+            "selected_skill": selected_name,
+            "confidence": float(route.get("confidence") or 0.0),
+            "reason": "Decisive rule/semantic intent route selected this skill.",
+            "source": "intent_router",
+        }
+        return registry.skills[selected_name], selection
 
     def _route_intent(self, user_input, skills):
         # Routers that understand allow_llm_skip may short-circuit the LLM
@@ -608,6 +647,7 @@ class SkillRuntimeAgent:
         self._turn_summary_message = None
         self._turn_last_response = None
         self._turn_pending_entry = None
+        self._current_intent_route = None
         # 降级标记只作用于紧接着重建的这一轮，消费后自动清除。
         self._turn_native_disabled = self._native_fallback_pending
         self._native_fallback_pending = False

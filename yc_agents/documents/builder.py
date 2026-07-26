@@ -17,6 +17,11 @@ from yc_agents.documents.content import (
     is_literature_review_job,
 )
 from yc_agents.documents.contract import normalize_template_contract
+from yc_agents.documents.headings import (
+    is_structural_heading,
+    structural_heading_level,
+    styled_heading_level,
+)
 from yc_agents.documents.ooxml import package_part_hashes, preserve_package_parts, sha256_file
 
 
@@ -55,49 +60,15 @@ def _replace_paragraph_text(paragraph, text):
 
 
 def _styled_heading_level(paragraph):
-    text = paragraph.text.strip()
-    style_name = (paragraph.style.name or "").lower()
-    if not text:
-        return None
-    if style_name.startswith("toc") or style_name.startswith("目录"):
-        return None
-    style_match = re.search(r"(?:heading|标题)\s*([1-9])", style_name)
-    if style_match:
-        return int(style_match.group(1))
-    outline_level = paragraph._p.xpath("./w:pPr/w:outlineLvl/@w:val")
-    if outline_level:
-        try:
-            return int(outline_level[0]) + 1
-        except (TypeError, ValueError):
-            pass
-    return None
+    return styled_heading_level(paragraph)
 
 
 def _heading_level(paragraph):
-    styled = _styled_heading_level(paragraph)
-    if styled is not None:
-        return styled
-    text = paragraph.text.strip()
-    style_name = (paragraph.style.name or "").lower()
-    if not text or style_name.startswith("toc") or style_name.startswith("目录"):
-        return None
-    if _has_field(paragraph):
-        return None
-    if re.match(
-        r"^(?:第[一二三四五六七八九十百0-9]+[章节篇部](?:\s|[、：:])|[一二三四五六七八九十百]+、)",
-        text,
-    ):
-        return 1
-    numeric = re.match(r"^(\d+(?:\.\d+){0,3})[、.\s]", text)
-    if numeric:
-        return numeric.group(1).count(".") + 1
-    if "heading" in style_name or "标题" in style_name:
-        return 1
-    return None
+    return structural_heading_level(paragraph)
 
 
 def _is_heading(paragraph):
-    return _heading_level(paragraph) is not None
+    return is_structural_heading(paragraph)
 
 
 def _has_field(paragraph):
@@ -113,6 +84,7 @@ def _is_body_sample(paragraph):
         and not _is_heading(paragraph)
         and not _has_field(paragraph)
         and not style_name.startswith("toc")
+        and not re.search(r"(?:heading|标题)\s*[1-9]", style_name)
         and style_name not in {"title", "subtitle", "题名", "副标题"}
         and (not direct_sizes or max(direct_sizes) <= 18)
         and not re.match(r"^(?:图|表)\s*\d+", text)
@@ -264,10 +236,12 @@ def _apply_paragraph_template(paragraph, sample_xml):
 
 def _set_semantic_heading(paragraph, level):
     level = max(1, min(9, int(level or 1)))
-    try:
-        paragraph.style = f"Heading {level}"
-    except KeyError:
-        pass
+    # The template's paragraph style is part of its visual contract. A
+    # semantic heading level does not imply that Word's built-in
+    # ``Heading N`` style should replace it: real templates commonly use
+    # Title, Subtitle, or a differently numbered custom style for a numbered
+    # chapter. Keep the sampled pStyle and express navigation semantics with a
+    # direct outline level instead.
     ppr = paragraph._p.get_or_add_pPr()
     outline = ppr.find(qn("w:outlineLvl"))
     if outline is None:
@@ -461,9 +435,7 @@ class DocxBuilder:
 
     def _rewrite_sections(self, document, sections, table_samples=None):
         paragraphs = list(document.paragraphs)
-        all_headings = [paragraph for paragraph in paragraphs if _styled_heading_level(paragraph)]
-        if not all_headings:
-            all_headings = [paragraph for paragraph in paragraphs if _is_heading(paragraph)]
+        all_headings = [paragraph for paragraph in paragraphs if _is_heading(paragraph)]
         first_heading_index = paragraphs.index(all_headings[0]) if all_headings else 0
         body_sample = next(
             (paragraph for paragraph in paragraphs[first_heading_index + 1 :] if _is_body_sample(paragraph)),

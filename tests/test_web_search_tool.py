@@ -1,5 +1,7 @@
+import io
 import os
 import unittest
+import urllib.error
 from unittest.mock import patch
 import json
 
@@ -112,6 +114,165 @@ class TestWebSearchTool(unittest.TestCase):
         provider = TavilyWebSearchProvider(api_key="configured-key", client=None)
 
         self.assertEqual(provider.api_key, "configured-key")
+
+
+class RaisingClient:
+    def __init__(self, exc):
+        self.exc = exc
+
+    def search(self, **kwargs):
+        raise self.exc
+
+
+class TestWebSearchNormalization(unittest.TestCase):
+    def _provider(self):
+        client = FakeTavilyClient()
+        return client, TavilyWebSearchProvider(api_key="key", client=client)
+
+    def test_search_depth_deep_is_normalized_to_advanced(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", search_depth="deep")
+
+        self.assertEqual(client.calls[0]["search_depth"], "advanced")
+        self.assertEqual(
+            result["normalized"]["search_depth"], {"given": "deep", "used": "advanced"}
+        )
+
+    def test_search_depth_synonyms_map_to_advanced(self):
+        for alias in ("depth", "advance", "thorough"):
+            client, provider = self._provider()
+
+            provider.search(query="q", search_depth=alias)
+
+            self.assertEqual(client.calls[0]["search_depth"], "advanced")
+
+    def test_search_depth_unknown_falls_back_to_basic(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", search_depth="turbo")
+
+        self.assertEqual(client.calls[0]["search_depth"], "basic")
+        self.assertEqual(
+            result["normalized"]["search_depth"], {"given": "turbo", "used": "basic"}
+        )
+
+    def test_topic_unknown_falls_back_to_general(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", topic="technology")
+
+        self.assertEqual(client.calls[0]["topic"], "general")
+        self.assertEqual(
+            result["normalized"]["topic"], {"given": "technology", "used": "general"}
+        )
+
+    def test_topic_news_passes_through(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", topic="news")
+
+        self.assertEqual(client.calls[0]["topic"], "news")
+        self.assertNotIn("normalized", result)
+
+    def test_time_range_unknown_is_dropped(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", time_range="recently")
+
+        self.assertNotIn("time_range", client.calls[0])
+        self.assertEqual(
+            result["normalized"]["time_range"], {"given": "recently", "used": None}
+        )
+
+    def test_time_range_short_form_passes_through(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", time_range="w")
+
+        self.assertEqual(client.calls[0]["time_range"], "w")
+        self.assertNotIn("normalized", result)
+
+    def test_max_results_clamped_to_lower_bound(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", max_results=0)
+
+        self.assertEqual(client.calls[0]["max_results"], 1)
+        self.assertEqual(result["normalized"]["max_results"], {"given": 0, "used": 1})
+
+    def test_max_results_clamped_to_upper_bound(self):
+        client, provider = self._provider()
+
+        result = provider.search(query="q", max_results=99)
+
+        self.assertEqual(client.calls[0]["max_results"], 20)
+        self.assertEqual(result["normalized"]["max_results"], {"given": 99, "used": 20})
+
+    def test_valid_arguments_have_no_normalized_field(self):
+        client, provider = self._provider()
+
+        result = provider.search(
+            query="q", max_results=5, search_depth="advanced", topic="finance"
+        )
+
+        self.assertEqual(client.calls[0]["search_depth"], "advanced")
+        self.assertEqual(client.calls[0]["topic"], "finance")
+        self.assertNotIn("normalized", result)
+
+
+class TestWebSearchErrorReporting(unittest.TestCase):
+    def test_http_error_surfaces_status_and_body(self):
+        exc = urllib.error.HTTPError(
+            url="https://api.tavily.com/search",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"detail": {"error": "search_depth must be basic or advanced"}}'),
+        )
+        provider = TavilyWebSearchProvider(api_key="key", client=RaisingClient(exc))
+
+        result = provider.search(query="q")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "http_error")
+        self.assertIn("400", result["error"])
+        self.assertIn("search_depth must be basic or advanced", result["error"])
+        self.assertIn("basic/advanced", result["error"])
+
+    def test_http_error_body_truncated_to_300_chars(self):
+        body = b"x" * 1000
+        exc = urllib.error.HTTPError(
+            url="https://api.tavily.com/search",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(body),
+        )
+        provider = TavilyWebSearchProvider(api_key="key", client=RaisingClient(exc))
+
+        result = provider.search(query="q")
+
+        self.assertIn("x" * 300, result["error"])
+        self.assertNotIn("x" * 301, result["error"])
+
+    def test_url_error_still_reported_as_network_error(self):
+        exc = urllib.error.URLError("connection refused")
+        provider = TavilyWebSearchProvider(api_key="key", client=RaisingClient(exc))
+
+        result = provider.search(query="q")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "network_error")
+
+    def test_tool_description_documents_allowed_values(self):
+        description = WebSearchTool.description
+
+        self.assertIn("basic", description)
+        self.assertIn("advanced", description)
+        self.assertIn("general", description)
+        self.assertIn("news", description)
+        self.assertIn("finance", description)
 
 
 if __name__ == "__main__":

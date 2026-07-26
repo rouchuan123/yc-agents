@@ -1,6 +1,17 @@
 ---
 name: docx-template-authoring
 description: 从用户附加的一篇已写好的 Word .docx 中提取页面、字体字号、行距、缩进、编号、表格、页眉页脚等精细排版和章节结构，结合用户需求、已确认的工作区资料及必要的网页搜索生成类似的新 DOCX，并支持自然语言连续修改、视觉验收、版本历史和回滚。用户说“照这个Word做一份类似文档”“沿用这个排版和结构”“修改刚生成的Word”或附加成品DOCX作为参考模板时使用。
+triggers:
+  - 文档
+  - 生成文档
+  - 写文档
+  - Word
+  - Word文档
+  - DOCX
+  - 导出Word
+  - 文档模板
+  - 沿用排版
+  - 沿用格式
 ---
 
 # 成品 Word 模板仿写与连续修订
@@ -18,7 +29,7 @@ get_active → create → analyzer(一次) → 契约 set_contract → 需求/�
 ## 每轮起点
 
 1. 每轮先调用一次 `document_job.get_active`（不要重复调用）读取当前任务与附件。后续判断只基于 active job 和 current revision，不凭聊天记忆猜测。
-2. 无任务但有唯一模板附件 → 直接 `document_job.create`（可省略 attachment_id）；多个不同模板 → 列出名称和 ID 请用户选择；附件列表确实为空才请用户 `/attach template "<path>"`。不要编造附件 ID。
+2. 无任务但有唯一模板附件 → 直接 `document_job.create`（可省略 attachment_id）；多个不同模板附件 → 列出名称和 ID 请用户选择。附件列表为空时不要让用户去 /attach：工作区根目录恰有一个 .docx 时 create 会自动导入（返回 `auto_imported_from`）；多个候选或用户点名了文件时用 `document_job.create(template_path="<绝对或相对工作区根的路径>")`；确实找不到 .docx 才向用户询问文件路径。不要编造附件 ID。
 3. 用户输入过短或含义不明（如单个字、单个数字）且当前没有明确的待办下一步时，先用一句话确认意图，不要直接触发工具链。
 
 ## 模板分析与查询

@@ -587,6 +587,17 @@ class FakeArtifactTool(BaseTool):
         return {"ok": True, "artifacts": [f"outputs/{text}"]}
 
 
+class FakeExpectedFollowupTool(BaseTool):
+    name = "fake_tool"
+    description = "Fake expected workflow state."
+
+    def __init__(self, result):
+        self.result = dict(result)
+
+    def run(self, text):
+        return dict(self.result)
+
+
 class FakeRunAnalytics:
     def __init__(self):
         self.events = []
@@ -1402,6 +1413,53 @@ class TestYCAgentRuntime(unittest.TestCase):
         event_types = [event["event_type"] for event in runtime.last_trace_events]
         self.assertIn("recovery_attempt", event_types)
         self.assertIn("recovery_succeeded", event_types)
+
+    def test_expected_document_followups_do_not_consume_recovery_budget(self):
+        expected_results = [
+            {
+                "ok": False,
+                "error": "PENDING_QUESTIONS",
+                "error_type": "needs_user_input",
+                "requires_user_input": True,
+                "pending_questions": ["是否允许联网？"],
+                "next_action": "ask_user",
+            },
+            {
+                "ok": False,
+                "error": "DOCX_QA_BLOCKED",
+                "passed": False,
+                "findings": [{"anchor": "1 引言"}],
+                "next_action": "docx_edit",
+            },
+        ]
+
+        for expected in expected_results:
+            registry = ToolRegistry()
+            registry.register(FakeExpectedFollowupTool(expected))
+            agent = FakeToolFailureFeedbackAgent()
+            runtime = YCAgentRuntime(
+                agent,
+                expects_json=True,
+                tool_registry=registry,
+                allowed_tools=["fake_tool"],
+                recovery_policy=RecoveryPolicy(
+                    protocol_retries=0,
+                    provider_retries=0,
+                    verification_retries=0,
+                    max_attempts=1,
+                    lifetime_max_attempts=1,
+                ),
+            )
+
+            response = runtime.run("expected document follow-up")
+
+            self.assertEqual(
+                response,
+                "continued with an alternative after missing file",
+            )
+            event_types = [event["event_type"] for event in runtime.last_trace_events]
+            self.assertNotIn("recovery_attempt", event_types)
+            self.assertNotIn("recovery_succeeded", event_types)
 
     def test_run_returns_run_result_with_metadata_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
