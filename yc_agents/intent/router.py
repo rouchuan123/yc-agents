@@ -72,6 +72,9 @@ class IntentRouter:
         return result
 
     def _rule_semantic_lead_is_decisive(self, scores):
+        if self._rule_lead_is_decisive(scores):
+            return True
+
         fused = sorted(
             (
                 candidate["components"]["rule"] * self.weights.get("rule", 0.0)
@@ -89,6 +92,20 @@ class IntentRouter:
             return False
 
         return top >= runner_up * self.short_circuit_ratio
+
+    def _rule_lead_is_decisive(self, scores):
+        ranked = sorted(
+            (
+                candidate["components"]["rule"]
+                for candidate in scores.values()
+            ),
+            reverse=True,
+        )
+        if not ranked:
+            return False
+        top = ranked[0]
+        runner_up = ranked[1] if len(ranked) > 1 else 0.0
+        return top >= 0.9 and top >= runner_up * self.short_circuit_ratio
 
     def _empty_candidate(self, skill_name):
         return {

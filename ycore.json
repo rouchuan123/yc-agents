@@ -156,7 +156,7 @@
     "failOnInvalidJson": true,
     "tokenBudget": {
       "softTokens": 1500000,
-      "hardTokens": 3000000
+      "hardTokens": 30000000
     }
   },
   "analytics": {

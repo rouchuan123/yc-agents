@@ -803,7 +803,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.assertEqual(data["runtime"]["modelTimeoutSeconds"], 60)
         self.assertEqual(
             data["runtime"]["tokenBudget"],
-            {"softTokens": 1500000, "hardTokens": 3000000},
+            {"softTokens": 1500000, "hardTokens": 30000000},
         )
         self.assertIn("analytics", data)
         self.assertNotIn("apiKey", search)

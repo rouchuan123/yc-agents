@@ -44,6 +44,11 @@ from yc_agents.documents.jobs import DocumentJobStore
 
 
 class PromptTextArea(TextArea):
+    # Windows 终端常把 shift+enter 上报成普通 enter，ctrl+j 是各终端
+    # 都可靠的换行键，alt+enter 作为补充。
+    NEWLINE_KEYS = frozenset({"shift+enter", "ctrl+j", "alt+enter"})
+    MAX_AUTO_HEIGHT = 6
+
     @dataclass
     class Submitted(Message):
         text_area: "PromptTextArea"
@@ -61,12 +66,47 @@ class PromptTextArea(TextArea):
     def value(self, value):
         self.load_text(str(value or ""))
 
+    def on_mount(self):
+        self.sync_prompt_height()
+
+    def _on_text_area_changed(self, event: TextArea.Changed):
+        if event.text_area is self:
+            self.sync_prompt_height()
+
+    def sync_prompt_height(self):
+        wrapped_height = getattr(self.wrapped_document, "height", 0)
+        lines = int(wrapped_height or self.document.line_count)
+        self.styles.height = max(1, min(lines, self.MAX_AUTO_HEIGHT))
+
+    def _suggestion_app(self):
+        try:
+            app = self.app
+        except Exception:
+            return None
+        if getattr(app, "command_suggestions_visible", False):
+            return app
+        return None
+
     async def _on_key(self, event: events.Key):
-        if event.key == "shift+enter":
+        if event.key in self.NEWLINE_KEYS:
             event.stop()
             event.prevent_default()
             start, end = self.selection
             self._replace_via_keyboard("\n", start, end)
+            return
+        suggestion_app = self._suggestion_app()
+        if suggestion_app is not None and event.key in {"up", "down", "tab", "enter", "escape"}:
+            event.stop()
+            event.prevent_default()
+            if event.key == "up":
+                suggestion_app.move_suggestion_selection(-1)
+            elif event.key == "down":
+                suggestion_app.move_suggestion_selection(1)
+            elif event.key == "escape":
+                suggestion_app.hide_command_suggestions()
+            else:
+                # tab 与 enter 都补全当前选中的命令，enter 不直接发送。
+                suggestion_app.complete_selected_suggestion()
             return
         if event.key == "enter":
             event.stop()
@@ -228,7 +268,7 @@ class YCAgentsTUIApp(App):
         self.command_suggestions = Static("", id="command-suggestions")
         self.command_suggestions.display = False
         self.prompt = PromptTextArea(
-            placeholder="Ask YCore anything...",
+            placeholder="Ask YCore anything...  Enter 发送 · Ctrl+J 换行",
             id="prompt",
             soft_wrap=True,
             show_line_numbers=False,
@@ -1783,6 +1823,9 @@ class YCAgentsTUIApp(App):
                 self.prompt.value = value
         else:
             self.prompt.value = value
+        sync_height = getattr(self.prompt, "sync_prompt_height", None)
+        if callable(sync_height):
+            sync_height()
         self.move_prompt_cursor_to_end()
 
     def move_prompt_cursor_to_end(self):

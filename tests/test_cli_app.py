@@ -915,6 +915,129 @@ class TestYCAgentsTUIApp(unittest.TestCase):
 
         asyncio.run(run_app())
 
+    def test_ctrl_j_and_alt_enter_insert_newline_without_submitting(self):
+        async def run_app():
+            runtime = FakeRuntime()
+            app = YCAgentsTUIApp(
+                runtime,
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test() as pilot:
+                app.prompt.focus()
+                app.prompt.value = "第一行"
+                app.prompt.action_end()
+                await pilot.press("ctrl+j")
+                await pilot.press("第", "二", "行")
+                await pilot.press("alt+enter")
+                await pilot.press("尾")
+                await pilot.pause()
+
+                self.assertEqual(app.prompt.text, "第一行\n第二行\n尾")
+                self.assertIsNone(app.current_run_task)
+                self.assertEqual(runtime.calls, [])
+
+        asyncio.run(run_app())
+
+    def test_prompt_placeholder_mentions_newline_key(self):
+        app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+        list(app.compose())
+
+        self.assertIn("Ctrl+J", str(app.prompt.placeholder))
+
+    def test_prompt_height_tracks_line_count_up_to_six_rows(self):
+        async def run_app():
+            app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
+
+            async with app.run_test(size=(120, 40)) as pilot:
+                await pilot.pause()
+                self.assertEqual(int(app.prompt.styles.height.value), 1)
+
+                app.prompt.value = "a\nb\nc\nd"
+                await pilot.pause()
+                self.assertEqual(int(app.prompt.styles.height.value), 4)
+
+                app.prompt.value = "\n".join(str(index) for index in range(10))
+                await pilot.pause()
+                self.assertEqual(int(app.prompt.styles.height.value), 6)
+
+                app.prompt.value = ""
+                await pilot.pause()
+                self.assertEqual(int(app.prompt.styles.height.value), 1)
+
+        asyncio.run(run_app())
+
+    def test_prompt_arrow_keys_navigate_suggestions_and_enter_completes(self):
+        async def run_app():
+            runtime = FakeRuntime()
+            app = YCAgentsTUIApp(
+                runtime,
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test() as pilot:
+                app.prompt.focus()
+                app.prompt.value = "/"
+                await pilot.pause()
+                self.assertTrue(app.command_suggestions_visible)
+
+                await pilot.press("down")
+                await pilot.pause()
+                self.assertEqual(app.selected_suggestion_index, 1)
+                self.assertEqual(app.prompt.text, "/session new")
+
+                await pilot.press("up")
+                await pilot.pause()
+                self.assertEqual(app.selected_suggestion_index, 0)
+
+                await pilot.press("down")
+                await pilot.press("enter")
+                await pilot.pause()
+
+                self.assertFalse(app.command_suggestions_visible)
+                self.assertEqual(app.prompt.text, "/session new")
+                self.assertIsNone(app.current_run_task)
+                self.assertEqual(runtime.calls, [])
+                self.assertEqual(app.transcript_entries, [])
+
+        asyncio.run(run_app())
+
+    def test_prompt_tab_completes_and_escape_closes_suggestions(self):
+        async def run_app():
+            app = YCAgentsTUIApp(
+                FakeRuntime(),
+                status_collector=FakeStatusCollector(),
+                stream_delay=0,
+                timer_interval=3600,
+            )
+
+            async with app.run_test() as pilot:
+                app.prompt.focus()
+                app.prompt.value = "/se"
+                await pilot.pause()
+                self.assertTrue(app.command_suggestions_visible)
+
+                await pilot.press("tab")
+                await pilot.pause()
+                self.assertFalse(app.command_suggestions_visible)
+                self.assertEqual(app.prompt.text, "/session")
+                self.assertIs(app.focused, app.prompt)
+
+                app.prompt.value = "/wo"
+                await pilot.pause()
+                self.assertTrue(app.command_suggestions_visible)
+
+                await pilot.press("escape")
+                await pilot.pause()
+                self.assertFalse(app.command_suggestions_visible)
+                self.assertEqual(app.prompt.text, "/wo")
+
+        asyncio.run(run_app())
+
     def test_turn_widgets_use_semantic_visual_classes(self):
         app = YCAgentsTUIApp(FakeRuntime(), status_collector=FakeStatusCollector())
 

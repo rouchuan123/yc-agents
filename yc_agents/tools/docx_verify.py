@@ -10,7 +10,8 @@ class DocxVerifyTool(BaseTool):
         "mode=deterministic is fast and free; run it first after every generate/edit, and run "
         "mode=all (render + vision + publish gate) once deterministic passes. "
         "A failed check returns ok=false with error=DOCX_QA_BLOCKED plus the full findings list "
-        "(anchor/page/suggested_action/category) — fix findings with docx_edit using those anchors; "
+        "(anchor/page/suggested_action/category plus stable unexpected_target_ids when available) — "
+        "fix findings with docx_edit using those paragraph IDs or anchors; "
         "do not regenerate an unchanged document. category=environment findings (fonts, Word, vision "
         "model, PyMuPDF) cannot be fixed by editing the document: report them to the user instead, "
         "and with the user's explicit consent operation=publish with waive_environment=true delivers "
@@ -58,7 +59,7 @@ class DocxVerifyTool(BaseTool):
         # qa_report_path, so only what the next action needs travels back.
         if not result.get("passed"):
             blocking = [
-                self._finding_triple(item)
+                self._finding_summary(item)
                 for item in result.get("findings", [])
                 if item.get("severity") == "blocking"
             ]
@@ -75,9 +76,12 @@ class DocxVerifyTool(BaseTool):
             else:
                 next_action = "docx_edit"
                 instruction = (
-                    "Fix each blocking finding with docx_edit on the current revision, using the "
-                    "finding's anchor as the target; the full report with pages and categories is "
-                    "at qa_report_path. Regenerating without changing content will be rejected "
+                    "Fix each blocking finding with docx_edit on the current revision. When a "
+                    "finding includes target_ids and expected_style, create one flat set_style "
+                    "operation per target ID and copy expected_style as the style object; do not "
+                    "use the semantic anchor as a paragraph target. Otherwise use a stable "
+                    "body.pNNNN/unexpected_target_ids value when supplied. The full report is at "
+                    "qa_report_path. Regenerating without changing content will be rejected "
                     "(NO_CONTENT_CHANGE). After the fix, verify deterministic first, then mode=all."
                 )
             return {
@@ -92,7 +96,7 @@ class DocxVerifyTool(BaseTool):
                 "instruction": instruction,
             }
         warnings = [
-            self._finding_triple(item)
+            self._finding_summary(item)
             for item in result.get("findings", [])
             if item.get("severity") == "warning"
         ]
@@ -108,9 +112,22 @@ class DocxVerifyTool(BaseTool):
         }
 
     @staticmethod
-    def _finding_triple(item):
-        return {
+    def _finding_summary(item):
+        result = {
             "anchor": str(item.get("anchor") or ""),
             "issue": str(item.get("issue") or ""),
             "suggested_action": str(item.get("suggested_action") or ""),
+            "category": str(item.get("category") or "document"),
         }
+        for key in (
+            "page",
+            "expected_count",
+            "actual_count",
+            "unexpected_target_ids",
+            "target_ids",
+            "expected_style",
+            "mismatched_fields",
+        ):
+            if key in item:
+                result[key] = item.get(key)
+        return result

@@ -878,7 +878,8 @@ class YCAgentRuntime:
                     error_type="loop_stopped",
                 )
 
-            if self._tool_result_failed(tool_result):
+            expected_followup = self._tool_result_is_expected_followup(tool_result)
+            if self._tool_result_failed(tool_result) and not expected_followup:
                 # approval_denied 不在停机名单里：审批拒绝作为普通工具失败
                 # 回喂模型改道，绝不丢弃整轮进度。
                 error_type = tool_result.get("error_type", "tool_error")
@@ -1432,7 +1433,8 @@ class YCAgentRuntime:
             )
 
         tool_recovery = None
-        tool_failed = self._tool_result_failed(tool_result)
+        expected_followup = self._tool_result_is_expected_followup(tool_result)
+        tool_failed = self._tool_result_failed(tool_result) and not expected_followup
         if tool_failed:
             # approval_denied 不在停机名单里：审批拒绝作为普通工具失败
             # 回喂模型改道，绝不丢弃整轮进度。
@@ -1686,6 +1688,13 @@ class YCAgentRuntime:
 
     def _tool_result_failed(self, tool_result):
         return isinstance(tool_result, dict) and tool_result.get("ok") is False
+
+    def _tool_result_is_expected_followup(self, tool_result):
+        if not isinstance(tool_result, dict) or tool_result.get("ok") is not False:
+            return False
+        if tool_result.get("requires_user_input") is True:
+            return True
+        return str(tool_result.get("error") or "") == "DOCX_QA_BLOCKED"
 
     def _tool_failure_message(self, tool_result):
         tool_name = str(tool_result.get("tool_name") or "tool")

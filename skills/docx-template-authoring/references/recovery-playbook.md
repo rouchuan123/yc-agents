@@ -6,6 +6,9 @@
 
 | 错误 | 含义 | 正确的下一步 |
 | --- | --- | --- |
+| `No DOCX template is available: ...` | 会话无模板附件且工作区根目录没有 .docx | 问用户模板文件在哪 → `document_job.create(template_path="<路径>")`（绝对或相对工作区根均可）。用户也可自行 `/attach template <path>`，但模型不能替用户执行 /attach，首选自己传 template_path |
+| `...workspace root has multiple DOCX files: ...` | 工作区根目录有多个 .docx，无法自动选定 | 拿错误里列出的文件名向用户确认哪个是模板 → `document_job.create(template_path="<选中的文件名>")` |
+| `template_path does not exist` / `template_path must point to a .docx` | template_path 拼错或指向非 .docx 文件 | 用 `list_attachments` 返回的 `workspace_docx_candidates` 核对文件名，或向用户要正确路径后重发 create |
 | `PENDING_QUESTIONS` | 需求待办未清空 | 向用户问清列出的问题 → `document_job.update_requirements(requirements={...}, pending_questions=[])` → 重新 confirm_plan / generate |
 | `Template contract still has unresolved confirmation items: [...]` | 有 confirm 项未决 | 把列出的项集中问用户一次 → 一次 `set_contract` 写入全部决定（action 用 preserve/rewrite/delete）→ confirm_plan |
 | `UNKNOWN_CONTRACT_ELEMENT` | 契约里的 element_id 在模板中不存在 | 用错误信息里列出的合法表格 ID 或 `docx_template_query` 查真实 ID，改正后重发 |

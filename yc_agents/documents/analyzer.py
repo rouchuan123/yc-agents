@@ -9,6 +9,7 @@ from docx.enum.style import WD_STYLE_TYPE
 from docx.oxml.ns import qn
 from lxml import etree
 
+from yc_agents.documents.headings import structural_heading_level
 from yc_agents.documents.ooxml import package_part_hashes, validate_docx_package
 
 
@@ -238,21 +239,13 @@ def _font_format(run, paragraph):
 
 def _role_for(paragraph, index, first_nonempty):
     text = paragraph.text.strip()
-    style_name = (paragraph.style.name or "").lower()
     if not text:
         return "blank"
     if index == first_nonempty:
         return "title"
-    if "title" in style_name or "标题" in style_name or "heading" in style_name:
-        match = re.search(r"(?:heading|标题)\s*([1-9])", style_name)
-        return f"heading_{match.group(1)}" if match else "heading"
-    if re.match(
-        r"^(?:第[一二三四五六七八九十百0-9]+[章节篇部](?:\s|[、：:])|"
-        r"[一二三四五六七八九十百]+、|\d+(?:\.\d+){0,3}[、.\s])",
-        text,
-    ):
-        depth = min(text.split(maxsplit=1)[0].count(".") + 1, 4)
-        return f"heading_{depth}"
+    heading_level = structural_heading_level(paragraph)
+    if heading_level is not None:
+        return f"heading_{min(heading_level, 4)}"
     if re.match(r"^(表|图)\s*[0-9一二三四五六七八九十]+", text):
         return "caption"
     return "body"

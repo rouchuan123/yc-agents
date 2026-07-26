@@ -12,11 +12,13 @@ from yc_agents.config.ycore import YCoreConfig
 from yc_agents.core.config import ProviderConfig
 from yc_agents.core.exceptions import LLMCallError, ToolCallingUnsupportedError
 from yc_agents.core.llm import ModelToolCall, ModelTurn, YCAgentsLLM
+from yc_agents.harness.recovery import RecoveryPolicy
 from yc_agents.harness.runtime import YCAgentRuntime
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.memory.session import SessionMemory
 from yc_agents.prompts.builder import PromptBuilder
 from yc_agents.tools.base import BaseTool
+from yc_agents.tools.docx_edit import DocxEditTool
 from yc_agents.tools.registry import ToolRegistry
 
 
@@ -39,6 +41,18 @@ class FreeformTool(BaseTool):
 
     def run(self, **kwargs):
         return {"ok": True}
+
+
+class ExpectedQAWorkflowTool(EchoTool):
+    def run(self, text):
+        self.calls.append(text)
+        return {
+            "ok": False,
+            "error": "DOCX_QA_BLOCKED",
+            "passed": False,
+            "findings": [{"target_ids": ["body.p0010"]}],
+            "next_action": "docx_edit",
+        }
 
 
 def _fake_tool_call(call_id, name, arguments):
@@ -208,9 +222,9 @@ class ToolsRejectingLLM(NativeRecordingLLM):
         )
 
 
-def _build_native_runtime(tmp_dir, llm):
+def _build_native_runtime(tmp_dir, llm, tool=None, recovery_policy=None):
     registry = ToolRegistry()
-    tool = EchoTool()
+    tool = tool or EchoTool()
     registry.register(tool)
     agent = SkillRuntimeAgent(
         llm,
@@ -227,6 +241,7 @@ def _build_native_runtime(tmp_dir, llm):
         allowed_tools=["fake_tool"],
         output_root=Path(tmp_dir) / "runs",
         tool_calling="native",
+        recovery_policy=recovery_policy,
     )
     return agent, tool, runtime
 
@@ -273,6 +288,20 @@ class TestOpenAIToolSchemaExport(unittest.TestCase):
         self.assertEqual(echo["parameters"]["required"], ["text"])
         freeform = by_name["freeform_tool"]["function"]
         self.assertEqual(freeform["parameters"], {"type": "object", "properties": {}})
+
+    def test_docx_edit_schema_describes_flat_operations_and_style_object(self):
+        parameters = DocxEditTool.schema.to_openai_schema()
+        operations = parameters["properties"]["operations"]
+        item = operations["items"]
+
+        self.assertEqual(item["required"], ["operation"])
+        self.assertIn("set_style", item["properties"]["operation"]["enum"])
+        self.assertEqual(item["properties"]["style"]["type"], "object")
+        self.assertEqual(
+            item["properties"]["style"]["properties"]["style_id"],
+            {"type": "string"},
+        )
+        self.assertFalse(item["additionalProperties"])
 
 
 class TestThinkNativeToolPassthrough(unittest.TestCase):
@@ -475,6 +504,38 @@ class TestNativeToolLoop(unittest.TestCase):
             self.assertEqual(len(steps), 1)
             self.assertEqual(steps[0]["tool_call"]["tool_name"], "fake_tool")
             self.assertEqual(steps[0]["tool_result"], {"echo": "s1"})
+
+    def test_native_expected_qa_followup_does_not_consume_recovery_budget(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            llm = NativeRecordingLLM(
+                turns=[
+                    _turn(calls=[_call("call-1", "verify")]),
+                    _turn(content="继续修复文档。"),
+                ],
+                json_responses=[_selection(None)],
+            )
+            tool = ExpectedQAWorkflowTool()
+            _agent, _tool, runtime = _build_native_runtime(
+                tmp_dir,
+                llm,
+                tool=tool,
+                recovery_policy=RecoveryPolicy(
+                    protocol_retries=0,
+                    provider_retries=0,
+                    verification_retries=0,
+                    max_attempts=1,
+                    lifetime_max_attempts=1,
+                ),
+            )
+
+            response = runtime.run("continue verification")
+
+            self.assertEqual(response, "继续修复文档。")
+            event_types = [
+                event["event_type"] for event in runtime.last_trace_events
+            ]
+            self.assertNotIn("recovery_attempt", event_types)
+            self.assertNotIn("recovery_succeeded", event_types)
 
     def test_native_loop_handles_multiple_tool_calls_in_one_turn(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

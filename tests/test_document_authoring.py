@@ -14,14 +14,24 @@ from docx.oxml.ns import qn
 from docx.shared import Cm, Pt
 
 from yc_agents.cli.commands import parse_cli_input
-from yc_agents.documents.analyzer import DocxTemplateAnalyzer
+from yc_agents.documents.analyzer import (
+    DocxTemplateAnalyzer,
+    _font_format,
+    _paragraph_format,
+)
 from yc_agents.documents.attachments import AttachmentManager
 from yc_agents.documents.broker import ExecutionBroker
-from yc_agents.documents.builder import DocxBuilder, _heading_text_for_paragraph
+from yc_agents.documents.builder import (
+    DocxBuilder,
+    _heading_level,
+    _heading_text_for_paragraph,
+    _styled_heading_level,
+)
 from yc_agents.documents.content import DocumentContentStore
 from yc_agents.documents.editor import DocxEditor
 from yc_agents.documents.jobs import DocumentJobStore
 from yc_agents.documents.ooxml import package_part_hashes, sha256_file
+from yc_agents.documents.outline import normalize_outline
 from yc_agents.documents.sources import DocumentSourceService
 from yc_agents.documents.vision import VisionQAService
 from yc_agents.documents.verifier import DocxVerifier
@@ -251,6 +261,118 @@ def test_document_job_tool_reports_missing_active_job_clearly(tmp_path):
         tool.run("set_contract", contract={})
 
 
+def test_confirm_plan_returns_structured_pending_questions(document_workspace):
+    _workspace, _template, attachments, jobs, job = document_workspace
+    tool = DocumentJobTool(jobs, attachments)
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": "preserve"}], "unresolved": []},
+    )
+    DocumentContentStore(jobs).set_outline(
+        job["id"],
+        {"sections": [{"id": "s1", "title": "第一章"}]},
+    )
+
+    result = tool.run("confirm_plan", job_id=job["id"])
+
+    assert result["ok"] is False
+    assert result["error"] == "PENDING_QUESTIONS"
+    assert result["error_type"] == "needs_user_input"
+    assert result["requires_user_input"] is True
+    assert result["pending_questions"] == jobs.get(job["id"])["pending_questions"]
+    assert result["next_action"] == "ask_user"
+    assert jobs.get(job["id"])["plan_confirmed"] is False
+
+
+def _workspace_tool(tmp_path, session_id):
+    workspace = tmp_path / "workspace"
+    session_path = workspace / ".ycore" / "sessions" / session_id
+    session_path.mkdir(parents=True)
+    attachments = AttachmentManager(session_path)
+    jobs = DocumentJobStore(workspace, session_id)
+    return workspace, attachments, DocumentJobTool(jobs, attachments)
+
+
+def test_document_job_create_auto_imports_single_workspace_docx(tmp_path):
+    workspace, _attachments, tool = _workspace_tool(tmp_path, "session-discover")
+    template = workspace / "文献综述.docx"
+    make_template(template)
+    (workspace / "~$文献综述.docx").write_bytes(b"lock")
+    outputs = workspace / "outputs"
+    outputs.mkdir()
+    make_template(outputs / "published.docx")
+
+    created = tool.run("create", title="文献综述任务")
+
+    assert created["ok"] is True
+    assert Path(created["auto_imported_from"]) == template.resolve()
+    assert created["selected_attachment"]["role"] == "template"
+    assert created["selected_attachment"]["name"] == "文献综述.docx"
+    assert tool.run("get_active")["job"]["id"] == created["job"]["id"]
+
+
+def test_document_job_create_with_multiple_workspace_docx_requires_template_path(tmp_path):
+    workspace, _attachments, tool = _workspace_tool(tmp_path, "session-multi")
+    make_template(workspace / "a.docx")
+    make_template(workspace / "b.docx")
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.run("create")
+    message = str(excinfo.value)
+    assert "a.docx" in message
+    assert "b.docx" in message
+    assert "template_path" in message
+
+    created = tool.run("create", template_path="b.docx", title="指定模板")
+
+    assert created["selected_attachment"]["name"] == "b.docx"
+    assert created["selected_attachment"]["role"] == "template"
+    assert "auto_imported_from" not in created
+
+
+def test_document_job_create_without_any_workspace_docx_gives_teaching_error(tmp_path):
+    _workspace, _attachments, tool = _workspace_tool(tmp_path, "session-none")
+
+    with pytest.raises(ValueError) as excinfo:
+        tool.run("create")
+    message = str(excinfo.value)
+    assert "template_path" in message
+    assert "Ask the user" in message
+
+
+def test_document_job_create_template_path_accepts_absolute_and_rejects_bad_paths(tmp_path):
+    workspace, _attachments, tool = _workspace_tool(tmp_path, "session-path")
+    outside = tmp_path / "outside.docx"
+    make_template(outside)
+
+    created = tool.run("create", template_path=str(outside))
+
+    assert created["selected_attachment"]["name"] == "outside.docx"
+    assert created["selected_attachment"]["role"] == "template"
+
+    with pytest.raises(ValueError, match="does not exist"):
+        tool.run("create", template_path="missing.docx")
+
+    (workspace / "notes.txt").write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"\.docx"):
+        tool.run("create", template_path="notes.txt")
+
+
+def test_document_job_attachment_views_hint_workspace_docx_candidates(tmp_path):
+    workspace, attachments, tool = _workspace_tool(tmp_path, "session-hint")
+    make_template(workspace / "候选模板.docx")
+    (workspace / "~$候选模板.docx").write_bytes(b"lock")
+
+    assert tool.run("get_active")["workspace_docx_candidates"] == ["候选模板.docx"]
+    assert tool.run("list_attachments")["workspace_docx_candidates"] == ["候选模板.docx"]
+
+    attachments.import_file(workspace / "候选模板.docx", role="template")
+
+    assert "workspace_docx_candidates" not in tool.run("get_active")
+    assert "workspace_docx_candidates" not in tool.run("list_attachments")
+
+
 def test_template_analyzer_extracts_effective_chinese_formatting(document_workspace):
     _workspace, template, _attachments, jobs, job = document_workspace
     analyzer = DocxTemplateAnalyzer(jobs)
@@ -394,6 +516,145 @@ def test_builder_maps_outline_to_top_level_headings_and_uses_body_format(tmp_pat
 
     assert [paragraph.text for paragraph in headings] == [section["title"] for section in sections]
     assert body.style.name == "Normal"
+
+
+def test_builder_handles_numbered_title_headings_and_ignores_heading_styled_prose(tmp_path):
+    template = tmp_path / "mixed-heading-template.docx"
+    document = Document()
+    document.add_paragraph("旧文档封面", style="Title")
+    document.add_paragraph("1 引言", style="Title")
+    document.add_paragraph("1.1 研究背景", style="Heading 1")
+    long_prose = (
+        "这是一段被模板错误设置为 Heading 1 的长正文。" * 12
+    )
+    document.add_paragraph(long_prose, style="Heading 1")
+    document.add_paragraph("2 研究方法", style="Title")
+    document.add_paragraph("旧方法正文")
+    document.save(template)
+
+    workspace = tmp_path / "workspace"
+    session_path = workspace / ".ycore" / "sessions" / "mixed-heading"
+    session_path.mkdir(parents=True)
+    attachments = AttachmentManager(session_path)
+    attachment = attachments.import_file(template, role="template")
+    jobs = DocumentJobStore(workspace, "mixed-heading")
+    job = jobs.create(attachment, title="新文档封面")
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新文档"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    sections = [
+        {
+            "id": "s1",
+            "title": "1 引言",
+            "children": [{"id": "s1-1", "title": "1.1 研究背景"}],
+        },
+        {"id": "s2", "title": "2 研究方法"},
+    ]
+    content.set_outline(job["id"], {"sections": sections})
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "1 引言", "新的引言正文。")
+    content.upsert_section(job["id"], "s1-1", "1.1 研究背景", "新的背景正文。")
+    content.upsert_section(job["id"], "s2", "2 研究方法", "新的方法正文。")
+
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    result = Document(generated["docx_path"])
+    texts = [paragraph.text for paragraph in result.paragraphs]
+    headings = {
+        paragraph.text: _heading_level(paragraph)
+        for paragraph in result.paragraphs
+        if paragraph.text in {"1 引言", "1.1 研究背景", "2 研究方法"}
+    }
+    visual_styles = {
+        paragraph.text: paragraph.style.name
+        for paragraph in result.paragraphs
+        if paragraph.text in {"1 引言", "1.1 研究背景", "2 研究方法"}
+    }
+    body_styles = {
+        paragraph.text: paragraph.style.name
+        for paragraph in result.paragraphs
+        if paragraph.text
+        in {"新的引言正文。", "新的背景正文。", "新的方法正文。"}
+    }
+
+    assert texts.count("1 引言") == 1
+    assert texts.count("1.1 研究背景") == 1
+    assert texts.count("2 研究方法") == 1
+    assert long_prose not in texts
+    assert headings == {"1 引言": 1, "1.1 研究背景": 2, "2 研究方法": 1}
+    assert visual_styles == {
+        "1 引言": "Title",
+        "1.1 研究背景": "Heading 1",
+        "2 研究方法": "Title",
+    }
+    assert body_styles == {
+        "新的引言正文。": "Normal",
+        "新的背景正文。": "Normal",
+        "新的方法正文。": "Normal",
+    }
+
+
+def test_builder_preserves_template_visual_styles_for_all_semantic_heading_levels(tmp_path):
+    template = tmp_path / "visual-heading-template.docx"
+    document = Document()
+    document.add_paragraph("旧封面", style="Title")
+    document.add_paragraph("1 旧章节", style="Title")
+    document.add_paragraph("1.1 旧小节", style="Heading 1")
+    document.add_paragraph("1.1.1 旧三级标题", style="Subtitle")
+    document.add_paragraph("旧正文")
+    document.save(template)
+
+    workspace = tmp_path / "workspace"
+    session_path = workspace / ".ycore" / "sessions" / "visual-heading"
+    session_path.mkdir(parents=True)
+    attachment = AttachmentManager(session_path).import_file(template, role="template")
+    jobs = DocumentJobStore(workspace, "visual-heading")
+    job = jobs.create(attachment, title="新封面")
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新主题"}, pending_questions=[])
+    jobs.set_contract(job["id"], {"tables": [], "unresolved": []})
+    content = DocumentContentStore(jobs)
+    content.set_outline(
+        job["id"],
+        {
+            "sections": [
+                {
+                    "id": "s1",
+                    "title": "1 新章节",
+                    "children": [
+                        {
+                            "id": "s2",
+                            "title": "1.1 新小节",
+                            "children": [
+                                {"id": "s3", "title": "1.1.1 新三级标题"}
+                            ],
+                        }
+                    ],
+                }
+            ]
+        },
+    )
+    jobs.confirm_plan(job["id"])
+    content.upsert_section(job["id"], "s1", "1 新章节", "一级正文")
+    content.upsert_section(job["id"], "s2", "1.1 新小节", "二级正文")
+    content.upsert_section(job["id"], "s3", "1.1.1 新三级标题", "三级正文")
+
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    result = Document(generated["docx_path"])
+    headings = [
+        paragraph
+        for paragraph in result.paragraphs
+        if paragraph.text in {"1 新章节", "1.1 新小节", "新三级标题"}
+    ]
+
+    assert [paragraph.style.name for paragraph in headings] == [
+        "Title",
+        "Heading 1",
+        "Subtitle",
+    ]
+    assert [_heading_level(paragraph) for paragraph in headings] == [1, 2, 3]
+    qa = DocxVerifier(jobs).verify(job["id"], version=1, mode="deterministic")
+    assert qa["passed"] is True, qa["findings"]
 
 
 def test_numbered_heading_does_not_duplicate_manual_chapter_prefix():
@@ -1577,6 +1838,9 @@ def test_docx_verify_tool_returns_structured_result_when_all_qa_is_blocked():
                         "suggested_action": "修复书签后重新验证",
                         "category": "document",
                         "page": 2,
+                        "target_ids": ["body.p0010"],
+                        "expected_style": {"style_id": "Heading 1"},
+                        "mismatched_fields": ["font.size"],
                     },
                     {
                         "severity": "warning",
@@ -1602,6 +1866,11 @@ def test_docx_verify_tool_returns_structured_result_when_all_qa_is_blocked():
             "anchor": "第一章",
             "issue": "目录书签损坏",
             "suggested_action": "修复书签后重新验证",
+            "category": "document",
+            "page": 2,
+            "target_ids": ["body.p0010"],
+            "expected_style": {"style_id": "Heading 1"},
+            "mismatched_fields": ["font.size"],
         }
     ]
     assert result["qa_report_path"] == "qa/v001/qa-report.json"
@@ -1651,8 +1920,82 @@ def test_docx_verify_tool_flags_environment_blockers():
             "anchor": "",
             "issue": "视觉模型未配置，未执行逐页图片检查",
             "suggested_action": "",
+            "category": "environment",
         }
     ]
+
+
+def test_heading_count_finding_exposes_stable_unexpected_paragraph_ids(tmp_path):
+    document = Document()
+    document.add_heading("1 引言", level=1)
+    document.add_paragraph("1 引言")
+    outline = normalize_outline(
+        {"sections": [{"id": "s1", "title": "1 引言"}]}
+    )
+    verifier = DocxVerifier.__new__(DocxVerifier)
+
+    findings = verifier._outline_title_findings(
+        outline["sections"],
+        list(document.paragraphs),
+    )
+
+    duplicate = next(item for item in findings if item["anchor"] == "1 引言")
+    assert duplicate["expected_count"] == 1
+    assert duplicate["actual_count"] == 2
+    assert duplicate["unexpected_target_ids"] == ["body.p0001"]
+
+
+def test_style_finding_exposes_executable_ids_and_style_payload(tmp_path):
+    template = Document()
+    template.add_paragraph("封面", style="Title")
+    expected_heading = template.add_paragraph("1.1 模板小节", style="Heading 1")
+    expected = {
+        "text": expected_heading.text,
+        "role": "heading_2",
+        "style_id": expected_heading.style.style_id,
+        "style_name": expected_heading.style.name,
+        "paragraph_format": _paragraph_format(expected_heading),
+        "runs": [
+            {
+                "effective_font": _font_format(
+                    expected_heading.runs[0],
+                    expected_heading,
+                )
+            }
+        ],
+    }
+
+    generated = Document()
+    generated.add_paragraph("新封面", style="Title")
+    generated.add_paragraph("1.1 新小节", style="Heading 2")
+    verifier = DocxVerifier.__new__(DocxVerifier)
+
+    findings = verifier._representative_format_findings(
+        {"elements": [expected]},
+        generated,
+    )
+
+    assert len(findings) == 1
+    finding = findings[0]
+    assert finding["anchor"] == "heading_2"
+    assert finding["target_ids"] == ["body.p0001"]
+    assert finding["expected_style"]["style_id"] == "Heading 1"
+    assert finding["mismatched_fields"]
+
+    editor = DocxEditor(tmp_path, None)
+    editor._set_style(
+        generated,
+        {
+            "operation": "set_style",
+            "target": finding["target_ids"][0],
+            "style": finding["expected_style"],
+        },
+    )
+
+    assert verifier._representative_format_findings(
+        {"elements": [expected]},
+        generated,
+    ) == []
 
 
 def test_markdown_table_becomes_real_word_table(document_workspace):
@@ -1948,6 +2291,36 @@ def test_editor_aliases_occurrence_counting_and_strict_targets(document_workspac
 
     with pytest.raises(ValueError, match="at least one operation"):
         editor.edit(job["id"], 1, [])
+    with pytest.raises(ValueError, match="flat 'operation' field"):
+        editor.edit(
+            job["id"],
+            1,
+            [{"set_style": {"target": "body.p0001", "style": "Heading 1"}}],
+        )
+    with pytest.raises(ValueError, match="style to be a non-empty object"):
+        editor.edit(
+            job["id"],
+            1,
+            [
+                {
+                    "operation": "set_style",
+                    "target": "body.p0001",
+                    "style": "Heading 1",
+                }
+            ],
+        )
+    with pytest.raises(ValueError, match="no-op"):
+        editor.edit(
+            job["id"],
+            1,
+            [
+                {
+                    "operation": "replace_text",
+                    "old_text": "第一章",
+                    "new_text": "第一章",
+                }
+            ],
+        )
 
     # Two occurrences inside one paragraph: occurrence counting must see 2, not 1.
     edited = editor.edit(

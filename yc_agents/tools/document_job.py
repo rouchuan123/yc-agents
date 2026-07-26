@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.tools.base import BaseTool
 
@@ -18,7 +20,9 @@ class DocumentJobTool(BaseTool):
         "set_plan canonicalizes chapters to recursive sections/children and always invalidates prior plan confirmation; "
         "when it returns requires_plan_confirmation, call confirm_plan before writing content. "
         "get_active also returns current session attachments. When no job exists, use an existing template attachment; "
-        "create auto-selects it when there is exactly one unique DOCX template. Do not ask the user to attach again "
+        "create auto-selects it when there is exactly one unique DOCX template. With no attachment, create "
+        "auto-imports the single .docx in the workspace root, or takes template_path (absolute or relative to the "
+        "workspace root) to import a specific file. Do not ask the user to attach again "
         "when get_active or list_attachments already returns a template. "
         "Job payloads are a lite decision view (status, pending question count and head, confirmation flags, "
         "revision counts); call get_outline when you need the full outline."
@@ -28,6 +32,7 @@ class DocumentJobTool(BaseTool):
             ToolField(name="operation", type="str", required=True),
             ToolField(name="job_id", type="str", required=False, default=""),
             ToolField(name="attachment_id", type="str", required=False, default=""),
+            ToolField(name="template_path", type="str", required=False, default=""),
             ToolField(name="title", type="str", required=False, default=""),
             ToolField(name="requirements", type="dict", required=False, default={}),
             # None means "leave unchanged"; pass [] explicitly to clear the queue.
@@ -47,6 +52,7 @@ class DocumentJobTool(BaseTool):
         operation,
         job_id="",
         attachment_id="",
+        template_path="",
         title="",
         requirements=None,
         pending_questions=None,
@@ -56,24 +62,35 @@ class DocumentJobTool(BaseTool):
     ):
         operation = str(operation).strip().lower()
         if operation == "create":
-            if not attachment_id:
-                attachment = self._select_single_template()
-            else:
+            auto_imported_from = None
+            if str(template_path or "").strip():
+                attachment = self._import_template_path(template_path)
+            elif attachment_id:
                 attachment = self.attachment_manager.get(attachment_id)
-            return {
+            else:
+                attachment, auto_imported_from = self._select_or_discover_template()
+            result = {
                 "ok": True,
                 "job": self.job_store.create(attachment, title=title),
                 "selected_attachment": self._attachment_summary(attachment),
             }
+            if auto_imported_from:
+                result["auto_imported_from"] = auto_imported_from
+            return result
         if operation == "get_active":
-            return {
+            attachments = self._attachment_summaries()
+            result = {
                 "ok": True,
                 "job": self.job_store.summary_lite(self.job_store.get_active()),
-                "attachments": self._attachment_summaries(),
+                "attachments": attachments,
             }
+            self._append_workspace_hint(result, attachments)
+            return result
         if operation == "list_attachments":
             attachments = self._attachment_summaries()
-            return {"ok": True, "attachments": attachments, "count": len(attachments)}
+            result = {"ok": True, "attachments": attachments, "count": len(attachments)}
+            self._append_workspace_hint(result, attachments)
+            return result
         job_id = self._resolve_job_id(job_id)
         if operation == "get":
             return {"ok": True, "job": self.job_store.summary_lite(self.job_store.get(job_id))}
@@ -152,7 +169,27 @@ class DocumentJobTool(BaseTool):
                 "next_action": "document_job.confirm_plan",
             }
         if operation == "confirm_plan":
-            data = self.job_store.confirm_plan(job_id)
+            try:
+                data = self.job_store.confirm_plan(job_id)
+            except ValueError as exc:
+                if not str(exc).startswith("PENDING_QUESTIONS:"):
+                    raise
+                current = self.job_store.get(job_id)
+                questions = list(current.get("pending_questions") or [])
+                return {
+                    "ok": False,
+                    "error": "PENDING_QUESTIONS",
+                    "error_type": "needs_user_input",
+                    "requires_user_input": True,
+                    "pending_questions": questions,
+                    "job": self.job_store.summary_lite(current),
+                    "next_action": "ask_user",
+                    "instruction": (
+                        "Pause this document workflow. Ask the user all pending_questions "
+                        "in one concise message. Do not infer answers, call web_search, clear "
+                        "the queue, or continue document tools until the user replies."
+                    ),
+                }
             return {
                 "ok": True,
                 "job": self.job_store.summary_lite(data),
@@ -174,7 +211,8 @@ class DocumentJobTool(BaseTool):
             return str(active["id"])
         raise ValueError(
             "No active document job is available in the current session. "
-            "Call document_job.create after attaching a DOCX template."
+            "Call document_job.create first; it auto-discovers a single workspace-root DOCX "
+            "or accepts template_path."
         )
 
     def _select_single_template(self):
@@ -194,10 +232,7 @@ class DocumentJobTool(BaseTool):
         for item in candidates:
             unique[item.get("sha256") or item["id"]] = item
         if not unique:
-            raise ValueError(
-                "No DOCX template attachment is available in the current session. "
-                "Use /attach template <path> once."
-            )
+            return None
         if len(unique) > 1:
             choices = ", ".join(
                 f"{item['id']} ({item['name']})" for item in unique.values()
@@ -207,6 +242,73 @@ class DocumentJobTool(BaseTool):
                 f"Candidates: {choices}"
             )
         return next(iter(unique.values()))
+
+    def _select_or_discover_template(self):
+        attachment = self._select_single_template()
+        if attachment is not None:
+            return attachment, None
+        candidates = self._workspace_docx_candidates()
+        if len(candidates) == 1:
+            record = self.attachment_manager.import_file(candidates[0], role="template")
+            return record, str(candidates[0])
+        if candidates:
+            names = ", ".join(path.name for path in candidates)
+            raise ValueError(
+                "The session has no template attachment and the workspace root has multiple "
+                f"DOCX files: {names}. Ask the user which one is the template if unclear, then "
+                'call document_job.create with template_path="<one of these file names>".'
+            )
+        raise ValueError(
+            "No DOCX template is available: the session has no template attachment and the "
+            f"workspace root ({self._workspace_root()}) has no .docx file. Ask the user where "
+            "the finished Word template is, then call document_job.create with "
+            'template_path="<that path>" (absolute or relative to the workspace root); '
+            "the user can also run /attach template <path>."
+        )
+
+    def _import_template_path(self, template_path):
+        raw = str(template_path or "").strip().strip('"')
+        path = Path(raw).expanduser()
+        if not path.is_absolute():
+            path = self._workspace_root() / path
+        path = path.resolve()
+        if not path.is_file():
+            raise ValueError(
+                f"template_path does not exist: {raw}. Pass an absolute path or a path "
+                f"relative to the workspace root ({self._workspace_root()}); check the "
+                "workspace_docx_candidates hint from list_attachments or ask the user "
+                "for the correct file."
+            )
+        if path.suffix.lower() != ".docx":
+            raise ValueError(
+                f"template_path must point to a .docx template, got: {path.name}. Only a "
+                "finished Word .docx can seed a document job; pick one from "
+                "workspace_docx_candidates or ask the user for the .docx file."
+            )
+        return self.attachment_manager.import_file(path, role="template")
+
+    def _workspace_root(self):
+        return Path(self.job_store.workspace_root)
+
+    def _workspace_docx_candidates(self):
+        root = self._workspace_root()
+        if not root.is_dir():
+            return []
+        return sorted(
+            (
+                path
+                for path in root.glob("*.docx")
+                if path.is_file() and not path.name.startswith("~$")
+            ),
+            key=lambda path: path.name,
+        )
+
+    def _append_workspace_hint(self, result, attachments):
+        if any(item.get("suffix") == ".docx" for item in attachments):
+            return
+        result["workspace_docx_candidates"] = [
+            path.name for path in self._workspace_docx_candidates()
+        ]
 
     def _attachment_summaries(self):
         return [
