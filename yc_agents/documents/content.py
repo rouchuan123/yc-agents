@@ -101,9 +101,16 @@ class DocumentContentStore:
             source_ids,
             metric_text,
         )
+        outline_title = str(outline_section.get("title") or "").strip()
+        supplied_title = str(title or "").strip()
+        if not supplied_title or (
+            re.fullmatch(r"section-\d+", supplied_title) and outline_title and outline_title != supplied_title
+        ):
+            # Inherit the confirmed outline title instead of persisting a placeholder id.
+            supplied_title = outline_title or str(section_id)
         record = {
             "id": str(section_id),
-            "title": str(title or section_id),
+            "title": supplied_title,
             "content": str(content or ""),
             "source_ids": source_ids,
             "fact_status": fact_status,
@@ -163,21 +170,26 @@ class DocumentContentStore:
     def get_missing(self, job_id):
         job = self.job_store.get(job_id)
         outline = job.get("outline") or {}
+        flattened = flatten_outline(outline) if outline else []
+        parent_ids = {section.get("parent_id") for section in flattened if section.get("parent_id")}
         missing = []
         present = []
-        for section in flatten_outline(outline) if outline else []:
+        for section in flattened:
+            is_leaf = section["id"] not in parent_ids
             path = self._section_path(job_id, section["id"])
             if path.exists():
                 record = json.loads(path.read_text(encoding="utf-8"))
                 has_content = bool(str(record.get("content") or "").strip())
                 has_tables = bool(record.get("tables"))
-                is_leaf = not bool(section.get("children"))
                 if section.get("required", True) and is_leaf and not (has_content or has_tables):
                     missing.append(section["id"])
                 else:
                     present.append(section["id"])
-            elif section.get("required", True):
+            elif section.get("required", True) and is_leaf:
                 missing.append(section["id"])
+            else:
+                # Parent and optional nodes render as headings even without a body file.
+                present.append(section["id"])
         return {"missing": missing, "present": present, "complete": not missing}
 
     def get_grounding_gaps(self, job_id):
@@ -226,11 +238,22 @@ class DocumentContentStore:
 
     def all_sections(self, job_id):
         job = self.job_store.get(job_id)
-        return [
-            self._merge_outline_metadata(self.get_section(job_id, item["id"]), item)
-            for item in flatten_outline(job.get("outline") or {})
-            if self._section_path(job_id, item["id"]).exists()
-        ]
+        sections = []
+        for item in flatten_outline(job.get("outline") or {}):
+            if self._section_path(job_id, item["id"]).exists():
+                record = self.get_section(job_id, item["id"])
+            else:
+                # Heading-only placeholder so every confirmed outline node renders exactly once.
+                record = {
+                    "id": item["id"],
+                    "title": item.get("title") or item["id"],
+                    "content": "",
+                    "source_ids": [],
+                    "fact_status": "draft",
+                    "tables": [],
+                }
+            sections.append(self._merge_outline_metadata(record, item))
+        return sections
 
     @staticmethod
     def _merge_outline_metadata(record, outline_section):

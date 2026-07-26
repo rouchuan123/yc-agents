@@ -319,6 +319,15 @@ class DocxBuilder:
         version = self.job_store.next_version(job_id)
         revision_dir = self.job_store.job_root(job_id) / "revisions" / f"v{version:03d}"
         revision_dir.mkdir(parents=True, exist_ok=False)
+        try:
+            return self._generate_into(job, job_id, version, revision_dir, sections, contract, output_name)
+        except BaseException:
+            # Never leave a half-built revision directory behind; orphan dirs block later versions.
+            shutil.rmtree(revision_dir, ignore_errors=True)
+            self.job_store.update(job_id, status="drafting")
+            raise
+
+    def _generate_into(self, job, job_id, version, revision_dir, sections, contract, output_name):
         internal_docx = revision_dir / "document.docx"
         template_path = Path(job["template"]["path"])
         shutil.copyfile(template_path, internal_docx)
@@ -351,6 +360,18 @@ class DocxBuilder:
             allowed_changed_parts,
         )
 
+        docx_sha256 = sha256_file(internal_docx)
+        current = self._current_revision_or_none(job)
+        if current is not None and current.get("docx_sha256") == docx_sha256:
+            raise ValueError(
+                "NO_CONTENT_CHANGE: the generated DOCX is byte-identical to "
+                f"v{int(current.get('version') or 0):03d}, so a new version was not created. "
+                "Regenerating cannot fix QA findings by itself. Change section content "
+                "(document_content.upsert_section), the contract, or use docx_edit on the current "
+                "revision; if a QA finding is environmental (fonts, Word, vision model), report it "
+                "to the user instead."
+            )
+
         output_dir = self.workspace_root / "outputs" / job["slug"]
         output_dir.mkdir(parents=True, exist_ok=True)
         filename = str(output_name or f"{job['slug']}-v{version:03d}.docx")
@@ -359,7 +380,10 @@ class DocxBuilder:
         filename = Path(filename).name
         published = output_dir / filename
         if published.exists():
-            raise FileExistsError(f"Published document version already exists: {published}")
+            raise FileExistsError(
+                f"Published document version already exists: {published}. "
+                "Pass a different output_name to docx_generate instead of deleting user files."
+            )
         manifest = {
             "version": version,
             "base": "template",
@@ -367,7 +391,7 @@ class DocxBuilder:
             "docx_path": str(internal_docx),
             "published_path": None,
             "pending_published_path": str(published),
-            "docx_sha256": sha256_file(internal_docx),
+            "docx_sha256": docx_sha256,
             "package_parts": package_part_hashes(internal_docx),
             "allowed_changed_parts": sorted(allowed_changed_parts),
             "created_at": _now_iso(),
@@ -389,7 +413,19 @@ class DocxBuilder:
             "delivery_ready": False,
             "template_unchanged": sha256_file(template_path) == job["template"]["sha256"],
             "artifacts": [str(manifest_path)],
+            "next_action": "docx_verify",
+            "instruction": "Not a deliverable yet: run docx_verify(mode='all') on this version.",
         }
+
+    @staticmethod
+    def _current_revision_or_none(job):
+        current = job.get("current_revision")
+        if current is None:
+            return None
+        for item in job.get("revisions", []):
+            if int(item.get("version", -1)) == int(current):
+                return item
+        return None
 
     @staticmethod
     def _replace_cover(document, title, requirements):
@@ -490,7 +526,7 @@ class DocxBuilder:
                         table_samples or [],
                     )
                 return
-            anchor = last_anchor or all_headings[-1]._p
+            anchor = last_anchor if last_anchor is not None else all_headings[-1]._p
             parent = all_headings[-1]._parent
             for section in sections[len(all_headings) :]:
                 sample_xml = self._heading_sample(heading_samples, int(section.get("level") or 1))
@@ -589,7 +625,22 @@ class DocxBuilder:
         if not job.get("plan_confirmed"):
             raise ValueError("The user must confirm the document plan before generation")
         if job.get("pending_questions"):
-            raise ValueError("Resolve pending document requirements before generation")
+            raise ValueError(
+                "PENDING_QUESTIONS: resolve pending document requirements before generation. "
+                "Save the user's answers with document_job.update_requirements("
+                "requirements={...}, pending_questions=[])."
+            )
+        placeholder_titles = [
+            section["id"]
+            for section in sections
+            if re.fullmatch(r"section-\d+", str(section.get("title") or "").strip())
+        ]
+        if placeholder_titles:
+            raise ValueError(
+                f"PLACEHOLDER_TITLES: outline sections still use placeholder titles: {placeholder_titles}. "
+                "These ids would be rendered as literal headings. Set real Chinese titles in the outline "
+                "(document_job.set_plan) or via document_content.upsert_section title before generation."
+            )
         if job.get("source_candidates") and not job.get("source_confirmation_at"):
             raise ValueError("Workspace source candidates require explicit confirmation before generation")
         self._validate_literature_sources(job, sections)
@@ -621,18 +672,41 @@ class DocxBuilder:
                     "set_contract merges this decision with existing table decisions; then call "
                     "document_job.confirm_plan once. Do not use set_plan or set_outline for table decisions."
                 )
-            if (
-                action in {"rewrite", "reuse_structure"}
-                and element_id not in targeted
-                and element_id not in contract_replacements
-            ):
-                if untargeted:
-                    untargeted.pop(0)
-                else:
-                    raise ValueError(f"Replacement data is required for template table: {element_id}")
+            table_data = None
+            if action in {"rewrite", "reuse_structure"}:
+                table_data = targeted.get(element_id) or contract_replacements.get(element_id)
+                if table_data is None:
+                    if untargeted:
+                        table_data = untargeted.pop(0)
+                    else:
+                        raise ValueError(
+                            f"Replacement data is required for template table: {element_id}. "
+                            "Attach it to the owning section via document_content.upsert_section "
+                            f'tables=[{{"target_element_id":"{element_id}","headers":[...],"rows":[...]}}].'
+                        )
+                self._validate_table_columns(element_id, table, table_data)
             if action not in {"preserve", "rewrite", "reuse_structure", "delete"}:
                 raise ValueError(f"Unsupported template contract action for {element_id}: {action}")
         return contract
+
+    @staticmethod
+    def _validate_table_columns(element_id, spec_table, table_data):
+        expected = int(spec_table.get("columns") or 0)
+        if not expected or not isinstance(table_data, dict):
+            return
+        headers = list(table_data.get("headers") or [])
+        rows = [list(row) for row in table_data.get("rows") or []]
+        all_rows = ([headers] if headers else []) + rows
+        if not all_rows:
+            return
+        provided = max(len(row) for row in all_rows)
+        if provided > expected:
+            raise ValueError(
+                f"TABLE_COLUMN_MISMATCH: template table {element_id} has {expected} columns but the "
+                f"replacement data provides {provided}. Extra columns would break the template geometry "
+                f"and fail verification. Provide at most {expected} columns per headers/rows entry, or "
+                "set the table action to preserve."
+            )
 
     def _validate_literature_sources(self, job, sections):
         if not is_literature_review_job(job):

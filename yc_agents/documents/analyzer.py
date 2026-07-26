@@ -296,6 +296,11 @@ class DocxTemplateAnalyzer:
         package = validate_docx_package(template)
         if package["sha256"] != job["template"]["sha256"]:
             raise ValueError("Template snapshot hash no longer matches the attachment")
+        cached = self._cached_summary(job, package["sha256"])
+        if cached is not None:
+            # Re-analysis of the same template is a no-op: keep status and the
+            # already answered/cleared pending_questions untouched.
+            return cached
         self.job_store.update(job_id, status="analyzing_template")
 
         document = Document(template)
@@ -371,7 +376,40 @@ class DocxTemplateAnalyzer:
             "pending_questions": pending,
         }
 
-    def query(self, job_id, role="", element_id="", part="", limit=20):
+    QUERY_CHAR_BUDGET = 60000
+    QUERY_TABLE_ROW_LIMIT = 30
+
+    def _cached_summary(self, job, sha256):
+        spec_path = job.get("template_spec_path")
+        if not spec_path or not Path(spec_path).exists():
+            return None
+        try:
+            spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        if ((spec.get("template") or {}).get("sha256")) != sha256:
+            return None
+        return {
+            "ok": True,
+            "cached": True,
+            "job_id": job["id"],
+            "template_spec_path": str(spec_path),
+            "template_sha256": sha256,
+            "paragraphs": len(spec.get("elements", [])),
+            "tables": len(spec.get("tables", [])),
+            "sections": len(spec.get("sections", [])),
+            "headers": len(spec.get("headers", [])),
+            "footers": len(spec.get("footers", [])),
+            "format_clusters": list(spec.get("format_clusters", []))[:20],
+            "unsupported_features": (spec.get("features") or {}).get("unsupported", []),
+            "pending_questions": list(job.get("pending_questions") or []),
+            "instruction": (
+                "Template already analyzed; reuse this cached spec via docx_template_query "
+                "instead of re-analyzing."
+            ),
+        }
+
+    def query(self, job_id, role="", element_id="", part="", limit=20, detail=False):
         job = self.job_store.get(job_id)
         spec_path = job.get("template_spec_path")
         if not spec_path or not Path(spec_path).exists():
@@ -398,7 +436,59 @@ class DocxTemplateAnalyzer:
             candidates = [item for item in candidates if item.get("element_id") == element_id]
         if part:
             candidates = [item for item in candidates if part in item.get("part", "")]
-        return {"matches": candidates[: max(1, min(int(limit), 100))], "count": len(candidates)}
+        full_detail = bool(detail) or bool(element_id)
+        selected = candidates[: max(1, min(int(limit), 100))]
+        matches = []
+        used_chars = 0
+        truncated = False
+        for item in selected:
+            rendered = self._render_match(item, full_detail)
+            size = len(json.dumps(rendered, ensure_ascii=False))
+            if matches and used_chars + size > self.QUERY_CHAR_BUDGET:
+                truncated = True
+                break
+            used_chars += size
+            matches.append(rendered)
+        result = {"matches": matches, "count": len(candidates), "detail": full_detail}
+        if truncated or len(matches) < len(selected):
+            result["truncated"] = True
+            result["instruction"] = (
+                "Output capped. Narrow the query (element_id / smaller limit) or fetch one "
+                "element at a time with detail=true for full formatting."
+            )
+        elif not full_detail:
+            result["instruction"] = (
+                "Compact view (text + role only). Fetch a single element_id or pass "
+                "detail=true when exact formatting is needed."
+            )
+        return result
+
+    def _render_match(self, item, full_detail):
+        if not full_detail:
+            compact = {
+                key: item.get(key)
+                for key in ("element_id", "element_type", "role", "part", "style_id", "style_name")
+                if item.get(key) is not None
+            }
+            if item.get("text") is not None:
+                text = str(item.get("text") or "")
+                compact["text"] = text[:200]
+                if len(text) > 200:
+                    compact["text_truncated"] = True
+            for key in ("rows", "columns", "style", "grid_widths_dxa", "bytes", "pixels", "format"):
+                if item.get(key) is not None:
+                    compact[key] = item.get(key)
+            return compact
+        if item.get("element_type") == "table":
+            rendered = dict(item)
+            rows = list(rendered.get("row_details") or [])
+            if len(rows) > self.QUERY_TABLE_ROW_LIMIT:
+                rendered["row_details"] = rows[: self.QUERY_TABLE_ROW_LIMIT]
+                rendered["row_details_truncated"] = (
+                    f"showing {self.QUERY_TABLE_ROW_LIMIT} of {len(rows)} rows"
+                )
+            return rendered
+        return dict(item)
 
     def _paragraph_element(self, paragraph, index, first_nonempty, part):
         runs = [

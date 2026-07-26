@@ -28,7 +28,8 @@ class DocumentJobTool(BaseTool):
             ToolField(name="attachment_id", type="str", required=False, default=""),
             ToolField(name="title", type="str", required=False, default=""),
             ToolField(name="requirements", type="dict", required=False, default={}),
-            ToolField(name="pending_questions", type="list", required=False, default=[]),
+            # None means "leave unchanged"; pass [] explicitly to clear the queue.
+            ToolField(name="pending_questions", type="list", required=False, default=None),
             ToolField(name="contract", type="dict", required=False, default={}),
             ToolField(name="outline", type="dict", required=False, default={}),
             ToolField(name="version", type="int", required=False, default=0),
@@ -82,6 +83,7 @@ class DocumentJobTool(BaseTool):
                 "requires_plan_confirmation": True,
                 "next_action": "document_job.set_contract",
                 "instruction": "Only unlock after the user explicitly changes a contract decision.",
+                "remaining_confirm_items": self.job_store.unresolved_confirmation_items(job_id),
             }
         if operation == "update_requirements":
             data = self.job_store.update_requirements(
@@ -89,7 +91,17 @@ class DocumentJobTool(BaseTool):
                 requirements or {},
                 pending_questions=pending_questions,
             )
-            return {"ok": True, "job": self.job_store.summary(data)}
+            remaining = list(data.get("pending_questions") or [])
+            return {
+                "ok": True,
+                "job": self.job_store.summary(data),
+                "pending_questions": remaining,
+                "instruction": (
+                    "All questions answered." if not remaining else
+                    "Questions still pending block confirm_plan; ask the user, then save the "
+                    "answers with update_requirements(..., pending_questions=[])."
+                ),
+            }
         if operation in {"set_contract", "replace_contract"}:
             data = self.job_store.set_contract(
                 job_id,
@@ -98,16 +110,23 @@ class DocumentJobTool(BaseTool):
             )
             changed = bool(data.pop("_contract_changed", False))
             requires_confirmation = not bool(data.get("plan_confirmed"))
+            remaining = self.job_store.unresolved_confirmation_items(job_id)
             return {
                 "ok": True,
                 "job": self.job_store.summary(data),
                 "contract": self.job_store.get_contract(job_id),
                 "contract_changed": changed,
                 "requires_plan_confirmation": requires_confirmation,
+                "remaining_confirm_items": remaining,
                 "next_action": "document_job.confirm_plan" if requires_confirmation else "docx_generate",
                 "instruction": (
                     "Contract decisions were merged by element_id. Do not call set_plan/set_outline for them, "
                     "and do not repeat set_contract when contract_changed is false."
+                    + (
+                        f" Still awaiting user decisions for: {remaining}."
+                        if remaining
+                        else " No confirmation items remain."
+                    )
                 ),
             }
         if operation == "set_plan":

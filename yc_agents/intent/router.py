@@ -34,21 +34,30 @@ class IntentRouter:
             source="semantic",
             matches=self.semantic_matcher.match(user_input, skills),
         )
-        self._merge_llm_selection(
-            scores,
-            self.llm_classifier.classify(user_input, skills),
-        )
+        # LLM classification is advisory: any failure (malformed JSON, provider
+        # outage) degrades to rule+semantic routing instead of killing the run.
+        llm_error = None
+        try:
+            self._merge_llm_selection(
+                scores,
+                self.llm_classifier.classify(user_input, skills),
+            )
+        except Exception as exc:
+            llm_error = f"{exc.__class__.__name__}: {exc}"
 
         candidates = self._rank_candidates(scores)
         selected = candidates[0] if candidates else None
 
-        return {
+        result = {
             "type": "intent_route",
             "selected_skill": selected["skill_name"] if selected else None,
             "confidence": selected["score"] if selected else 0.0,
             "candidates": candidates,
             "weights": dict(self.weights),
         }
+        if llm_error is not None:
+            result["llm_error"] = llm_error
+        return result
 
     def _empty_candidate(self, skill_name):
         return {

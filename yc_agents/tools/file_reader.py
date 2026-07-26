@@ -39,6 +39,12 @@ class FileReaderTool(BaseTool):
         if is_blocked_readable_file(path):
             raise PermissionError(f"Refusing to read blocked file: {path.name}")
 
+        if path.name == "template-spec.json" and ".ycore" in path.parts:
+            raise PermissionError(
+                "template-spec.json is too large for the context window and must not be read "
+                "directly. Query it with docx_template_query (role/element_id filters) instead."
+            )
+
         if is_readable_text_file(path):
             return self._read_text_file(path, allow_large=allow_large)
 

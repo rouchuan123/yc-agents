@@ -6,7 +6,12 @@ class DocxEditTool(BaseTool):
     name = "docx_edit"
     description = (
         "Apply exact local operations to the current DOCX and create a new immutable revision. "
-        "Requires the current base_revision and rejects ambiguous targets or version conflicts."
+        "Requires the current base_revision and rejects ambiguous targets or version conflicts. "
+        "Operations: replace_text {old_text,new_text,expected_replacements=occurrence count}, "
+        "replace_section {target,content,title?}, insert {target,content}, delete {target,type?}, "
+        "move {target,before}, update_table {target,rows=all rows incl. header}, "
+        "delete_table_column {target,column}, set_style {target,style}, replace_image {target,image_path}. "
+        "Target tables by element id (body.tbl0000) or unique cell text; paragraphs by unique text or body.pNNNN."
     )
     schema = ToolSchema(
         fields=[
