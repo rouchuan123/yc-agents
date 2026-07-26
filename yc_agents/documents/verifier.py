@@ -102,7 +102,15 @@ class DocxVerifier:
         render_result = None
         if mode in {"all", "render", "visual"}:
             if self.broker is None:
-                findings.append(self._finding("blocking", "renderer", "Word ExecutionBroker 未配置"))
+                findings.append(
+                    self._finding(
+                        "blocking",
+                        "renderer",
+                        "Word ExecutionBroker 未配置",
+                        "环境问题：无法用 docx_edit 修复，请向用户说明",
+                        category="environment",
+                    )
+                )
             else:
                 render_result = self.broker.run("word_export_pdf", docx_path, pdf_path)
                 (qa_dir / "render-result.json").write_text(
@@ -131,8 +139,16 @@ class DocxVerifier:
                 item.get("severity") == "blocking" for item in vision.get("findings", [])
             ):
                 vision.setdefault("findings", []).append(
-                    self._finding("blocking", "vision", "视觉模型未配置，未执行逐页图片检查")
+                    self._finding(
+                        "blocking",
+                        "vision",
+                        "视觉模型未配置，未执行逐页图片检查",
+                        "环境问题：无法用 docx_edit 修复，请向用户说明",
+                        category="environment",
+                    )
                 )
+            for item in vision.get("findings", []):
+                item.setdefault("category", "document")
             findings.extend(vision.get("findings", []))
             (qa_dir / "vision-result.json").write_text(
                 json.dumps(vision, ensure_ascii=False, indent=2), encoding="utf-8"
@@ -159,6 +175,11 @@ class DocxVerifier:
                     artifacts.append(published_path)
         blocking = [item for item in findings if item.get("severity") == "blocking"]
         passed = not blocking
+        for item in findings:
+            item.setdefault("category", "document")
+        environment_blocked = any(
+            item.get("category") == "environment" for item in blocking
+        )
         report = {
             "passed": passed,
             "mode": mode,
@@ -166,6 +187,7 @@ class DocxVerifier:
             "version": version,
             "findings": findings,
             "blocking_count": len(blocking),
+            "environment_blocked": environment_blocked,
             "warning_count": len([item for item in findings if item.get("severity") == "warning"]),
             "pdf_path": str(pdf_path) if pdf_path.exists() else None,
             "page_images": [str(path) for path in page_images],
@@ -212,13 +234,14 @@ class DocxVerifier:
         return {**report, "qa_report_path": str(report_path), "artifacts": artifacts}
 
     @staticmethod
-    def _finding(severity, anchor, issue, suggested_action=""):
+    def _finding(severity, anchor, issue, suggested_action="", category="document"):
         return {
             "severity": severity,
             "page": None,
             "anchor": anchor,
             "issue": issue,
             "suggested_action": suggested_action,
+            "category": category,
         }
 
     @staticmethod
@@ -243,7 +266,15 @@ class DocxVerifier:
         try:
             import fitz
         except ImportError:
-            return [], [self._finding("blocking", "pdf-render", "PDF逐页渲染需要PyMuPDF依赖")]
+            return [], [
+                self._finding(
+                    "blocking",
+                    "pdf-render",
+                    "PDF逐页渲染需要PyMuPDF依赖",
+                    "环境问题：无法用 docx_edit 修复，请向用户说明",
+                    category="environment",
+                )
+            ]
         output_dir.mkdir(parents=True, exist_ok=True)
         document = fitz.open(pdf_path)
         paths = []
@@ -321,33 +352,39 @@ class DocxVerifier:
         outline_sections = flatten_outline(job.get("outline") or {})
         expected_titles = {str(item.get("title") or "").strip() for item in outline_sections}
 
+        title_groups = {}
         for section in outline_sections:
             title = str(section.get("title") or "").strip()
-            level = int(section.get("level") or 1)
+            title_groups.setdefault(title, []).append(section)
+        for title, group in title_groups.items():
+            level = int(group[0].get("level") or 1)
             matches = [
                 paragraph
                 for paragraph in paragraphs
                 if paragraph.text.strip()
                 == _heading_text_for_paragraph(title, paragraph, level)
             ]
-            if len(matches) != 1:
+            expected_count = len(group)
+            if len(matches) != expected_count:
                 findings.append(
                     self._finding(
                         "blocking",
-                        title or section.get("id") or "outline",
-                        f"提纲标题在生成文档中应精确出现一次，实际为 {len(matches)} 次",
+                        title or group[0].get("id") or "outline",
+                        f"提纲标题应在生成文档中出现 {expected_count} 次，实际为 {len(matches)} 次",
+                        "标题缺失时检查章节标题是否被改写；多余时检查正文是否包含与标题完全相同的整行文本",
                     )
                 )
                 continue
-            actual_level = _styled_heading_level(matches[0])
-            if actual_level != level:
-                findings.append(
-                    self._finding(
-                        "blocking",
-                        title,
-                        f"标题必须使用可导航的 Heading {level} 语义，实际层级为 {actual_level}",
+            if expected_count == 1:
+                actual_level = _styled_heading_level(matches[0])
+                if actual_level != level:
+                    findings.append(
+                        self._finding(
+                            "blocking",
+                            title,
+                            f"标题必须使用可导航的 Heading {level} 语义，实际层级为 {actual_level}",
+                        )
                     )
-                )
 
         for paragraph in paragraphs:
             style_name = str(paragraph.style.name or "").strip().lower()
@@ -618,6 +655,8 @@ class DocxVerifier:
                 "warning",
                 "fonts",
                 f"模板字体未安装，Word 可能使用替代字体，无法声明字体级高保真：{', '.join(missing)}",
+                "环境问题：安装字体后重新验证，或在交付说明中告知用户",
+                category="environment",
             )
         ] if missing else []
 

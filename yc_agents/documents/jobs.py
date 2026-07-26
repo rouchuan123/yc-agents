@@ -144,6 +144,7 @@ class DocumentJobStore:
         existing = None
         if path.exists():
             existing = normalize_template_contract(json.loads(path.read_text(encoding="utf-8")))
+        self._validate_contract_element_ids(data, contract or {})
         if replace or existing is None:
             value = normalize_template_contract(contract or {})
         else:
@@ -215,13 +216,54 @@ class DocumentJobStore:
             raise ValueError("A document outline must be set before plan confirmation")
         validate_canonical_outline(data["outline"])
         if data.get("pending_questions"):
-            raise ValueError("Resolve pending document requirements before plan confirmation")
+            raise ValueError(
+                "PENDING_QUESTIONS: resolve pending document requirements before plan confirmation. "
+                "Ask the user the listed questions, then save the answers with "
+                'document_job.update_requirements(requirements={...}, pending_questions=[]) '
+                "(pending_questions=[] clears the queue); after that call confirm_plan again. "
+                f"Open questions: {list(data.get('pending_questions') or [])}"
+            )
         contract_path = data.get("template_contract_path")
         if not contract_path or not Path(contract_path).exists():
             raise ValueError("A template contract must be set before plan confirmation")
         contract = normalize_template_contract(
             json.loads(Path(contract_path).read_text(encoding="utf-8"))
         )
+        unresolved = self._unresolved_confirmation_items(data, contract)
+        if unresolved:
+            sample = unresolved[0]
+            raise ValueError(
+                f"Template contract still has unresolved confirmation items: {unresolved}. "
+                "Ask the user how to handle each item once, then record every decision with one "
+                'document_job.set_contract call, e.g. {"tables":[{"element_id":"'
+                f"{sample}"
+                '","action":"preserve|rewrite|delete"}]}; then call confirm_plan again.'
+            )
+        contract["confirmed"] = True
+        contract["confirmed_at"] = _now_iso()
+        self._write_json(Path(contract_path), contract)
+        return self.update(
+            job_id,
+            plan_confirmed=True,
+            contract_confirmed=True,
+            contract_locked=True,
+            plan_confirmed_at=_now_iso(),
+            status="drafting",
+        )
+
+    def unresolved_confirmation_items(self, job_id):
+        """Return the confirm-pending element ids without raising (for tool responses)."""
+        data = self.get(job_id)
+        contract_path = data.get("template_contract_path")
+        if not contract_path or not Path(contract_path).exists():
+            return []
+        contract = normalize_template_contract(
+            json.loads(Path(contract_path).read_text(encoding="utf-8"))
+        )
+        return self._unresolved_confirmation_items(data, contract)
+
+    @staticmethod
+    def _unresolved_confirmation_items(data, contract):
         items = [
             item
             for key in ("elements", "tables", "complex_objects")
@@ -244,20 +286,42 @@ class DocumentJobStore:
                 action = str((table_items.get(element_id) or {}).get("action") or table_default)
                 if element_id and action == "confirm":
                     unresolved.append(element_id)
-        unresolved = list(dict.fromkeys(str(item) for item in unresolved if item))
-        if unresolved:
-            raise ValueError(f"Template contract still has unresolved confirmation items: {unresolved}")
-        contract["confirmed"] = True
-        contract["confirmed_at"] = _now_iso()
-        self._write_json(Path(contract_path), contract)
-        return self.update(
-            job_id,
-            plan_confirmed=True,
-            contract_confirmed=True,
-            contract_locked=True,
-            plan_confirmed_at=_now_iso(),
-            status="drafting",
-        )
+        return list(dict.fromkeys(str(item) for item in unresolved if item))
+
+    def _validate_contract_element_ids(self, data, contract):
+        """Reject contract element ids that do not exist in the analyzed template spec."""
+        if not isinstance(contract, dict):
+            return
+        spec_path = data.get("template_spec_path")
+        if not spec_path or not Path(spec_path).exists():
+            return
+        spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+        known = {
+            str(item.get("element_id"))
+            for key in ("elements", "tables", "images", "headers", "footers")
+            for item in list(spec.get(key) or [])
+            if isinstance(item, dict) and item.get("element_id")
+        }
+        if not known:
+            return
+        addressable = re.compile(r"^(?:body|header|footer)[.\w]*\.(?:p|tbl)\d+$|^image\.\d+$")
+        provided = []
+        for key in ("elements", "tables", "complex_objects", "confirm"):
+            for item in list(contract.get(key) or []):
+                if isinstance(item, dict):
+                    element_id = str(item.get("element_id") or item.get("id") or "").strip()
+                    if element_id and addressable.match(element_id):
+                        provided.append(element_id)
+        unknown = [element_id for element_id in provided if element_id not in known]
+        if unknown:
+            table_ids = sorted(
+                element_id for element_id in known if ".tbl" in element_id
+            )
+            raise ValueError(
+                f"UNKNOWN_CONTRACT_ELEMENT: element ids not found in the template spec: {unknown}. "
+                f"Valid table ids are {table_ids or '[]'}; query others with docx_template_query "
+                "before writing the contract."
+            )
 
     def add_revision(self, job_id, revision):
         data = self.get(job_id)

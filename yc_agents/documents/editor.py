@@ -37,10 +37,25 @@ class DocxEditor:
                 f"Revision conflict: current is v{int(job.get('current_revision') or 0):03d}, "
                 f"requested base is v{int(base_revision):03d}"
             )
+        if not list(operations or []):
+            raise ValueError(
+                "docx_edit requires at least one operation; an empty edit would create a "
+                "byte-identical revision."
+            )
         base = self.job_store.revision(job_id, base_revision)
         version = self.job_store.next_version(job_id)
         revision_dir = self.job_store.job_root(job_id) / "revisions" / f"v{version:03d}"
         revision_dir.mkdir(parents=True, exist_ok=False)
+        try:
+            return self._edit_into(
+                job, job_id, base, base_revision, version, revision_dir, operations, output_name
+            )
+        except BaseException:
+            # Never leave a half-built revision directory behind; orphan dirs block later versions.
+            shutil.rmtree(revision_dir, ignore_errors=True)
+            raise
+
+    def _edit_into(self, job, job_id, base, base_revision, version, revision_dir, operations, output_name):
         internal_docx = revision_dir / "document.docx"
         shutil.copyfile(base["docx_path"], internal_docx)
         document = Document(internal_docx)
@@ -100,10 +115,25 @@ class DocxEditor:
             "artifacts": [str(manifest_path)],
         }
 
+    _OPERATION_ALIASES = {
+        "replace": "replace_text",
+        "insert_paragraph": "insert",
+        "add_paragraph": "insert",
+        "insert_text": "insert",
+        "delete_paragraph": "delete",
+        "delete_table": "delete",
+        "remove": "delete",
+        "edit_table": "update_table",
+        "replace_table": "update_table",
+        "set_format": "set_style",
+        "update_style": "set_style",
+    }
+
     def _apply(self, document, operation):
         if not isinstance(operation, dict):
             raise ValueError("Each edit operation must be an object")
-        name = str(operation.get("operation") or "").strip()
+        name = str(operation.get("operation") or "").strip().lower()
+        name = self._OPERATION_ALIASES.get(name, name)
         if name == "replace_text":
             return self._replace_text(document, operation)
         if name == "replace_section":
@@ -122,7 +152,11 @@ class DocxEditor:
             return self._set_style(document, operation)
         if name == "replace_image":
             return self._replace_image(document, operation)
-        raise ValueError(f"Unsupported DOCX edit operation: {name}")
+        raise ValueError(
+            f"Unsupported DOCX edit operation: {name}. Supported operations: replace_text, "
+            "replace_section, insert, delete, move, update_table, delete_table_column, "
+            "set_style, replace_image."
+        )
 
     @staticmethod
     def _all_paragraphs(document):
@@ -154,18 +188,28 @@ class DocxEditor:
             raise ValueError(f"Paragraph target must resolve exactly once, found {len(matches)}: {target}")
         return matches[0]
 
+    @staticmethod
+    def _is_table_id(target):
+        return bool(re.search(r"(?:^|\.)(?:tbl|table)[-_\.]?\d+$", str(target or "")))
+
     def _find_table(self, document, target):
         target = str(target or "")
         match = re.search(r"(?:tbl|table)[-_\.]?(\d+)$", target)
         if match:
             index = int(match.group(1))
-            if index >= len(document.tables) and index > 0:
-                index -= 1
             if 0 <= index < len(document.tables):
                 return document.tables[index]
+            available = ", ".join(f"body.tbl{i:04d}" for i in range(len(document.tables)))
+            raise ValueError(
+                f"Table target out of range: {target}. Table ids are zero-based; "
+                f"available: {available or 'none'}"
+            )
         matches = [table for table in document.tables if any(target in cell.text for row in table.rows for cell in row.cells)]
         if len(matches) != 1:
-            raise ValueError(f"Table target must resolve exactly once, found {len(matches)}: {target}")
+            raise ValueError(
+                f"Table target must resolve exactly once, found {len(matches)}: {target}. "
+                "Use the element id (e.g. body.tbl0000) or unique cell text."
+            )
         return matches[0]
 
     def _replace_text(self, document, operation):
@@ -173,15 +217,20 @@ class DocxEditor:
         new = str(operation.get("new_text") or "")
         if not old:
             raise ValueError("replace_text requires old_text or target")
-        count = 0
-        for paragraph in self._all_paragraphs(document):
+        paragraphs = self._all_paragraphs(document)
+        occurrences = sum(paragraph.text.count(old) for paragraph in paragraphs)
+        expected = int(operation.get("expected_replacements", 1))
+        if occurrences != expected:
+            raise ValueError(
+                f"replace_text expected {expected} occurrence(s) of the text, found {occurrences}. "
+                "Nothing was changed; adjust expected_replacements or make old_text more specific."
+            )
+        touched = 0
+        for paragraph in paragraphs:
             if old in paragraph.text:
                 _replace_paragraph_text(paragraph, paragraph.text.replace(old, new))
-                count += 1
-        expected = int(operation.get("expected_replacements", 1))
-        if count != expected:
-            raise ValueError(f"replace_text expected {expected} paragraph(s), found {count}")
-        return {"operation": "replace_text", "replacements": count}
+                touched += 1
+        return {"operation": "replace_text", "replacements": occurrences, "paragraphs": touched}
 
     def _replace_section(self, document, operation):
         heading = self._find_paragraph(document, operation.get("target"))
@@ -229,7 +278,8 @@ class DocxEditor:
 
     def _delete(self, document, operation):
         target = str(operation.get("target") or "")
-        if "tbl" in target or "table" in target:
+        kind = str(operation.get("type") or "").strip().lower()
+        if kind == "table" or (not kind and self._is_table_id(target)):
             table = self._find_table(document, target)
             table._tbl.getparent().remove(table._tbl)
         else:

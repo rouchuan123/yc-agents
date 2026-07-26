@@ -24,6 +24,7 @@ class VisionQAService:
                         "anchor": "",
                         "issue": "视觉模型未配置，未执行逐页图片检查",
                         "suggested_action": "配置 agents.defaults.model.vision 后重新验证",
+                        "category": "environment",
                     }
                 ],
             }
@@ -39,6 +40,7 @@ class VisionQAService:
                         "anchor": "",
                         "issue": f"视觉模型检查失败：{exc.__class__.__name__}",
                         "suggested_action": "检查视觉模型配置或服务状态后重新验证",
+                        "category": "environment",
                     }
                 )
         return {"available": True, "findings": findings}
@@ -64,7 +66,10 @@ class VisionQAService:
         ]
         payload = None
         for attempt in range(2):
-            response = invoke_llm(self.llm.think, messages, usage_kind="auxiliary")
+            # Deterministic QA: the same page must yield the same verdict across runs.
+            response = invoke_llm(
+                self.llm.think, messages, usage_kind="auxiliary", temperature=0
+            )
             payload = self._json_payload(response)
             if payload is not None and isinstance(payload.get("findings"), list):
                 break
@@ -84,6 +89,7 @@ class VisionQAService:
                     "anchor": "",
                     "issue": "视觉模型未返回有效的 findings JSON",
                     "suggested_action": "重新调用视觉模型或检查响应格式",
+                    "category": "environment",
                 }
             ]
         output = []

@@ -200,10 +200,17 @@ def test_template_analyzer_extracts_effective_chinese_formatting(document_worksp
     analyzer = DocxTemplateAnalyzer(jobs)
 
     result = analyzer.analyze(job["id"])
-    body = analyzer.query(job["id"], role="body", limit=20)["matches"]
+    body = analyzer.query(job["id"], role="body", limit=20, detail=True)["matches"]
+    compact_body = analyzer.query(job["id"], role="body", limit=20)["matches"]
     table = analyzer.query(job["id"], element_id="body.tbl0000")["matches"][0]
     overview = analyzer.query(job["id"])
     matching = next(item for item in body if "旧项目位于" in item["text"])
+    compact_matching = next(item for item in compact_body if "旧项目位于" in item["text"])
+
+    # Role queries default to the compact projection to protect the context window.
+    assert "paragraph_format" not in compact_matching
+    assert "runs" not in compact_matching
+    assert compact_matching["element_id"] == matching["element_id"]
 
     assert result["sections"] == 1
     assert result["tables"] == 1
@@ -1255,16 +1262,59 @@ def test_full_verification_publishes_only_after_all_qa_passes(document_workspace
     assert revision["delivery_ready"] is True
 
 
-def test_docx_verify_tool_raises_when_all_qa_is_blocked():
+def test_docx_verify_tool_returns_structured_result_when_all_qa_is_blocked():
     class BlockedVerifier:
         def verify(self, *_args, **_kwargs):
             return {
                 "passed": False,
-                "findings": [{"severity": "blocking", "issue": "目录书签损坏"}],
+                "findings": [
+                    {
+                        "severity": "blocking",
+                        "issue": "目录书签损坏",
+                        "anchor": "第一章",
+                        "category": "document",
+                    },
+                    {
+                        "severity": "blocking",
+                        "issue": "目录书签损坏",
+                        "anchor": "第二章",
+                        "category": "document",
+                    },
+                ],
+                "qa_report_path": "qa/v001/qa-report.json",
             }
 
-    with pytest.raises(ValueError, match="DOCX_QA_BLOCKED.*目录书签损坏"):
-        DocxVerifyTool(BlockedVerifier()).run("job", mode="all")
+    result = DocxVerifyTool(BlockedVerifier()).run("job", mode="all")
+
+    assert result["ok"] is False
+    assert result["error"] == "DOCX_QA_BLOCKED"
+    # Findings with anchors survive so the agent can target docx_edit repairs.
+    assert result["findings"][0]["anchor"] == "第一章"
+    assert result["qa_report_path"] == "qa/v001/qa-report.json"
+    assert result["blocking_issues"] == ["目录书签损坏"]  # deduplicated
+    assert result["next_action"] == "docx_edit"
+
+
+def test_docx_verify_tool_flags_environment_blockers():
+    class EnvironmentBlockedVerifier:
+        def verify(self, *_args, **_kwargs):
+            return {
+                "passed": False,
+                "environment_blocked": True,
+                "findings": [
+                    {
+                        "severity": "blocking",
+                        "issue": "视觉模型未配置，未执行逐页图片检查",
+                        "category": "environment",
+                    }
+                ],
+            }
+
+    result = DocxVerifyTool(EnvironmentBlockedVerifier()).run("job", mode="all")
+
+    assert result["ok"] is False
+    assert result["environment_blocked"] is True
+    assert "environment" in result["instruction"]
 
 
 def test_markdown_table_becomes_real_word_table(document_workspace):
@@ -1362,3 +1412,268 @@ def test_brand_delete_blocks_old_company_left_in_preserved_table(tmp_path):
 
     assert result["passed"] is False
     assert any("仍残留" in item["issue"] for item in result["findings"])
+
+
+def _confirm_simple_plan(jobs, job, sections, table_action="preserve"):
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    jobs.set_contract(
+        job["id"],
+        {"tables": [{"element_id": "body.tbl0000", "action": table_action}], "unresolved": []},
+    )
+    content = DocumentContentStore(jobs)
+    content.set_outline(job["id"], {"sections": sections})
+    jobs.confirm_plan(job["id"])
+    return content
+
+
+def test_upsert_section_inherits_confirmed_outline_title(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs,
+        job,
+        [{"id": "section-1", "title": "第一章 引言"}, {"id": "section-2", "title": "第二章 方法"}],
+    )
+
+    missing_title = content.upsert_section(job["id"], "section-1", "", "引言正文。")
+    placeholder_title = content.upsert_section(job["id"], "section-2", "section-2", "方法正文。")
+
+    assert missing_title["section"]["title"] == "第一章 引言"
+    assert placeholder_title["section"]["title"] == "第二章 方法"
+
+
+def test_generate_blocks_placeholder_outline_titles(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    # No explicit ids or titles: normalize_outline generates section-N for both.
+    content = _confirm_simple_plan(jobs, job, [{"purpose": "第一章"}, {"purpose": "第二章"}])
+    content.upsert_section(job["id"], "section-1", "", "第一章正文。")
+    content.upsert_section(job["id"], "section-2", "", "第二章正文。")
+
+    with pytest.raises(ValueError, match="PLACEHOLDER_TITLES"):
+        DocxBuilder(workspace, jobs, content).generate(job["id"])
+
+
+def test_generate_rejects_byte_identical_regeneration(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs,
+        job,
+        [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}],
+    )
+    content.upsert_section(job["id"], "s1", "第一章", "第一章的新正文。")
+    content.upsert_section(job["id"], "s2", "第二章", "第二章的新正文。")
+    builder = DocxBuilder(workspace, jobs, content)
+    first = builder.generate(job["id"])
+    assert first["version"] == 1
+
+    with pytest.raises(ValueError, match="NO_CONTENT_CHANGE"):
+        builder.generate(job["id"])
+
+    # The rejected attempt must not leave an orphan revision directory behind.
+    revisions_root = jobs.job_root(job["id"]) / "revisions"
+    assert sorted(path.name for path in revisions_root.iterdir()) == ["v001"]
+    assert jobs.get(job["id"])["current_revision"] == 1
+
+    content.upsert_section(job["id"], "s2", "第二章", "第二章修改后的正文。")
+    second = builder.generate(job["id"])
+    assert second["version"] == 2
+
+
+def test_parent_and_optional_sections_render_as_headings(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs,
+        job,
+        [
+            {
+                "id": "chapter",
+                "title": "第一章 总述",
+                "children": [
+                    {"id": "leaf-a", "title": "研究背景"},
+                    {"id": "leaf-b", "title": "研究意义", "required": False},
+                ],
+            }
+        ],
+    )
+    # Only the required leaf is written: the parent and the optional leaf stay heading-only.
+    content.upsert_section(job["id"], "leaf-a", "研究背景", "研究背景正文。")
+
+    missing = content.get_missing(job["id"])
+    assert missing["complete"] is True
+    assert "chapter" in missing["present"]
+    assert "leaf-b" in missing["present"]
+
+    generated = DocxBuilder(workspace, jobs, content).generate(job["id"])
+    texts = [paragraph.text for paragraph in Document(generated["docx_path"]).paragraphs]
+    assert "第一章 总述" in texts
+    assert "研究意义" in texts
+
+    result = DocxVerifier(jobs).verify(job["id"], version=1, mode="deterministic")
+    heading_findings = [
+        item for item in result["findings"] if "提纲标题" in str(item.get("issue"))
+    ]
+    assert heading_findings == []
+
+
+def test_duplicate_outline_titles_use_expected_occurrence_count(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs,
+        job,
+        [
+            {
+                "id": "c1",
+                "title": "第一章 现状",
+                "children": [{"id": "c1-s", "title": "小结"}],
+            },
+            {
+                "id": "c2",
+                "title": "第二章 展望",
+                "children": [{"id": "c2-s", "title": "小结"}],
+            },
+        ],
+    )
+    content.upsert_section(job["id"], "c1-s", "小结", "第一章小结正文。")
+    content.upsert_section(job["id"], "c2-s", "小结", "第二章小结正文。")
+
+    DocxBuilder(workspace, jobs, content).generate(job["id"])
+    result = DocxVerifier(jobs).verify(job["id"], version=1, mode="deterministic")
+
+    heading_findings = [
+        item for item in result["findings"] if "小结" in str(item.get("anchor"))
+    ]
+    assert heading_findings == []
+
+
+def test_set_contract_rejects_unknown_element_ids(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+
+    with pytest.raises(ValueError, match="UNKNOWN_CONTRACT_ELEMENT.*body.tbl0099"):
+        jobs.set_contract(
+            job["id"],
+            {"tables": [{"element_id": "body.tbl0099", "action": "rewrite"}]},
+        )
+
+
+def test_reanalysis_is_idempotent_and_preserves_cleared_questions(document_workspace):
+    _workspace, _template, _attachments, jobs, job = document_workspace
+    analyzer = DocxTemplateAnalyzer(jobs)
+    first = analyzer.analyze(job["id"])
+    assert jobs.get(job["id"])["pending_questions"]
+
+    jobs.update_requirements(job["id"], {"topic": "新项目"}, pending_questions=[])
+    second = analyzer.analyze(job["id"])
+
+    assert second.get("cached") is True
+    assert second["template_spec_path"] == first["template_spec_path"]
+    assert jobs.get(job["id"])["pending_questions"] == []
+
+
+def test_generation_rejects_extra_table_columns(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs,
+        job,
+        [{"id": "s1", "title": "第一章"}],
+        table_action="rewrite",
+    )
+    content.upsert_section(
+        job["id"],
+        "s1",
+        "第一章",
+        "正文。",
+        tables=[
+            {
+                "target_element_id": "body.tbl0000",
+                "headers": ["一", "二", "三", "四"],
+                "rows": [["1", "2", "3", "4"]],
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="TABLE_COLUMN_MISMATCH"):
+        DocxBuilder(workspace, jobs, content).generate(job["id"])
+
+
+def test_editor_aliases_occurrence_counting_and_strict_targets(document_workspace):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    content = _confirm_simple_plan(
+        jobs,
+        job,
+        [{"id": "s1", "title": "第一章"}, {"id": "s2", "title": "第二章"}],
+    )
+    content.upsert_section(job["id"], "s1", "第一章", "示例词甲与示例词甲同段出现。")
+    content.upsert_section(job["id"], "s2", "第二章", "第二章正文。")
+    DocxBuilder(workspace, jobs, content).generate(job["id"])
+    editor = DocxEditor(workspace, jobs)
+
+    with pytest.raises(ValueError, match="at least one operation"):
+        editor.edit(job["id"], 1, [])
+
+    # Two occurrences inside one paragraph: occurrence counting must see 2, not 1.
+    edited = editor.edit(
+        job["id"],
+        1,
+        [
+            {
+                "operation": "replace_text",
+                "old_text": "示例词甲",
+                "new_text": "示例词乙",
+                "expected_replacements": 2,
+            },
+            {"operation": "insert_paragraph", "target": "第二章正文。", "content": "追加的说明段。"},
+        ],
+    )
+    assert edited["version"] == 2
+    texts = [paragraph.text for paragraph in Document(edited["docx_path"]).paragraphs]
+    assert "示例词乙与示例词乙同段出现。" in texts
+    assert "追加的说明段。" in texts
+
+    with pytest.raises(ValueError, match="Table target out of range"):
+        editor.edit(
+            job["id"],
+            2,
+            [{"operation": "delete", "target": "body.tbl0005"}],
+        )
+    # Failed edits must not leave orphan revision directories.
+    revisions_root = jobs.job_root(job["id"]) / "revisions"
+    assert sorted(path.name for path in revisions_root.iterdir()) == ["v001", "v002"]
+
+
+def test_update_requirements_without_questions_leaves_queue_untouched(document_workspace):
+    _workspace, _template, attachments, jobs, job = document_workspace
+    DocxTemplateAnalyzer(jobs).analyze(job["id"])
+    tool = DocumentJobTool(jobs, attachments)
+    questions_before = jobs.get(job["id"])["pending_questions"]
+    assert questions_before
+
+    validated = tool.schema.validate(
+        {"operation": "update_requirements", "job_id": job["id"], "requirements": {"topic": "新项目"}}
+    )
+    result = tool.run(**validated)
+    assert result["pending_questions"] == questions_before
+
+    validated = tool.schema.validate(
+        {
+            "operation": "update_requirements",
+            "job_id": job["id"],
+            "requirements": {},
+            "pending_questions": [],
+        }
+    )
+    result = tool.run(**validated)
+    assert result["pending_questions"] == []
+
+
+def test_file_reader_refuses_template_spec(document_workspace, tmp_path):
+    workspace, _template, _attachments, jobs, job = document_workspace
+    from yc_agents.tools.file_reader import FileReaderTool
+
+    spec_path = jobs.job_root(job["id"]) / "template" / "template-spec.json"
+    spec_path.parent.mkdir(parents=True, exist_ok=True)
+    spec_path.write_text("{}", encoding="utf-8")
+
+    reader = FileReaderTool(workspace)
+    with pytest.raises(PermissionError, match="docx_template_query"):
+        reader.run(str(spec_path.relative_to(workspace)), allow_large=True)

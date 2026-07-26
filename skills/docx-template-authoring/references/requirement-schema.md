@@ -21,5 +21,12 @@
 - 合并为一次普通语言问题，最多列出当前真正缺失的内容。
 - 不询问已经能从模板确定的排版参数。
 - 冲突信息指出具体冲突，等待用户选择，不自行覆盖。
-- 用户允许“按合理假设生成”时，在 requirements 中保存假设并在提纲确认时展示。
+- 用户允许"按合理假设生成"时，在 requirements 中保存假设并在提纲确认时展示。
 - 项目投资、营收、面积、建设期和产能等数字若是合理假设，必须逐项写入 `outline.assumptions`；每次修改假设或提纲后都要重新确认。
+
+## pending_questions 的生命周期
+
+- 模板分析会写入默认待办问题；它们会阻塞 `confirm_plan` 和 `docx_generate`（PENDING_QUESTIONS）。
+- 保存回答时必须显式清空：`document_job.update_requirements(requirements={...}, pending_questions=[])`。
+- 不传 `pending_questions` 表示"保持不变"，不会自动清空；仍有未答问题时传剩余问题列表。
+- 重复调用 `docx_template_analyzer` 不会重置已清空的待办（分析是幂等的）。
