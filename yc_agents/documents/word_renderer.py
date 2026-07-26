@@ -19,6 +19,9 @@ def export_word_pdf(input_path, output_path):
     word = None
     document = None
     temporary_directory = None
+    # 安全设置失败不再静默吞掉：逐项记录降级项，随结果返回，由
+    # verifier 转成 environment 类 warning 告知用户。
+    security_degraded = []
     try:
         # Never let Word rewrite an immutable revision. Field and TOC refreshes
         # happen on a disposable copy inside the broker-approved QA directory.
@@ -31,13 +34,14 @@ def export_word_pdf(input_path, output_path):
         word.Visible = False
         word.DisplayAlerts = 0
         try:
+            # msoAutomationSecurityForceDisable：禁用文档宏。
             word.AutomationSecurity = 3
         except Exception:
-            pass
+            security_degraded.append("automation_security")
         try:
             word.Options.UpdateLinksAtOpen = False
         except Exception:
-            pass
+            security_degraded.append("update_links_at_open")
         document = word.Documents.Open(
             str(working_copy),
             ConfirmConversions=False,
@@ -75,7 +79,13 @@ def export_word_pdf(input_path, output_path):
             shutil.rmtree(temporary_directory, ignore_errors=True)
     if not output_path.exists() or output_path.stat().st_size == 0:
         raise RuntimeError("Microsoft Word did not produce a non-empty PDF")
-    return {"ok": True, "input": str(input_path), "output": str(output_path), "bytes": output_path.stat().st_size}
+    return {
+        "ok": True,
+        "input": str(input_path),
+        "output": str(output_path),
+        "bytes": output_path.stat().st_size,
+        "security_degraded": security_degraded,
+    }
 
 
 def main():

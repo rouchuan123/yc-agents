@@ -13,6 +13,7 @@ class DocxEditTool(BaseTool):
         "delete_table_column {target,column}, set_style {target,style}, replace_image {target,image_path}. "
         "Target tables by element id (body.tbl0000) or unique cell text; paragraphs by unique text or body.pNNNN."
     )
+    risk = "write"
     schema = ToolSchema(
         fields=[
             ToolField(name="job_id", type="str", required=True),

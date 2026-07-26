@@ -124,6 +124,7 @@ COMMANDS = {
 class VerificationRunnerTool(BaseTool):
     name = "verification_runner"
     description = "Run allowlisted tests, lint, typecheck, and explicitly allowed heavy verification commands."
+    risk = "execute"
     schema = ToolSchema(
         fields=[
             ToolField(name="command_key", type="str", required=True),

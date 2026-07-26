@@ -60,6 +60,7 @@ DEFAULT_CONFIG = {
     "tools": {
         "profile": "coding",
         "entries": copy.deepcopy(DEFAULT_TOOL_ENTRIES),
+        "approval": {"mode": "off"},
         "web": {
             "search": {
                 "provider": "tavily",
@@ -142,6 +143,8 @@ class ModelProviderSettings:
     request: dict | None = None
     structured_output_request: dict | None = None
     capabilities: tuple[str, ...] = ()
+    # model entry 的 toolCalling 标记：该模型支持原生 function calling。
+    tool_calling: bool = False
 
 
 def _deep_merge(base, override):
@@ -333,7 +336,22 @@ class YCoreConfig:
             request=dict(model_entry.get("request") or {}),
             structured_output_request=structured_request,
             capabilities=tuple(model_entry.get("capabilities") or []),
+            tool_calling=bool(model_entry.get("toolCalling")),
         )
+
+    def fallback_model_refs(self):
+        """按配置顺序返回去重后的 fallback model refs；主模型与空串会被
+        剔除，返回空列表表示没有可用的容灾链。"""
+        model = (
+            self.data.get("agents", {}).get("defaults", {}).get("model", {}) or {}
+        )
+        primary = str(self.primary_model_ref or "")
+        refs = []
+        for ref in model.get("fallbacks") or []:
+            text = str(ref or "").strip()
+            if text and text != primary and text not in refs:
+                refs.append(text)
+        return refs
 
     @property
     def vision_model_ref(self):
@@ -368,6 +386,12 @@ class YCoreConfig:
             for name, settings in self.tool_entries().items()
             if bool(settings.get("enabled", False))
         ]
+
+    def approval_mode(self):
+        """tools.approval.mode：off（默认，免审直通）、execute、
+        write_and_execute。模式合法性由 HumanApprovalGate 构造时校验。"""
+        approval = self.data.get("tools", {}).get("approval") or {}
+        return str(approval.get("mode", "off") or "off").strip().lower()
 
     def allowed_tools(self):
         return self.enabled_tools()

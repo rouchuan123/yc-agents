@@ -27,6 +27,7 @@
           {
             "id": "deepseek-v4-flash",
             "name": "deepseek-v4-flash",
+            "toolCalling": true,
             "contextWindow": 256000,
             "maxOutputTokens": 4096,
             "request": {
@@ -115,6 +116,9 @@
       "docx_edit": {"enabled": true},
       "docx_verify": {"enabled": true}
     },
+    "approval": {
+      "mode": "off"
+    },
     "web": {
       "search": {
         "provider": "tavily",
@@ -139,7 +143,7 @@
   },
   "runtime": {
     "expectsJson": true,
-    "toolCalling": "json-protocol",
+    "toolCalling": "native",
     "modelTimeoutSeconds": 60,
     "maxToolCalls": 100,
     "toolTimeoutSeconds": 30,
@@ -149,7 +153,11 @@
     "toolExecutionRetryCount": 1,
     "verificationRetryCount": 1,
     "maxRecoveryAttempts": 4,
-    "failOnInvalidJson": true
+    "failOnInvalidJson": true,
+    "tokenBudget": {
+      "softTokens": 1500000,
+      "hardTokens": 3000000
+    }
   },
   "analytics": {
     "enabled": true,
@@ -165,7 +173,7 @@
   },
   "memory": {
     "enabled": true,
-    "compressionThreshold": 12,
+    "sessionFreshnessHours": 12,
     "activeContextMaxTokens": 200000,
     "compactionTriggerPercent": 80,
     "compactionTargetPercent": 30,

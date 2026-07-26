@@ -7,6 +7,7 @@ from yc_agents.tools.base import BaseTool
 class MarkdownWriterTool(BaseTool):
     name = "markdown_writer"
     description = "Write Markdown content to an output file."
+    risk = "write"
     schema = ToolSchema(
         fields=[
             ToolField(name="file_name", type="str", required=True),

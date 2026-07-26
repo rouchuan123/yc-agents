@@ -68,6 +68,9 @@ class NullRunAnalytics:
     def record_final_output(self, output):
         return None
 
+    def record_token_usage(self, usage):
+        return None
+
     def finish(self, status, finished_at=None, error_type=None, error_message=None):
         return None
 
@@ -122,6 +125,20 @@ class RunAnalytics:
                 self.run_id,
                 final_output_preview=preview,
                 final_output_full=full_text,
+            )
+        except Exception:
+            if self.strict:
+                raise
+
+    def record_token_usage(self, usage):
+        try:
+            usage = dict(usage or {})
+            self.recorder.store.update_run(
+                self.run_id,
+                input_tokens=int(usage.get("input_tokens", 0) or 0),
+                output_tokens=int(usage.get("output_tokens", 0) or 0),
+                cached_tokens=int(usage.get("cached_tokens", 0) or 0),
+                total_tokens=int(usage.get("total_tokens", 0) or 0),
             )
         except Exception:
             if self.strict:

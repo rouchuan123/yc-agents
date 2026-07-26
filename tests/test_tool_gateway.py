@@ -113,6 +113,8 @@ class ToolRegistryStub:
 
 
 class FakeApprovalGate:
+    """旧式两参数 gate：验证 gateway 对不认识 risk 参数的 gate 保持兼容。"""
+
     def check_tool_call(self, tool_name, arguments):
         if tool_name == "fake_tool" and arguments.get("text") == "danger":
             return {
@@ -130,6 +132,46 @@ class FakeApprovalGate:
             "reason": "safe test call",
             "tool_name": tool_name,
         }
+
+
+class RiskRecordingGate:
+    """记录收到的 risk 声明，并把 write/execute 一律判为需要审批。"""
+
+    def __init__(self):
+        self.seen_risks = []
+
+    def check_tool_call(self, tool_name, arguments=None, risk="read"):
+        self.seen_risks.append((tool_name, risk))
+        if risk in {"write", "execute"}:
+            return {
+                "allowed": False,
+                "needs_approval": True,
+                "action": "tool_call",
+                "reason": f"{tool_name} declared {risk} risk",
+                "tool_name": tool_name,
+                "risk": risk,
+            }
+        return {
+            "allowed": True,
+            "needs_approval": False,
+            "action": "tool_call",
+            "reason": "read-only call",
+            "tool_name": tool_name,
+            "risk": risk,
+        }
+
+
+class WriteRiskTool(BaseTool):
+    name = "write_risk_tool"
+    description = "A write-risk tool for approval tests."
+    risk = "write"
+
+    def __init__(self):
+        self.calls = 0
+
+    def run(self, text="x"):
+        self.calls += 1
+        return {"written": text}
 
 
 class TestToolGateway(unittest.TestCase):
@@ -262,7 +304,9 @@ class TestToolGateway(unittest.TestCase):
         self.assertEqual(tool_result_events[0]["payload"]["tool_name"], "failing_tool")
         self.assertEqual(tool_result_events[0]["payload"]["result"]["ok"], False)
 
-    def test_returns_needs_approval_without_calling_tool(self):
+    def test_denies_gated_tool_without_callback_and_does_not_call_tool(self):
+        # headless（无 approval_callback）时按拒绝处理：返回普通失败
+        # tool_result 让模型改道，绝不把 needs_approval 决定原样透传。
         registry = ToolRegistry()
         registry.register(FakeTool())
         trace = FakeTrace()
@@ -276,13 +320,101 @@ class TestToolGateway(unittest.TestCase):
 
         result = gateway.run_tool("fake_tool", text="danger")
 
-        self.assertTrue(result["needs_approval"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "approval_denied")
+        self.assertIn("用户拒绝了此操作", result["error_message"])
+        self.assertIn("dangerous test call", result["error_message"])
+        self.assertIn("请改用其他方式或询问用户", result["error_message"])
         self.assertEqual(result["tool_name"], "fake_tool")
         self.assertNotIn("echo", result)
-        self.assertIn(
-            "tool_needs_approval",
-            [event["event_type"] for event in trace.events],
+        event_types = [event["event_type"] for event in trace.events]
+        self.assertIn("tool_needs_approval", event_types)
+        self.assertIn("tool_approval_denied", event_types)
+
+    def test_approval_callback_true_executes_tool(self):
+        registry = ToolRegistry()
+        tool = WriteRiskTool()
+        registry.register(tool)
+        trace = FakeTrace()
+        requests = []
+
+        def approve(request):
+            requests.append(request)
+            return True
+
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["write_risk_tool"],
+            trace=trace,
+            approval_gate=RiskRecordingGate(),
+            approval_callback=approve,
         )
+
+        result = gateway.run_tool("write_risk_tool", text="hello")
+
+        self.assertEqual(result, {"written": "hello"})
+        self.assertEqual(tool.calls, 1)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(requests[0]["tool_name"], "write_risk_tool")
+        self.assertEqual(requests[0]["risk"], "write")
+        event_types = [event["event_type"] for event in trace.events]
+        self.assertIn("tool_needs_approval", event_types)
+        self.assertIn("tool_approved", event_types)
+
+    def test_approval_callback_false_returns_denial_result(self):
+        registry = ToolRegistry()
+        tool = WriteRiskTool()
+        registry.register(tool)
+
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["write_risk_tool"],
+            approval_gate=RiskRecordingGate(),
+            approval_callback=lambda request: False,
+        )
+
+        result = gateway.run_tool("write_risk_tool", text="hello")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "approval_denied")
+        self.assertEqual(tool.calls, 0)
+
+    def test_approval_callback_exception_is_treated_as_denial(self):
+        registry = ToolRegistry()
+        tool = WriteRiskTool()
+        registry.register(tool)
+
+        def broken(request):
+            raise RuntimeError("UI is gone")
+
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["write_risk_tool"],
+            approval_gate=RiskRecordingGate(),
+            approval_callback=broken,
+        )
+
+        result = gateway.run_tool("write_risk_tool", text="hello")
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "approval_denied")
+        self.assertEqual(tool.calls, 0)
+
+    def test_gateway_passes_tool_risk_declaration_to_gate(self):
+        registry = ToolRegistry()
+        registry.register(FakeTool())
+        gate = RiskRecordingGate()
+
+        gateway = ToolGateway(
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            approval_gate=gate,
+        )
+
+        result = gateway.run_tool("fake_tool", text="hello")
+
+        self.assertEqual(result, {"echo": "hello"})
+        self.assertEqual(gate.seen_risks, [("fake_tool", "read")])
 
     def test_tool_execution_result_success_dict(self):
         result = ToolExecutionResult.success("rag_search", {"answer": "ok"})

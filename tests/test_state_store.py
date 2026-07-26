@@ -50,6 +50,33 @@ class TestStateStore(unittest.TestCase):
 
             self.assertEqual(latest["status"], "created")
 
+    def test_append_step_appends_jsonl_without_rewriting_state_json(self):
+        with TemporaryDirectory() as tmpdir:
+            store = StateStore(Path(tmpdir) / "state.json")
+
+            store.append_step({"index": 0, "tool_call": {"tool_name": "fake_tool"}})
+            store.append_step({"index": 1, "tool_call": {"tool_name": "fake_tool"}})
+
+            steps_path = Path(tmpdir) / "state-steps.jsonl"
+            self.assertTrue(steps_path.exists())
+            self.assertFalse((Path(tmpdir) / "state.json").exists())
+            lines = steps_path.read_text(encoding="utf-8").splitlines()
+            self.assertEqual(len(lines), 2)
+            steps = store.load_steps()
+            self.assertEqual([step["index"] for step in steps], [0, 1])
+            self.assertEqual(steps[0]["tool_call"], {"tool_name": "fake_tool"})
+
+    def test_load_steps_returns_empty_when_missing_and_skips_broken_tail(self):
+        with TemporaryDirectory() as tmpdir:
+            store = StateStore(Path(tmpdir) / "state.json")
+
+            self.assertEqual(store.load_steps(), [])
+
+            steps_path = Path(tmpdir) / "state-steps.jsonl"
+            steps_path.write_text('{"index": 0}\n{"index": 1, "tool', encoding="utf-8")
+
+            self.assertEqual(store.load_steps(), [{"index": 0}])
+
 
 if __name__ == "__main__":
     unittest.main()

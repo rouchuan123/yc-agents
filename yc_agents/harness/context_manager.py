@@ -11,6 +11,7 @@ class ContextManager:
         workspace_context=None,
         include_context_report=False,
         context_budget_tokens=8000,
+        recent_session_messages=2,
     ):
         memory = self.build_memory_context(
             session=memory_messages,
@@ -20,8 +21,8 @@ class ContextManager:
         context = {
             "task": "skill_selection",
             "user_input": user_input,
-            "workspace": workspace_context or {},
-            "memory": memory,
+            "workspace": self._slim_selection_workspace(workspace_context),
+            "memory": self._slim_selection_memory(memory, recent_session_messages),
             "skills": [
                 self._summarize_skill(skill)
                 for skill in skills
@@ -90,6 +91,32 @@ class ContextManager:
             "summary": summary or "",
             "profile": profile or {},
             "retrieved": [],
+        }
+
+    def _slim_selection_workspace(self, workspace_context):
+        # Skill selection only needs to know where it runs; the full tool
+        # catalog belongs to execution prompts and would bloat every
+        # selection call.
+        workspace = dict(workspace_context or {})
+        workspace.pop("tool_catalog", None)
+        return workspace
+
+    def _slim_selection_memory(self, memory, recent_session_messages):
+        # Choosing a skill only needs the latest exchanges and the rolling
+        # summary; profile and retrieved memory are re-assembled for the
+        # execution prompt anyway.
+        session = list(memory.get("session") or [])
+        recent = [
+            {
+                "role": message.get("role", ""),
+                "content": message.get("content", ""),
+            }
+            for message in session[-int(recent_session_messages):]
+            if isinstance(message, dict)
+        ]
+        return {
+            "session": recent,
+            "summary": memory.get("summary", ""),
         }
 
     def _summarize_skill(self, skill):

@@ -13,6 +13,7 @@ class WorkspaceWriteTool(BaseTool):
         "Create or edit UTF-8 text files inside the active workspace. "
         "Supports create, write, replace, and append operations."
     )
+    risk = "write"
     schema = ToolSchema(
         fields=[
             ToolField(name="file_path", type="str", required=True),

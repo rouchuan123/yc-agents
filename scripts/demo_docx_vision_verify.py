@@ -66,7 +66,7 @@ def main():
                 "blocking_count": result["blocking_count"],
                 "warning_count": result["warning_count"],
                 "findings": result["findings"],
-                "pages": len(result["page_images"]),
+                "pages": result["page_images"]["count"],
                 "qa_report_path": result["qa_report_path"],
                 "vision_result_path": str(job_root / "qa" / f"v{result['version']:03d}" / "vision-result.json"),
                 "usage_path": str(usage_path),

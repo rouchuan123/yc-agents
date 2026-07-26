@@ -24,6 +24,12 @@ def keyword_tokens(text):
 class KeywordIndex:
     def __init__(self):
         self.items = []
+        # 入库即分词的增量语料：search 只做打分，不再重扫全量文本。
+        self._token_corpus = []
+        # 语料指纹：任何增删都会推进版本号，BM25 只在指纹变化时重建。
+        self._corpus_version = 0
+        self._bm25 = None
+        self._bm25_version = -1
 
     def add_chunks(self, source, chunks):
         for fallback_chunk_id, chunk in enumerate(chunks):
@@ -49,9 +55,15 @@ class KeywordIndex:
                     "metadata": metadata,
                 }
             )
+            self._token_corpus.append(keyword_tokens(text) or [""])
+            self._corpus_version += 1
 
     def clear(self):
         self.items.clear()
+        self._token_corpus.clear()
+        self._corpus_version += 1
+        self._bm25 = None
+        self._bm25_version = -1
 
     def search(self, query, top_k=3):
         if not query or not query.strip():
@@ -61,8 +73,8 @@ class KeywordIndex:
         if not query_terms or not self.items:
             return []
 
-        corpus = [keyword_tokens(item["text"]) or [""] for item in self.items]
-        raw_scores = BM25Okapi(corpus).get_scores(query_terms)
+        corpus = self._token_corpus
+        raw_scores = self._ensure_bm25().get_scores(query_terms)
         normalized_scores = self._normalize(raw_scores)
         query_set = set(query_terms)
         results = []
@@ -86,6 +98,12 @@ class KeywordIndex:
 
         results.sort(key=lambda item: item["score"], reverse=True)
         return results[:top_k]
+
+    def _ensure_bm25(self):
+        if self._bm25 is None or self._bm25_version != self._corpus_version:
+            self._bm25 = BM25Okapi(self._token_corpus)
+            self._bm25_version = self._corpus_version
+        return self._bm25
 
     @staticmethod
     def _normalize(values):

@@ -19,7 +19,9 @@ class DocumentJobTool(BaseTool):
         "when it returns requires_plan_confirmation, call confirm_plan before writing content. "
         "get_active also returns current session attachments. When no job exists, use an existing template attachment; "
         "create auto-selects it when there is exactly one unique DOCX template. Do not ask the user to attach again "
-        "when get_active or list_attachments already returns a template."
+        "when get_active or list_attachments already returns a template. "
+        "Job payloads are a lite decision view (status, pending question count and head, confirmation flags, "
+        "revision counts); call get_outline when you need the full outline."
     )
     schema = ToolSchema(
         fields=[
@@ -66,7 +68,7 @@ class DocumentJobTool(BaseTool):
         if operation == "get_active":
             return {
                 "ok": True,
-                "job": self.job_store.summary(self.job_store.get_active()),
+                "job": self.job_store.summary_lite(self.job_store.get_active()),
                 "attachments": self._attachment_summaries(),
             }
         if operation == "list_attachments":
@@ -74,12 +76,20 @@ class DocumentJobTool(BaseTool):
             return {"ok": True, "attachments": attachments, "count": len(attachments)}
         job_id = self._resolve_job_id(job_id)
         if operation == "get":
-            return {"ok": True, "job": self.job_store.summary(self.job_store.get(job_id))}
+            return {"ok": True, "job": self.job_store.summary_lite(self.job_store.get(job_id))}
+        if operation == "get_outline":
+            data = self.job_store.get(job_id)
+            return {
+                "ok": True,
+                "job_id": data["id"],
+                "plan_confirmed": bool(data.get("plan_confirmed")),
+                "outline": data.get("outline"),
+            }
         if operation == "unlock_contract":
             data = self.job_store.unlock_contract(job_id)
             return {
                 "ok": True,
-                "job": self.job_store.summary(data),
+                "job": self.job_store.summary_lite(data),
                 "requires_plan_confirmation": True,
                 "next_action": "document_job.set_contract",
                 "instruction": "Only unlock after the user explicitly changes a contract decision.",
@@ -94,7 +104,7 @@ class DocumentJobTool(BaseTool):
             remaining = list(data.get("pending_questions") or [])
             return {
                 "ok": True,
-                "job": self.job_store.summary(data),
+                "job": self.job_store.summary_lite(data),
                 "pending_questions": remaining,
                 "instruction": (
                     "All questions answered." if not remaining else
@@ -113,7 +123,7 @@ class DocumentJobTool(BaseTool):
             remaining = self.job_store.unresolved_confirmation_items(job_id)
             return {
                 "ok": True,
-                "job": self.job_store.summary(data),
+                "job": self.job_store.summary_lite(data),
                 "contract": self.job_store.get_contract(job_id),
                 "contract_changed": changed,
                 "requires_plan_confirmation": requires_confirmation,
@@ -134,7 +144,10 @@ class DocumentJobTool(BaseTool):
             data = self.job_store.update(job_id, status="waiting_plan_confirmation")
             return {
                 "ok": True,
-                "job": self.job_store.summary(data),
+                "job": self.job_store.summary_lite(data),
+                # The canonical outline is echoed once so the model can
+                # proof-read it before confirm_plan.
+                "outline": data.get("outline"),
                 "requires_plan_confirmation": True,
                 "next_action": "document_job.confirm_plan",
             }
@@ -142,14 +155,14 @@ class DocumentJobTool(BaseTool):
             data = self.job_store.confirm_plan(job_id)
             return {
                 "ok": True,
-                "job": self.job_store.summary(data),
+                "job": self.job_store.summary_lite(data),
                 "requires_plan_confirmation": False,
                 "next_action": "docx_generate",
                 "instruction": "Plan confirmed. Do not call set_contract again unless the user changes a decision.",
             }
         if operation == "rollback":
             data = self.job_store.rollback(job_id, version)
-            return {"ok": True, "job": self.job_store.summary(data)}
+            return {"ok": True, "job": self.job_store.summary_lite(data)}
         raise ValueError(f"Unsupported document_job operation: {operation}")
 
     def _resolve_job_id(self, job_id):

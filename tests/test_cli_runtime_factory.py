@@ -5,9 +5,15 @@ import unittest
 import unittest.mock
 from pathlib import Path
 
-from yc_agents.cli.runtime_factory import build_cli_runtime
+from yc_agents.cli.runtime_factory import (
+    build_cli_runtime,
+    build_workspace_services,
+    get_workspace_services,
+    invalidate_workspace_services,
+)
 from yc_agents.cli.sessions import CLISessionStore
 from yc_agents.cli.workspaces import WorkspaceStore
+from yc_agents.core.model_router import ModelRouter
 
 
 class FakeLLM:
@@ -21,7 +27,16 @@ class ConfiguredFakeLLM(FakeLLM):
     pass
 
 
-def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_mcp_enabled=False):
+def write_ycore_config(
+    root,
+    allow_tools=None,
+    analytics_enabled=False,
+    sqlite_mcp_enabled=False,
+    tool_calling=None,
+    model_tool_calling=False,
+    fallbacks=None,
+    approval_mode=None,
+):
     default_allow_tools = [
         "workspace_files",
         "file_reader",
@@ -39,12 +54,20 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
         "mcp_sqlite_query_readonly",
     ]
     enabled_names = set(default_allow_tools if allow_tools is None else allow_tools)
+    model_entry = {
+        "id": "deepseek-v4-flash",
+        "contextWindow": 64000,
+        "maxOutputTokens": 4096,
+        "request": {"max_tokens": 4096, "temperature": 0.2},
+    }
+    if model_tool_calling:
+        model_entry["toolCalling"] = True
     config = {
         "agents": {
             "defaults": {
                 "model": {
                     "primary": "deepseek/deepseek-v4-flash",
-                    "fallbacks": [],
+                    "fallbacks": list(fallbacks or []),
                 },
             },
             "entries": {"main": {"enabled": True}},
@@ -55,15 +78,21 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
                     "baseUrl": "https://api.deepseek.com",
                     "api": "openai-completions",
                     "apiKeyEnv": "DEEPSEEK_API_KEY",
+                    "models": [model_entry],
+                },
+                "xiaomi": {
+                    "baseUrl": "https://api.xiaomimimo.com/v1",
+                    "api": "openai-completions",
+                    "apiKeyEnv": "MIMO_API_KEY",
                     "models": [
                         {
-                            "id": "deepseek-v4-flash",
-                            "contextWindow": 64000,
-                            "maxOutputTokens": 4096,
-                            "request": {"max_tokens": 4096, "temperature": 0.2},
+                            "id": "mimo-v2.5",
+                            "contextWindow": 32000,
+                            "maxOutputTokens": 2048,
+                            "request": {"max_completion_tokens": 2048},
                         }
                     ],
-                }
+                },
             }
         },
         "tools": {
@@ -90,7 +119,9 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
             "providerRetryBackoffSeconds": 0.25,
             "verificationRetryCount": 2,
             "maxRecoveryAttempts": 6,
+            "maxLifetimeRecoveryAttempts": 9,
             "failOnInvalidJson": True,
+            "tokenBudget": {"softTokens": 111, "hardTokens": 222},
         },
         "analytics": {
             "enabled": analytics_enabled,
@@ -98,6 +129,10 @@ def write_ycore_config(root, allow_tools=None, analytics_enabled=False, sqlite_m
         },
         "memory": {"activeContextMaxTokens": 5000},
     }
+    if tool_calling is not None:
+        config["runtime"]["toolCalling"] = tool_calling
+    if approval_mode is not None:
+        config["tools"]["approval"] = {"mode": approval_mode}
     (root / "ycore.json").write_text(json.dumps(config), encoding="utf-8")
     (root / ".ycore").mkdir(exist_ok=True)
     (root / ".ycore" / "ycore.json").write_text(json.dumps(config), encoding="utf-8")
@@ -528,6 +563,92 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             self.assertEqual(runtime.recovery_policy.provider_backoff_seconds, 0.25)
             self.assertEqual(runtime.recovery_policy.verification_retries, 2)
             self.assertEqual(runtime.recovery_policy.max_attempts, 6)
+            self.assertEqual(runtime.recovery_policy.lifetime_max_attempts, 9)
+            self.assertEqual(runtime.token_budget_policy.soft_limit_tokens, 111)
+            self.assertEqual(runtime.token_budget_policy.hard_limit_tokens, 222)
+
+    def test_build_cli_runtime_defaults_approval_gate_to_off_mode(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(root, allow_tools=["workspace_files"])
+            session = CLISessionStore(workspace).create_session("configured")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=ConfiguredFakeLLM(),
+                skills_dir=root / "skills",
+            )
+
+            self.assertEqual(runtime.approval_gate.mode, "off")
+
+    def test_build_cli_runtime_wires_configured_approval_mode(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(
+                root,
+                allow_tools=["workspace_files"],
+                approval_mode="write_and_execute",
+            )
+            session = CLISessionStore(workspace).create_session("configured")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=ConfiguredFakeLLM(),
+                skills_dir=root / "skills",
+            )
+
+            self.assertEqual(runtime.approval_gate.mode, "write_and_execute")
+
+    def test_build_cli_runtime_enables_native_fc_when_config_and_model_agree(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(
+                root,
+                allow_tools=["workspace_files", "file_reader"],
+                tool_calling="native",
+                model_tool_calling=True,
+            )
+            session = CLISessionStore(workspace).create_session("native")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=ConfiguredFakeLLM(),
+                skills_dir=root / "skills",
+            )
+
+            self.assertEqual(runtime.tool_calling, "native")
+            self.assertEqual(runtime.agent.tool_calling, "native")
+            self.assertTrue(runtime.agent.native_turn_active())
+            tool_names = {
+                item["function"]["name"] for item in runtime.agent.native_tools
+            }
+            self.assertEqual(tool_names, {"workspace_files", "file_reader"})
+
+    def test_build_cli_runtime_keeps_json_protocol_without_model_capability(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(
+                root,
+                allow_tools=["workspace_files"],
+                tool_calling="native",
+                model_tool_calling=False,
+            )
+            session = CLISessionStore(workspace).create_session("json-protocol")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=ConfiguredFakeLLM(),
+                skills_dir=root / "skills",
+            )
+
+            self.assertEqual(runtime.tool_calling, "json-protocol")
+            self.assertEqual(runtime.agent.tool_calling, "json-protocol")
+            self.assertFalse(runtime.agent.native_turn_active())
+            self.assertEqual(runtime.agent.native_tools, [])
 
     def test_build_cli_runtime_attaches_intent_router(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
@@ -538,6 +659,115 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             runtime = build_cli_runtime(session, llm=FakeLLM(), skills_dir=root / "skills")
 
             self.assertIsNotNone(runtime.agent.intent_router)
+
+    def test_build_cli_runtime_reuses_injected_workspace_services(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            knowledge_dir = root / ".ycore" / "memory" / "RAG_knowledge"
+            knowledge_dir.mkdir(parents=True)
+            (knowledge_dir / "tools.md").write_text(
+                "# 工具\n\n工作区标识 WORKSPACE-SERVICE-3003。",
+                encoding="utf-8",
+            )
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            services = build_workspace_services(workspace.path)
+            session = CLISessionStore(workspace).create_session("layered")
+
+            runtime = build_cli_runtime(
+                session,
+                llm=FakeLLM(),
+                skills_dir=root / "skills",
+                workspace_services=services,
+            )
+
+            # workspace 级组件按引用复用：不再为每个 session 重扫 RAG。
+            self.assertIs(
+                runtime.tool_registry.get_tool("rag_search"),
+                services.rag_search_tool,
+            )
+            self.assertIs(
+                runtime.tool_registry.get_tool("workspace_files"),
+                services.workspace_tools_by_name["workspace_files"],
+            )
+            self.assertIs(runtime.agent.rag_search_tool, services.rag_search_tool)
+            self.assertEqual(
+                runtime.agent.workspace_context["rag"],
+                services.rag_index_report,
+            )
+            result = runtime.tool_registry.get_tool("rag_search").run(
+                "WORKSPACE-SERVICE-3003"
+            )
+            self.assertEqual(
+                result["sources"],
+                ["workspace:.ycore/memory/RAG_knowledge/tools.md"],
+            )
+
+    def test_build_cli_runtime_does_not_rescan_rag_with_injected_services(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            services = build_workspace_services(workspace.path)
+            session = CLISessionStore(workspace).create_session("layered")
+
+            with unittest.mock.patch(
+                "yc_agents.cli.runtime_factory.RAGKnowledgeIndex"
+            ) as knowledge_index:
+                build_cli_runtime(
+                    session,
+                    llm=FakeLLM(),
+                    skills_dir=root / "skills",
+                    workspace_services=services,
+                )
+
+            knowledge_index.assert_not_called()
+
+    def test_get_workspace_services_caches_per_path_until_invalidated(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+
+            first = get_workspace_services(root)
+            second = get_workspace_services(root)
+            invalidate_workspace_services(root)
+            third = get_workspace_services(root)
+            invalidate_workspace_services(root)
+
+            self.assertIs(first, second)
+            self.assertIsNot(first, third)
+
+    def test_injected_services_keep_sqlite_client_alive_after_runtime_close(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            write_ycore_config(
+                root,
+                allow_tools=[
+                    "workspace_files",
+                    "mcp_sqlite_list_tables",
+                    "mcp_sqlite_describe_table",
+                    "mcp_sqlite_query_readonly",
+                ],
+                analytics_enabled=False,
+                sqlite_mcp_enabled=True,
+            )
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            services = build_workspace_services(workspace.path)
+            session = CLISessionStore(workspace).create_session("analytics")
+
+            try:
+                runtime = build_cli_runtime(
+                    session,
+                    llm=FakeLLM(),
+                    skills_dir=root / "skills",
+                    workspace_services=services,
+                )
+
+                self.assertIsNotNone(services.sqlite_client)
+                self.assertNotIn(services.sqlite_client, runtime.managed_resources)
+                runtime.close()
+                # 共享的 MCP 子进程由 workspace 层持有，session 关闭不受影响。
+                self.assertIsNone(services.sqlite_client.process.poll())
+            finally:
+                services.close()
 
     def test_env_example_contains_only_secret_placeholders(self):
         env_example = Path(".env.example").read_text(encoding="utf-8")
@@ -571,6 +801,10 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.assertEqual(model["request"]["temperature"], 0.2)
         self.assertEqual(model["request"]["top_p"], 0.95)
         self.assertEqual(data["runtime"]["modelTimeoutSeconds"], 60)
+        self.assertEqual(
+            data["runtime"]["tokenBudget"],
+            {"softTokens": 1500000, "hardTokens": 3000000},
+        )
         self.assertIn("analytics", data)
         self.assertNotIn("apiKey", search)
         self.assertEqual(search["apiKeyEnv"], "TAVILY_API_KEY")
@@ -621,6 +855,67 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                 )
             finally:
                 runtime.close()
+
+    def test_build_cli_runtime_wraps_primary_llm_with_model_router_for_fallbacks(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(
+                root,
+                allow_tools=["workspace_files"],
+                fallbacks=["deepseek/deepseek-v4-flash", "xiaomi/mimo-v2.5"],
+            )
+            session = CLISessionStore(workspace).create_session("router")
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"DEEPSEEK_API_KEY": "secret", "MIMO_API_KEY": "mimo-secret"},
+                clear=False,
+            ):
+                runtime = build_cli_runtime(session, skills_dir=root / "skills")
+
+            router = runtime.agent.llm
+            self.assertIsInstance(router, ModelRouter)
+            self.assertEqual(
+                [llm.model for llm in router.llms],
+                ["deepseek-v4-flash", "mimo-v2.5"],
+            )
+            # 共享同一 usage_ledger：fallback 的用量按真实模型记进主账本。
+            self.assertIs(router.llms[1].usage_ledger, router.llms[0].usage_ledger)
+            self.assertEqual(router.retries_per_model, 2)
+            self.assertEqual(router.backoff_seconds, 0.25)
+            self.assertEqual(router.usage_ledger.file_path, session.usage_path)
+
+    def test_build_cli_runtime_keeps_plain_llm_when_fallbacks_only_repeat_primary(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(
+                root,
+                allow_tools=["workspace_files"],
+                fallbacks=["deepseek/deepseek-v4-flash"],
+            )
+            session = CLISessionStore(workspace).create_session("router")
+
+            runtime = build_cli_runtime(session, skills_dir=root / "skills")
+
+            self.assertNotIsInstance(runtime.agent.llm, ModelRouter)
+
+    def test_build_cli_runtime_skips_unresolvable_fallback_refs(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            workspace = WorkspaceStore(ycore_root=root, startup_dir=root).ensure_active_workspace()
+            write_ycore_config(
+                root,
+                allow_tools=["workspace_files"],
+                fallbacks=["missing/unknown-model"],
+            )
+            session = CLISessionStore(workspace).create_session("router")
+
+            runtime = build_cli_runtime(session, skills_dir=root / "skills")
+
+            # fallback 配错不应拖垮主模型启动：直接退回普通 LLM。
+            self.assertNotIsInstance(runtime.agent.llm, ModelRouter)
 
     def test_build_cli_runtime_configures_analytics_recorder_when_enabled(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

@@ -12,13 +12,17 @@ class IntentRouter:
         semantic_matcher,
         llm_classifier,
         weights=None,
+        short_circuit_threshold=0.35,
+        short_circuit_ratio=2.0,
     ):
         self.rule_matcher = rule_matcher
         self.semantic_matcher = semantic_matcher
         self.llm_classifier = llm_classifier
         self.weights = weights or DEFAULT_WEIGHTS
+        self.short_circuit_threshold = float(short_circuit_threshold)
+        self.short_circuit_ratio = float(short_circuit_ratio)
 
-    def route(self, user_input, skills):
+    def route(self, user_input, skills, allow_llm_skip=False):
         scores = {
             skill.name: self._empty_candidate(skill.name)
             for skill in skills
@@ -37,13 +41,19 @@ class IntentRouter:
         # LLM classification is advisory: any failure (malformed JSON, provider
         # outage) degrades to rule+semantic routing instead of killing the run.
         llm_error = None
-        try:
-            self._merge_llm_selection(
-                scores,
-                self.llm_classifier.classify(user_input, skills),
-            )
-        except Exception as exc:
-            llm_error = f"{exc.__class__.__name__}: {exc}"
+        llm_skipped = False
+        if allow_llm_skip and self._rule_semantic_lead_is_decisive(scores):
+            # A decisive rule+semantic agreement makes the LLM vote redundant,
+            # so skipping it saves one classification call for this turn.
+            llm_skipped = True
+        else:
+            try:
+                self._merge_llm_selection(
+                    scores,
+                    self.llm_classifier.classify(user_input, skills),
+                )
+            except Exception as exc:
+                llm_error = f"{exc.__class__.__name__}: {exc}"
 
         candidates = self._rank_candidates(scores)
         selected = candidates[0] if candidates else None
@@ -55,9 +65,30 @@ class IntentRouter:
             "candidates": candidates,
             "weights": dict(self.weights),
         }
+        if llm_skipped:
+            result["llm_skipped"] = True
         if llm_error is not None:
             result["llm_error"] = llm_error
         return result
+
+    def _rule_semantic_lead_is_decisive(self, scores):
+        fused = sorted(
+            (
+                candidate["components"]["rule"] * self.weights.get("rule", 0.0)
+                + candidate["components"]["semantic"] * self.weights.get("semantic", 0.0)
+                for candidate in scores.values()
+            ),
+            reverse=True,
+        )
+        if not fused:
+            return False
+
+        top = fused[0]
+        runner_up = fused[1] if len(fused) > 1 else 0.0
+        if top <= self.short_circuit_threshold:
+            return False
+
+        return top >= runner_up * self.short_circuit_ratio
 
     def _empty_candidate(self, skill_name):
         return {

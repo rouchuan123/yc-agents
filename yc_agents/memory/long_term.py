@@ -115,6 +115,8 @@ class LongTermMemory:
         self.session_half_life_days = float(session_half_life_days)
         self.dream_config = dict(dream_config or {})
         self.llm = llm
+        self._stat_cache = {}
+        self._corpus_cache = None
         self.memory_dir.mkdir(parents=True, exist_ok=True)
         self._initialize_db()
 
@@ -188,16 +190,21 @@ class LongTermMemory:
             for stale in indexed_paths - current_paths:
                 connection.execute("DELETE FROM memory_chunks WHERE path = ?", (stale,))
                 connection.execute("DELETE FROM memory_files WHERE path = ?", (stale,))
+                self._stat_cache.pop(stale, None)
             for path, scope in sources:
                 resolved = str(path.resolve())
+                stat = path.stat()
+                fingerprint = (stat.st_mtime_ns, stat.st_size)
+                if resolved in indexed_paths and self._stat_cache.get(resolved) == fingerprint:
+                    continue
                 content = path.read_text(encoding="utf-8")
                 digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 row = connection.execute(
                     "SELECT content_hash FROM memory_files WHERE path = ?", (resolved,)
                 ).fetchone()
-                if row is not None and row["content_hash"] == digest:
-                    continue
-                self._reindex_file(connection, path, resolved, scope, content, digest)
+                if row is None or row["content_hash"] != digest:
+                    self._reindex_file(connection, path, resolved, scope, content, digest)
+                self._stat_cache[resolved] = fingerprint
 
     def _reindex_file(self, connection, path, resolved, scope, content, digest):
         connection.execute("DELETE FROM memory_chunks WHERE path = ?", (resolved,))
@@ -242,7 +249,7 @@ class LongTermMemory:
             (resolved, scope, digest, created_at),
         )
 
-    def search(self, query, top_k=6, token_budget=4000, exclude_session_id=None):
+    def search(self, query, top_k=6, token_budget=4000, exclude_session_id=None, record_access=True):
         if not str(query or "").strip():
             return []
         self.sync()
@@ -295,7 +302,8 @@ class LongTermMemory:
                     "text": text,
                 }
             )
-        self._record_access([item["chunk_id"] for item in results])
+        if record_access:
+            self._record_access([item["chunk_id"] for item in results])
         return results
 
     def write_session_log(self, session_id, messages, summary=""):
@@ -343,16 +351,25 @@ class LongTermMemory:
             used += tokens
             if used >= budget:
                 break
+        had_existing = self.workspace_memory_path.exists()
+        existing = self.workspace_memory_path.read_text(encoding="utf-8") if had_existing else ""
+        prompt_sections = []
+        if existing.strip():
+            prompt_sections.append("# Existing memory\n\n" + existing.strip())
+        prompt_sections.append("# New session logs\n\n" + "\n\n---\n\n".join(contents))
         messages = [
             {
                 "role": "system",
                 "content": (
-                    "Consolidate session logs into durable project memory. Preserve "
+                    "Consolidate session logs into durable project memory. Merge the new "
+                    "logs into the existing memory incrementally instead of rewriting it: "
+                    "keep entries that still hold, update contradicted ones, and add new "
                     "decisions, architecture, preferences, and problem/solution pairs. "
-                    "Discard greetings and transient tool noise. Return Markdown with ## headings."
+                    "Discard greetings and transient tool noise. Return the complete "
+                    "updated Markdown with ## headings."
                 ),
             },
-            {"role": "user", "content": "\n\n---\n\n".join(contents)},
+            {"role": "user", "content": "\n\n".join(prompt_sections)},
         ]
         try:
             result = str(invoke_llm(self.llm.think, messages, usage_kind="auxiliary") or "").strip()
@@ -360,6 +377,13 @@ class LongTermMemory:
             return False
         if not result:
             return False
+        if existing.strip() and len(result) < len(existing) * 0.3:
+            return False
+        if had_existing:
+            backup_path = self.workspace_memory_path.with_name(
+                self.workspace_memory_path.name + ".bak"
+            )
+            backup_path.write_text(existing, encoding="utf-8")
         self.workspace_memory_path.write_text(result + "\n", encoding="utf-8")
         state_path.write_text(
             json.dumps(
@@ -373,11 +397,15 @@ class LongTermMemory:
         return True
 
     def _keyword_scores(self, query, chunks):
-        corpus = [memory_tokens(chunk.text) or [""] for chunk in chunks]
         query_tokens = memory_tokens(query)
         if not query_tokens:
             return [0.0] * len(chunks)
-        raw = BM25Okapi(corpus).get_scores(query_tokens)
+        fingerprint = tuple(chunk.chunk_id for chunk in chunks)
+        if self._corpus_cache is None or self._corpus_cache[0] != fingerprint:
+            corpus = [memory_tokens(chunk.text) or [""] for chunk in chunks]
+            self._corpus_cache = (fingerprint, corpus, BM25Okapi(corpus))
+        _fingerprint, corpus, bm25_index = self._corpus_cache
+        raw = bm25_index.get_scores(query_tokens)
         normalized = self._normalize(raw)
         query_set = set(query_tokens)
         overlap = [

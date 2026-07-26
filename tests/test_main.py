@@ -230,6 +230,47 @@ class TestMainEntryPoint(unittest.TestCase):
     def test_main_imports_tui_entrypoint(self):
         self.assertTrue(callable(main.run_tui))
 
+    def _capture_freshness_hours(self, root):
+        captured = {}
+
+        class SpySessionStore:
+            def __init__(self, workspace):
+                self.workspace = workspace
+
+            def ensure_current_session(self, freshness_hours=None):
+                captured["freshness_hours"] = freshness_hours
+                return object()
+
+        with patch(
+            "yc_agents.cli.main.WorkspaceStore",
+            side_effect=lambda **_kwargs: WorkspaceStore(ycore_root=root, startup_dir=root),
+        ), patch("yc_agents.cli.main.CLISessionStore", SpySessionStore), patch(
+            "yc_agents.cli.main.build_cli_runtime",
+            return_value=object(),
+        ):
+            main.build_runtime(root)
+        return captured["freshness_hours"]
+
+    def test_build_runtime_passes_default_session_freshness(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+
+        self.assertEqual(self._capture_freshness_hours(root), 12)
+
+    def test_build_runtime_reads_configured_session_freshness(self):
+        temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(temp_dir.cleanup)
+        root = Path(temp_dir.name)
+        workspace_config = root / ".ycore" / "ycore.json"
+        workspace_config.parent.mkdir(parents=True)
+        workspace_config.write_text(
+            json.dumps({"memory": {"sessionFreshnessHours": 0}}),
+            encoding="utf-8",
+        )
+
+        self.assertEqual(self._capture_freshness_hours(root), 0)
+
     def test_build_mcp_tools_uses_config_when_client_is_supplied(self):
         class FakeClient:
             def call_tool(self, server_name, tool_name, arguments):
