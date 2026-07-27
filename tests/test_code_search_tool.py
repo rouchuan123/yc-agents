@@ -77,6 +77,37 @@ def test_search_can_filter_by_path_glob(workspace):
     assert not any(match["path"].startswith("tests/") for match in result["matches"])
 
 
+def test_search_falls_back_when_rg_is_unavailable_and_excludes_hidden_state(
+    workspace,
+    monkeypatch,
+):
+    internal = workspace / ".ycore"
+    internal.mkdir()
+    (internal / "template-spec.json").write_text(
+        '{"handler": "must stay hidden"}',
+        encoding="utf-8",
+    )
+
+    def missing_rg(*_args, **_kwargs):
+        raise FileNotFoundError("rg")
+
+    monkeypatch.setattr("yc_agents.tools.code_search.subprocess.run", missing_rg)
+    tool = CodeSearchTool(workspace)
+
+    result = tool.run(
+        operation="search",
+        pattern="handler",
+        path_glob="src/**/*.py",
+        context_lines=1,
+    )
+
+    assert result["ok"] is True
+    assert result["backend"] == "python_fallback"
+    assert result["count"] == 1
+    assert result["matches"][0]["path"] == "src/app.py"
+    assert ".ycore" not in result["raw_output"]
+
+
 def test_list_files_can_filter_by_path_glob(workspace):
     tool = CodeSearchTool(workspace)
 

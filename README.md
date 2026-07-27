@@ -87,6 +87,31 @@ Agent 会显示当前使用的 Skill、工具调用和结果摘要，完整过�
 
 所有工具都是全局工具。`ycore.json` 的 `tools.entries.<tool>.enabled` 是唯一启用来源；Skill 只提供领域知识和工作流，Agent 在已启用工具中自行选择。
 
+### Word 视觉 QA 容错
+
+文本生成与视觉验收使用独立模型：`agents.defaults.model.primary` 负责文本和工具流程，
+`agents.defaults.model.vision` 必须指向支持图片的模型。视觉模型不会回退到不支持图片的
+DeepSeek。视觉可靠性由 `documents.visualQa` 单独控制：
+
+```json
+{
+  "documents": {
+    "visualQa": {
+      "enabled": true,
+      "timeoutSeconds": 180,
+      "maxWorkers": 1,
+      "retryCount": 2,
+      "retryBackoffSeconds": 2
+    }
+  }
+}
+```
+
+`retryCount` 是首次调用之外的额外重试次数；默认最多调用三次，并按 2 秒、4 秒退避。
+只有超时、连接失败、限流和服务端错误等可重试故障会自动重试。重试耗尽后仍保持发布门，
+必须由用户明确同意 `waive_environment=true` 才能降级交付。缺失模板字体只作为
+非阻断 warning 披露，不会触发环境豁免。
+
 ## 🚀 快速开始
 
 ### 环境要求

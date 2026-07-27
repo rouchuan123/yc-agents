@@ -802,6 +802,17 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         self.assertEqual(model["request"]["top_p"], 0.95)
         self.assertEqual(data["runtime"]["modelTimeoutSeconds"], 60)
         self.assertEqual(
+            data["documents"]["visualQa"],
+            {
+                "enabled": True,
+                "maxRepairIterations": 2,
+                "timeoutSeconds": 180,
+                "maxWorkers": 1,
+                "retryCount": 2,
+                "retryBackoffSeconds": 2,
+            },
+        )
+        self.assertEqual(
             data["runtime"]["tokenBudget"],
             {"softTokens": 1500000, "hardTokens": 30000000},
         )
@@ -900,6 +911,55 @@ class TestCLIRuntimeFactory(unittest.TestCase):
             runtime = build_cli_runtime(session, skills_dir=root / "skills")
 
             self.assertNotIsInstance(runtime.agent.llm, ModelRouter)
+
+    def test_build_cli_runtime_wires_independent_mimo_vision_reliability_settings(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            write_ycore_config(root, allow_tools=[])
+            for config_path in [root / "ycore.json", root / ".ycore" / "ycore.json"]:
+                data = json.loads(config_path.read_text(encoding="utf-8"))
+                data["agents"]["defaults"]["model"]["vision"] = "xiaomi/mimo-v2.5"
+                data["tools"]["entries"]["docx_verify"] = {"enabled": True}
+                data["documents"] = {
+                    "enabled": True,
+                    "visualQa": {
+                        "enabled": True,
+                        "timeoutSeconds": 180,
+                        "maxWorkers": 1,
+                        "retryCount": 2,
+                        "retryBackoffSeconds": 2,
+                    },
+                }
+                config_path.write_text(json.dumps(data), encoding="utf-8")
+            workspace = WorkspaceStore(
+                ycore_root=root,
+                startup_dir=root,
+            ).ensure_active_workspace()
+            session = CLISessionStore(workspace).create_session("vision")
+
+            with unittest.mock.patch.dict(
+                os.environ,
+                {"MIMO_API_KEY": "mimo-secret"},
+                clear=False,
+            ):
+                runtime = build_cli_runtime(
+                    session,
+                    llm=FakeLLM(),
+                    skills_dir=root / "skills",
+                )
+
+            try:
+                verify_tool = runtime.tool_registry.get_tool("docx_verify")
+                vision = verify_tool.verifier.vision_service
+                self.assertEqual(vision.llm.provider, "xiaomi")
+                self.assertEqual(vision.llm.model, "mimo-v2.5")
+                self.assertEqual(vision.llm.config.timeout, 180)
+                self.assertEqual(vision.max_workers, 1)
+                self.assertEqual(vision.retry_count, 2)
+                self.assertEqual(vision.retry_backoff_seconds, 2)
+                self.assertIs(runtime.agent.llm.__class__, FakeLLM)
+            finally:
+                runtime.close()
 
     def test_build_cli_runtime_skips_unresolvable_fallback_refs(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

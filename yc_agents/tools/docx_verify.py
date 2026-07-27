@@ -12,10 +12,13 @@ class DocxVerifyTool(BaseTool):
         "A failed check returns ok=false with error=DOCX_QA_BLOCKED plus the full findings list "
         "(anchor/page/suggested_action/category plus stable unexpected_target_ids when available) — "
         "fix findings with docx_edit using those paragraph IDs or anchors; "
-        "do not regenerate an unchanged document. category=environment findings (fonts, Word, vision "
-        "model, PyMuPDF) cannot be fixed by editing the document: report them to the user instead, "
-        "and with the user's explicit consent operation=publish with waive_environment=true delivers "
-        "anyway, recording the waived items in delivery.waivers. A successful published result "
+        "do not regenerate an unchanged document. Only severity=blocking category=environment "
+        "findings (for example Word, vision model, or PyMuPDF failures) require an environment "
+        "waiver; non-blocking font warnings are disclosure-only and never stop publication. "
+        "Blocking environment findings cannot be fixed by editing the document: report them to the "
+        "user instead, and with the user's explicit consent operation=publish with "
+        "waive_environment=true delivers anyway, recording the waived items in delivery.waivers. "
+        "A successful published result "
         "returns terminal=true and next_action=final_answer: stop all tool calls for that user turn."
     )
     timeout_seconds = 600
@@ -72,10 +75,13 @@ class DocxVerifyTool(BaseTool):
             if result.get("environment_blocked"):
                 next_action = "docx_verify"
                 instruction = (
-                    "Blocking findings include category=environment items (fonts, Word renderer, "
-                    "vision model, PyMuPDF). Editing the document cannot fix those: explain them to "
-                    "the user and only repair the category=document findings with docx_edit. If the "
-                    "user cannot fix the environment and explicitly agrees, deliver anyway with "
+                    "Blocking findings include severity=blocking category=environment items "
+                    "(for example Word renderer, vision model, or PyMuPDF failures). "
+                    "Non-blocking font warnings do not require a waiver and must not be described "
+                    "as stopping publication. Editing blocking environment findings cannot fix "
+                    "them: explain them to the user and only repair category=document findings "
+                    "with docx_edit. If the user cannot fix the environment and explicitly agrees, "
+                    "deliver anyway with "
                     "docx_verify(operation='publish', waive_environment=true); the waived items are "
                     "recorded in delivery.waivers and must be disclosed in the delivery reply."
                 )
@@ -150,6 +156,7 @@ class DocxVerifyTool(BaseTool):
             "target_ids",
             "expected_style",
             "mismatched_fields",
+            "diagnostics",
         ):
             if key in item:
                 result[key] = item.get(key)

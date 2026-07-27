@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from yc_agents.harness.tool_policy import ToolExecutionPolicy, ToolLoopError
 from yc_agents.harness.tool_result import ToolExecutionResult
 from yc_agents.harness.tool_schema import ToolValidationError
+from yc_agents.tools.base import WrongToolError
 
 
 class ToolNotAllowedError(PermissionError):
@@ -189,6 +190,8 @@ class ToolGateway:
             return None, ("permission_error", str(exc))
         except FileNotFoundError as exc:
             return None, ("not_found", str(exc))
+        except WrongToolError as exc:
+            return None, ("wrong_tool", str(exc))
         except ValueError as exc:
             return None, ("invalid_operation", str(exc))
         except OSError as exc:

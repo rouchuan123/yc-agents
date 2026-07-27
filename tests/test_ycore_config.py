@@ -470,6 +470,25 @@ class TestYCoreConfig(unittest.TestCase):
 
             self.assertEqual(config.fallback_model_refs(), [])
 
+    def test_visual_qa_reliability_defaults_are_backward_compatible(self):
+        with TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            (root / "ycore.json").write_text("{}", encoding="utf-8")
+
+            config = YCoreConfig.load(root, global_path=root / "ycore.json")
+
+            self.assertEqual(
+                config.documents_data()["visualQa"],
+                {
+                    "enabled": True,
+                    "maxRepairIterations": 2,
+                    "timeoutSeconds": 180,
+                    "maxWorkers": 1,
+                    "retryCount": 2,
+                    "retryBackoffSeconds": 2,
+                },
+            )
+
     def test_loads_root_ycore_json_and_resolves_primary_model(self):
         with TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)

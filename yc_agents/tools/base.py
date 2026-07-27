@@ -1,6 +1,10 @@
 from abc import ABC, abstractmethod
 
 
+class WrongToolError(ValueError):
+    """The requested operation is safe but must be performed by another tool."""
+
+
 class BaseTool(ABC):
     name = ""
     description = ""

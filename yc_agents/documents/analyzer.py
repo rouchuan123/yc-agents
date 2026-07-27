@@ -408,6 +408,17 @@ class DocxTemplateAnalyzer:
         if not spec_path or not Path(spec_path).exists():
             raise FileNotFoundError("Template has not been analyzed")
         spec = json.loads(Path(spec_path).read_text(encoding="utf-8"))
+        requested_role = str(role or "").strip()
+        requested_part = str(part or "").strip()
+        role = requested_role.casefold()
+        part = requested_part.replace("\\", "/").casefold()
+        heading_group = role in {"heading", "headings"}
+        part_aliases = {
+            "body": "word/document.xml",
+            "document": "word/document.xml",
+            "document.xml": "word/document.xml",
+        }
+        part = part_aliases.get(part, part)
         if not any([role, element_id, part]):
             return {
                 "sections": spec["sections"],
@@ -423,12 +434,22 @@ class DocxTemplateAnalyzer:
             *spec.get("tables", []),
             *spec.get("images", []),
         ]
-        if role:
+        if heading_group:
+            candidates = [
+                item
+                for item in candidates
+                if str(item.get("role") or "").startswith("heading_")
+            ]
+        elif role:
             candidates = [item for item in candidates if item.get("role") == role]
         if element_id:
             candidates = [item for item in candidates if item.get("element_id") == element_id]
         if part:
-            candidates = [item for item in candidates if part in item.get("part", "")]
+            candidates = [
+                item
+                for item in candidates
+                if part in str(item.get("part") or "").casefold()
+            ]
         full_detail = bool(detail) or bool(element_id)
         selected = candidates[: max(1, min(int(limit), 100))]
         matches = []
@@ -443,11 +464,40 @@ class DocxTemplateAnalyzer:
             used_chars += size
             matches.append(rendered)
         result = {"matches": matches, "count": len(candidates), "detail": full_detail}
+        normalized_query = {}
+        if heading_group:
+            normalized_query["role"] = "heading_*"
+        elif requested_role and role != requested_role:
+            normalized_query["role"] = role
+        if requested_part and part != requested_part.replace("\\", "/").casefold():
+            normalized_query["part"] = part
+        if normalized_query:
+            result["normalized_query"] = normalized_query
         if truncated or len(matches) < len(selected):
             result["truncated"] = True
             result["instruction"] = (
                 "Output capped. Narrow the query (element_id / smaller limit) or fetch one "
                 "element at a time with detail=true for full formatting."
+            )
+        elif not matches:
+            available_roles = sorted(
+                {
+                    str(item.get("role"))
+                    for item in [
+                        *spec["elements"],
+                        *spec["headers"],
+                        *spec["footers"],
+                        *spec.get("tables", []),
+                        *spec.get("images", []),
+                    ]
+                    if item.get("role")
+                }
+            )
+            result["instruction"] = (
+                "No matches. Use role='heading' for every heading level, role='table' "
+                "for tables, part='body' for word/document.xml, or fetch a known "
+                "element_id. Available roles: "
+                f"{', '.join(available_roles[:20]) or '(none)'}."
             )
         elif not full_detail:
             result["instruction"] = (

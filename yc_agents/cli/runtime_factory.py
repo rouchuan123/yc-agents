@@ -443,11 +443,22 @@ def build_cli_runtime(session, llm=None, skills_dir=None, workspace_services=Non
                 vision_settings = ycore_config.resolve_vision_model_provider()
                 if vision_settings is not None:
                     vision_config = ProviderConfig.from_ycore(vision_settings)
+                    vision_config.timeout = max(
+                        1,
+                        int(visual_qa.get("timeoutSeconds", 180)),
+                    )
                     vision_llm = YCAgentsLLM(
                         config=vision_config,
                         usage_ledger=getattr(llm, "usage_ledger", None),
                     )
-                    vision_service = VisionQAService(vision_llm)
+                    vision_service = VisionQAService(
+                        vision_llm,
+                        max_workers=int(visual_qa.get("maxWorkers", 1)),
+                        retry_count=int(visual_qa.get("retryCount", 2)),
+                        retry_backoff_seconds=float(
+                            visual_qa.get("retryBackoffSeconds", 2)
+                        ),
+                    )
             except (ValueError, RuntimeError):
                 vision_service = VisionQAService()
         document_verifier = DocxVerifier(

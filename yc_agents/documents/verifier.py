@@ -1039,6 +1039,11 @@ class DocxVerifier:
         requested = set()
         for element in [*spec.get("elements", []), *spec.get("headers", []), *spec.get("footers", [])]:
             for run in element.get("runs") or []:
+                # Analyzer-produced runs always carry text. Empty/whitespace
+                # runs do not render visible glyphs, so their inherited font
+                # declarations must not create false missing-font warnings.
+                if "text" in run and not str(run.get("text") or "").strip():
+                    continue
                 font = run.get("effective_font") or {}
                 if font.get("name"):
                     requested.add(str(font["name"]))

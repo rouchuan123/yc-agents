@@ -34,14 +34,18 @@ def main():
     workspace = Path(args.workspace).resolve()
     jobs = DocumentJobStore(workspace, args.session)
     job_root = jobs.job_root(args.job_id)
-    settings = YCoreConfig.load(Path(args.config_root).resolve()).resolve_vision_model_provider()
+    ycore_config = YCoreConfig.load(Path(args.config_root).resolve())
+    settings = ycore_config.resolve_vision_model_provider()
     if settings is None:
         raise RuntimeError("No vision model is configured")
+    visual_qa = dict(ycore_config.documents_data().get("visualQa") or {})
 
     usage_path = job_root / "qa" / "vision-usage.json"
     ledger = UsageLedger(usage_path)
+    vision_config = ProviderConfig.from_ycore(settings)
+    vision_config.timeout = max(1, int(visual_qa.get("timeoutSeconds", 180)))
     vision_llm = YCAgentsLLM(
-        config=ProviderConfig.from_ycore(settings),
+        config=vision_config,
         usage_ledger=ledger,
     )
     verifier = DocxVerifier(
@@ -51,7 +55,14 @@ def main():
             [job_root, workspace / "outputs"],
             timeout_seconds=300,
         ),
-        vision_service=VisionQAService(vision_llm),
+        vision_service=VisionQAService(
+            vision_llm,
+            max_workers=int(visual_qa.get("maxWorkers", 1)),
+            retry_count=int(visual_qa.get("retryCount", 2)),
+            retry_backoff_seconds=float(
+                visual_qa.get("retryBackoffSeconds", 2)
+            ),
+        ),
     )
     result = verifier.verify(
         args.job_id,
