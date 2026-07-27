@@ -17,14 +17,16 @@ def test_demo_eval_run_writes_results(tmp_path):
     assert all("case_id" in item for item in results)
 
 
-def test_demo_eval_run_uses_code_agent_cases(tmp_path):
+def test_demo_eval_run_covers_current_business_skills(tmp_path):
     output_path = tmp_path / "demo-results.json"
 
     results = run_demo_eval(output_path=output_path)
 
     categories = {result["category"] for result in results}
     outputs = "\n".join(result["output"] for result in results)
-    assert {"project_audit", "eval_design"}.issubset(categories)
+    assert {"project_audit", "document_authoring"}.issubset(categories)
+    assert "Word" in outputs
+    assert "DOCX" in outputs
     assert ("论文") not in outputs
     assert ("开题") not in outputs
 

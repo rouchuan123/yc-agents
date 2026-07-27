@@ -9,6 +9,8 @@
 
 YCore 不把业务方向写死在全局 Prompt 中，具体落地方向由 Skill 决定。安装什么 Skill，就验证什么类型的 Agent Workflow；全局 Runtime 只负责受控执行、上下文注入、工具调用、过程留痕，以及结果评测与验证。
 
+当前重点落地点是 `docx-template-authoring`：从成品 Word 模板出发，完成模板分析、来源确认、内容生成、DOCX 交付、连续修订、确定性检查和 MiMo 逐页视觉 QA。文档流程由 Skill 与受控工具实现，不改变 YCore 作为通用 Harness 基座的定位；后续仍可继续增加其他领域 Skill。
+
 ## 📷 界面预览
 
 ### 项目审查结果
@@ -65,12 +67,10 @@ Agent 会显示当前使用的 Skill、工具调用和结果摘要，完整过�
 
 | Skill | 用途 | 重点验证 |
 | --- | --- | --- |
-| `code-review` | 本地项目体检与变更审查 | 代码证据、调用链、风险分级、测试缺口 |
-| `eval-writer` | 设计 Agent Workflow 评测方案 | Deterministic Eval、真实模型 Smoke Eval、人工 Rubric |
-| `ycore-analytics` | 查询 Workspace 的 SQLite Analytics | 运行健康度、工具失败、Verification、Eval 通过率 |
 | `docx-template-authoring` | 从成品 Word 提取精细排版并生成、连续修订新文档 | 模板蒸馏、来源确认、Word/MiMo QA、不可变版本 |
+| `code-review` | 本地项目体检与变更审查 | 代码证据、调用链、风险分级、测试缺口 |
 
-当前默认发布四个示例业务 Skill，它们用于验证通用 Harness 能否支撑代码、评测、分析和成品 Word 模板仿写 Workflow。具体流程保存在 Skill 中，不写入全局 Prompt。
+当前默认发布两个业务 Skill。`docx-template-authoring` 是重点业务落地点，`code-review` 用于展示同一套通用 Harness 还可以承载其他领域 Workflow。具体流程保存在 Skill 中，不写入全局 Prompt。
 
 ## 🧰 默认工具
 
@@ -254,8 +254,8 @@ Skill 同样支持显式启停。只要 `skills.entries` 非空，Runtime 就只
   "skills": {
     "dirs": ["skills"],
     "entries": {
-      "code-review": {"enabled": true},
-      "eval-writer": {"enabled": false}
+      "docx-template-authoring": {"enabled": true},
+      "code-review": {"enabled": false}
     }
   }
 }
@@ -282,22 +282,19 @@ Skill 同样支持显式启停。只要 `skills.entries` 非空，Runtime 就只
 
 长期记忆使用三层 Markdown 来源：`~/.ycore/memory/MEMORY.md`、工作区 `.ycore/memory/MEMORY.md` 和 `.ycore/memory/sessions/*.md`。工作区 SQLite 索引提供中文 BM25 检索；配置 embedding 后自动升级为混合检索，失败时降级为关键词检索。每轮自动注入相关片段，也可使用只读 `memory_search` 工具。`memory.dream.enabled` 默认为 `false`，开启后按配置整理跨会话长期记忆。
 
-## 📊 Eval 基线
+## 📊 Eval 与验证
 
-当前有效 Eval 基线为真实模型运行 `20260630-211458`。该基线使用 Active Workspace `E:\code\Ycore-demo`，覆盖以下五组 Cases：
+YCore 保留通用 Eval Runner，用于检查最终输出、Skill 选择、工具调用、Trace、State 和 Verification。当前评测用例覆盖：
 
+- `docx-template-authoring`
 - `code-review`
-- `eval-writer`
 - `runtime`
 - `toolgateway`
 - `context`
 
-带时间戳的 JSON 报告保存在 `outputs/eval/`，对应的 Trace、State 和 Final Output 证据保存在 Active Workspace 的 `.ycore/runs/`。
+文档业务还通过确定性 DOCX 检查、Word 渲染、逐页 MiMo 视觉 QA 和发布安全门形成独立的交付验证闭环。
 
-本次结果显示：Skill 选择、State Checkpoint 和 Forbidden Tool 边界表现稳定；主要缺口集中在 Required Tool Discipline、工具 Schema、工具预算、Verification 调用和输出结构弱匹配。
-
-- [评测报告与复跑方式](docs/evaluation-report.md)
-- [20260630-211458 运行结果](docs/eval-run-20260630-211458.md)
+- [评测说明与复跑方式](docs/evaluation-report.md)
 
 ## 📁 项目结构
 
@@ -348,7 +345,8 @@ editable 安装后，普通源码修改无需重装；修改依赖或命令入�
 ## 🚧 当前边界
 
 - 当前仅保留 CLI 端。
-- 默认发布 `code-review`、`eval-writer`、`ycore-analytics` 和 `docx-template-authoring` 四个示例业务 Skill。
+- 默认发布 `docx-template-authoring` 和 `code-review` 两个业务 Skill。
+- `docx-template-authoring` 是当前重点落地点，后续领域能力继续通过新增 Skill 扩展。
 - 领域能力由 Skill 决定，YCore 全局层保持通用。
 - 保留通用 `.docx` 文件读取能力，方便读取需求或规格文档。
 - RAG 是可选 Context Infrastructure，不是固定产品能力。

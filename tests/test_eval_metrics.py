@@ -50,7 +50,7 @@ def test_skill_success_checks_selected_skill_event():
     ]
 
     assert skill_success(trace_events, "code-review")
-    assert not skill_success(trace_events, "eval-writer")
+    assert not skill_success(trace_events, "docx-template-authoring")
     assert skill_success(trace_events, None)
 
 

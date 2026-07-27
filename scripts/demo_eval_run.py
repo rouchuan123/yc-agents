@@ -22,9 +22,12 @@ class DemoRuntime:
             return "架构 风险 测试 文件证据 已生成"
 
         self.last_trace_events = [
-            {"event_type": "skill_selected", "payload": {"selected_skill": "eval-writer"}}
+            {
+                "event_type": "skill_selected",
+                "payload": {"selected_skill": "docx-template-authoring"},
+            }
         ]
-        return "deterministic eval rubric trace 方案 已生成"
+        return "Word 模板 DOCX 视觉 QA 发布流程 已规划"
 
 
 def demo_cases():
@@ -38,10 +41,11 @@ def demo_cases():
             expected_trace_events=["tool_called"],
         ),
         EvalCase(
-            id="demo-eval-writer-001",
-            category="eval_design",
-            input="请为这个 code agent 设计 deterministic eval 和人工 rubric。",
-            expected_keywords=["deterministic", "rubric"],
+            id="demo-docx-template-authoring-001",
+            category="document_authoring",
+            input="请根据 Word 模板生成并验证一份 DOCX 文档。",
+            expected_skill="docx-template-authoring",
+            expected_keywords=["Word", "DOCX", "视觉 QA"],
             expected_trace_events=["skill_selected"],
         ),
     ]

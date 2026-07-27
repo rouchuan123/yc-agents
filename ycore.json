@@ -79,12 +79,6 @@
       "code-review": {
         "enabled": true
       },
-      "eval-writer": {
-        "enabled": true
-      },
-      "ycore-analytics": {
-        "enabled": true
-      },
       "docx-template-authoring": {
         "enabled": true
       }

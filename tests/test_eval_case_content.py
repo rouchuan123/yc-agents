@@ -44,7 +44,7 @@ def test_eval_case_files_are_generic_workspace_focused():
     expected = {
         "code_review_cases.jsonl",
         "context_cases.jsonl",
-        "eval_writer_cases.jsonl",
+        "docx_template_authoring_cases.jsonl",
         "runtime_cases.jsonl",
         "toolgateway_cases.jsonl",
     }
@@ -148,15 +148,12 @@ def test_code_review_real_smoke_cases_require_evidence_sections():
         assert sections & {"未确认事项", "Unconfirmed Items"}, case["id"]
 
 
-def test_eval_cases_cover_boundaries_and_schema_design():
+def test_eval_cases_cover_runtime_and_context_boundaries():
     runtime_cases = _load_jsonl(CASE_DIR / "runtime_cases.jsonl")
-    eval_writer_cases = _load_jsonl(CASE_DIR / "eval_writer_cases.jsonl")
     context_cases = _load_jsonl(CASE_DIR / "context_cases.jsonl")
 
     assert any(case["category"] == "skill_selection_boundary" for case in runtime_cases)
-    assert any("兼容当前 EvalCase schema" in case["input"] for case in eval_writer_cases)
     assert any("README" in case["input"] and "如果不存在" in case["input"] for case in context_cases)
-    assert any("file_path 单文件读取" in case["input"] for case in eval_writer_cases)
 
 
 def test_toolgateway_cases_explain_git_inspector_is_conditional():

@@ -16,8 +16,6 @@ class TestSkillLoader(unittest.TestCase):
             [
                 "code-review",
                 "docx-template-authoring",
-                "eval-writer",
-                "ycore-analytics",
             ],
         )
         self.assertTrue(all("中文" in skill.body for skill in skills))
@@ -142,64 +140,6 @@ class TestSkillLoader(unittest.TestCase):
         for marker in required_markers:
             with self.subTest(marker=marker):
                 self.assertIn(marker, skill.body)
-
-    def test_eval_writer_skill_defaults_to_chinese_plan_before_jsonl(self):
-        loader = SkillLoader("skills")
-
-        skill = loader.load_one(Path("skills") / "eval-writer")
-
-        required_markers = [
-            "Agent workflow",
-            "deterministic eval",
-            "真实模型 smoke eval",
-            "人工 rubric",
-            "Skill 选择",
-            "ToolGateway",
-            "trace",
-            "verification",
-            "工具边界",
-            "输出质量",
-            "不要把关键词命中包装成完整语义正确",
-            "不同领域 Skill",
-            "RAG 只作为可选上下文",
-        ]
-        for marker in required_markers:
-            with self.subTest(marker=marker):
-                self.assertIn(marker, skill.body)
-
-    def test_eval_writer_skill_exposes_agent_eval_triggers_and_outputs(self):
-        loader = SkillLoader("skills")
-
-        skill = loader.load_one(Path("skills") / "eval-writer")
-
-        expected_triggers = {
-            "eval",
-            "评估",
-            "评测",
-            "Agent eval",
-            "Skill eval",
-            "code review eval",
-            "工具调用评估",
-            "trace 评估",
-            "LLM-as-Judge",
-            "回归测试",
-        }
-        self.assertTrue(
-            expected_triggers.issubset(set(skill.triggers)),
-            f"Missing triggers: {sorted(expected_triggers - set(skill.triggers))}",
-        )
-
-        expected_outputs = {
-            "eval_plan",
-            "metric_mapping",
-            "manual_rubric",
-            "interview_talking_points",
-            "gap_analysis",
-        }
-        self.assertTrue(
-            expected_outputs.issubset(set(skill.outputs)),
-            f"Missing outputs: {sorted(expected_outputs - set(skill.outputs))}",
-        )
 
     def test_load_one_reads_expanded_metadata(self):
         with TemporaryDirectory() as tmpdir:
