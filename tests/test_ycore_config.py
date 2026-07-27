@@ -19,7 +19,7 @@ class TestYCoreConfig(unittest.TestCase):
                         "skills": {
                             "entries": {
                                 "code-review": {"enabled": True},
-                                "eval-writer": {"enabled": False},
+                                "disabled-skill": {"enabled": False},
                             }
                         }
                     }
@@ -33,7 +33,7 @@ class TestYCoreConfig(unittest.TestCase):
                 config.skill_entries(),
                 {
                     "code-review": {"enabled": True},
-                    "eval-writer": {"enabled": False},
+                    "disabled-skill": {"enabled": False},
                 },
             )
             self.assertEqual(config.enabled_skills(), ["code-review"])
@@ -51,7 +51,7 @@ class TestYCoreConfig(unittest.TestCase):
                         "skills": {
                             "entries": {
                                 "code-review": {"enabled": True},
-                                "eval-writer": {"enabled": True},
+                                "secondary-skill": {"enabled": True},
                             }
                         }
                     }
@@ -63,7 +63,7 @@ class TestYCoreConfig(unittest.TestCase):
                     {
                         "skills": {
                             "entries": {
-                                "eval-writer": {"enabled": False},
+                                "secondary-skill": {"enabled": False},
                             }
                         }
                     }

@@ -17,8 +17,8 @@ def make_skill():
 
 
 class SummarySkill:
-    name = "eval-writer"
-    description = "Writes eval plans."
+    name = "document-writer"
+    description = "Writes documents."
     allowed_tools = []
 
     def to_summary(self):
@@ -35,7 +35,7 @@ class TestContextManager(unittest.TestCase):
                 "profile": {"language": "zh-CN"},
             },
             "workspace": {"root": "E:/code/yc-agents"},
-            "skills": [{"name": "eval-writer"}],
+            "skills": [{"name": "document-writer"}],
         }
 
         report = build_context_report(context, max_tokens=200)

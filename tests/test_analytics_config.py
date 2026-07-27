@@ -14,7 +14,7 @@ def test_config_defaults_are_disabled_and_workspace_local(tmp_path):
     assert config.retention_runs == 1000
 
 
-def test_config_reads_ycore_analytics_block(tmp_path):
+def test_config_reads_analytics_block(tmp_path):
     data = {
         "enabled": True,
         "sqliteMcp": {"enabled": True},

@@ -167,7 +167,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             skills_dir = root / "skills"
-            for name in ["code-review", "eval-writer"]:
+            for name in ["code-review", "disabled-skill"]:
                 skill_dir = skills_dir / name
                 skill_dir.mkdir(parents=True)
                 (skill_dir / "SKILL.md").write_text(
@@ -191,7 +191,7 @@ class TestCLIRuntimeFactory(unittest.TestCase):
                         "skills": {
                             "entries": {
                                 "code-review": {"enabled": True},
-                                "eval-writer": {"enabled": False},
+                                "disabled-skill": {"enabled": False},
                             }
                         }
                     }

@@ -964,7 +964,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"
             write_skill(skills_dir)
-            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            write_skill(skills_dir, name="document-writer", allowed_tools=[])
             llm = FakeLLM(
                 [
                     json.dumps(
@@ -999,7 +999,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"
             write_skill(skills_dir)
-            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            write_skill(skills_dir, name="document-writer", allowed_tools=[])
             llm = FakeLLM(
                 [
                     json.dumps(
@@ -1014,7 +1014,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "eval-writer",
+                            "selected_skill": "document-writer",
                             "confidence": 0.9,
                             "reason": "switch",
                         }
@@ -1029,7 +1029,7 @@ class TestSkillRuntimeAgent(unittest.TestCase):
             )
 
             agent.run("review this project")
-            response = agent.run("接下来用 eval-writer 帮我写评估")
+            response = agent.run("接下来用 document-writer 帮我写文档")
 
             self.assertEqual(json.loads(response)["content"], "评估完成")
             self.assertEqual(len(llm.messages), 4)
@@ -1078,14 +1078,14 @@ class TestSkillRuntimeAgent(unittest.TestCase):
     def test_agent_enables_llm_skip_when_router_supports_it(self):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"
-            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            write_skill(skills_dir, name="document-writer", allowed_tools=[])
             router = SkipAwareIntentRouter()
             llm = FakeLLM(
                 [
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "eval-writer",
+                            "selected_skill": "document-writer",
                             "confidence": 0.9,
                             "reason": "route",
                         }
@@ -1108,14 +1108,14 @@ class TestSkillRuntimeAgent(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp_dir:
             skills_dir = Path(tmp_dir) / "skills"
             skills_dir.mkdir()
-            write_skill(skills_dir, name="eval-writer", allowed_tools=[])
+            write_skill(skills_dir, name="document-writer", allowed_tools=[])
             router = FakeIntentRouter()
             llm = FakeLLM(
                 [
                     json.dumps(
                         {
                             "type": "skill_selection",
-                            "selected_skill": "eval-writer",
+                            "selected_skill": "document-writer",
                             "confidence": 0.9,
                             "reason": "route",
                         }

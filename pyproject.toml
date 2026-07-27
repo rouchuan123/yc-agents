@@ -35,8 +35,6 @@ include = ["yc_agents*"]
 "share/ycore/skills/code-review" = ["skills/code-review/SKILL.md"]
 "share/ycore/skills/code-review/assets" = ["skills/code-review/assets/*.md"]
 "share/ycore/skills/code-review/references" = ["skills/code-review/references/*.md"]
-"share/ycore/skills/eval-writer" = ["skills/eval-writer/SKILL.md"]
-"share/ycore/skills/ycore-analytics" = ["skills/ycore-analytics/SKILL.md"]
 "share/ycore/skills/docx-template-authoring" = ["skills/docx-template-authoring/SKILL.md"]
 "share/ycore/skills/docx-template-authoring/references" = ["skills/docx-template-authoring/references/*.md"]
 

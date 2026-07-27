@@ -2,110 +2,104 @@
 
 ## 演示目标
 
-展示 YCore 作为通用 skill-driven 本地 Agent Harness，如何把中文用户请求拆成 Skill 选择、本地证据、工具调用、trace/state 和结果复核。当前演示用 `code-review` 和 `eval-writer`，但具体落地方向由 Skill 决定。
+展示 YCore 作为通用 skill-driven 本地 Agent Harness，如何通过 `docx-template-authoring` 支撑一个真实、可交付、可验证的 Word 文档工作流。具体业务能力由 Skill 决定，底层 Runtime 继续负责工具治理、Workspace Context、Trace/State、Eval 与 Verification。
 
 ## 演示前准备
 
-- 执行 `pip install -r requirements.txt` 安装依赖。
+- 安装项目依赖并确认 `ycore` 可以启动。
+- 配置 `DEEPSEEK_API_KEY` 和 `MIMO_API_KEY`。
+- Windows 环境安装 Microsoft Word，确保文档可以渲染为 PDF。
+- 准备一个成品 `.docx` 模板和必要的参考资料。
 - 执行 `python -m pytest --basetemp .\.pytest-tmp -q` 确认测试通过。
-- 准备一个普通代码仓库作为 workspace。
-- 如果使用 `.venv`，先激活仓库虚拟环境；如果要验证 active workspace 自己的测试命令，使用 active workspace 的解释器。
 
-当前可讲的真实 eval 基线是 `20260630-211458`。之前的 eval 记录已作废，只作为开发历史。
+## 场景一：生成并验证 Word 文档
 
-## 可复现离线 Eval Demo
-
-不依赖真实模型凭证时，可以先运行确定性 demo：
+在演示工作区启动：
 
 ```powershell
-python scripts/demo_eval_run.py
+ycore
 ```
 
-输出文件：
-
-- `outputs/eval/demo-results.json`
-
-这个 demo 使用固定 runtime 模拟 Skill 选择和工具调用，展示 eval runner 如何记录最终输出、trace 指标和 case 结果。真实模型 demo 仍使用 `python main.py`。
-
-## 当前真实 Eval 基线
-
-当前有效真实 eval 输出位于：
-
-- `outputs/eval/20260630-211458-code-review.json`
-- `outputs/eval/20260630-211458-eval-writer.json`
-- `outputs/eval/20260630-211458-runtime.json`
-- `outputs/eval/20260630-211458-toolgateway.json`
-- `outputs/eval/20260630-211458-context.json`
-
-对应运行证据位于：
+添加模板和参考资料：
 
 ```text
-E:\code\Ycore-demo\.ycore\runs\session_20260630_ea86176d\
+/attach template E:\documents\文献综述模板.docx
+/attach reference E:\documents\参考资料.pdf
 ```
-
-演示时不要把自动指标包装成“最终通过率”。这次结果更适合讲 Agent 质量工程：真实 eval 跑通了，同时暴露出 required tool discipline、工具 schema、工具预算、verification 调用和输出结构弱匹配的问题。详细复盘见 `docs/eval-run-20260630-211458.md`。
-
-## 场景一：code-review 项目体检
 
 用户输入：
 
 ```text
-请用 code-review 审查这个项目，重点总结架构风险和测试缺口。
+请使用这个模板生成一篇《Agent 在日常生活中的应用》文献综述。
+面向普通读者，保留模板的标题层级和表格结构，
+使用我提供的参考资料，并允许补充公开网络来源。
 ```
 
 演示重点：
 
-1. CLI 接收中文请求。
-2. `SkillRuntimeAgent` 根据技能摘要选择 `code-review`。
-3. `PromptBuilder` 注入 workspace、记忆、项目指令和选中 Skill。
-4. 模型从 `ycore.json` 已启用的全局工具中选择 `workspace_files`、`file_reader`、`code_search` 或 `verification_runner`。
-5. `ToolGateway` 校验工具启用状态、参数和审批策略。
-6. runtime 写入 `.ycore/runs/<session_id>/<run_id>/trace.json`、`state.json` 和 `final_output.md`。
+1. `SkillRuntimeAgent` 选择 `docx-template-authoring`。
+2. 文档工具分析标题、正文、表格、字体、页眉页脚和页面结构。
+3. Agent 集中确认需求、模板语义契约和资料来源。
+4. DeepSeek 负责内容生成、推理和工具流程。
+5. `docx_generate` 生成不可变待验证版本，此时还不是交付物。
+6. `docx_verify(mode="deterministic")` 完成结构和内容检查。
+7. `docx_verify(mode="all")` 渲染 PDF/PNG，并由 MiMo 逐页执行视觉 QA。
+8. 只有通过发布安全门后，DOCX 才写入 Workspace 的 `outputs/`。
 
-## 场景二：eval-writer 设计 eval
+## 场景二：连续修订
 
-用户输入：
+在成功交付后的新一轮输入：
 
 ```text
-请用 eval-writer 为当前验证 Skill 设计 deterministic eval、真实模型 smoke eval 和人工 rubric。
+把第二章再扩充一些，并将第一个表格的最后一列删除。
 ```
 
 演示重点：
 
-1. Skill 把评估需求拆成目标、维度、case、指标、人工 rubric 和执行流程。
-2. 解释 eval 不一定需要大模型参与：日常回归用 deterministic eval，手动演示再跑真实模型 smoke eval。
-3. 输出保持中文，方便直接阅读和二次修改。
-4. 如果用户要求保存，使用 `markdown_writer` 生成 Markdown 文件。
+1. 读取当前 DocumentJob 和 current revision。
+2. 使用 `docx_edit` 执行局部修改，不覆盖旧版本。
+3. 创建新的不可变版本。
+4. 新版本重新经过 deterministic QA 和 MiMo 视觉 QA。
+5. `/document history` 可以查看版本历史，`/document rollback <version>` 可以切换当前版本。
 
-## 可以展示的文件
+## 场景三：展示 Harness 证据
+
+可以展示：
 
 - `.ycore/runs/<session_id>/<run_id>/input.md`
 - `.ycore/runs/<session_id>/<run_id>/context.json`
 - `.ycore/runs/<session_id>/<run_id>/trace.json`
 - `.ycore/runs/<session_id>/<run_id>/state.json`
 - `.ycore/runs/<session_id>/<run_id>/final_output.md`
+- `.ycore/document-jobs/<job_id>/revisions/`
+- `.ycore/document-jobs/<job_id>/qa/`
+- `.ycore/document-jobs/<job_id>/vision-cache.json`
 
-## 面试演示顺序
+这些文件用于说明 YCore 不只是输出一段文本，还能保存需求、来源、工具调用、版本、QA 结果和发布状态。
 
-1. 先讲项目定位：通用 skill-driven 本地 Agent Harness。
-2. 说明当前 eval 基线是 `20260630-211458`，旧 eval 口径已舍弃。
-3. 跑离线 deterministic demo，展示 eval runner 的机械闭环。
-4. 打开 `20260630-211458` 的 JSON 和 trace/state 输出，解释 Skill 选择、工具调用和失败分类。
-5. 展示 ToolGateway、verification、memory/context、analytics 和可选 RAG 的设计点。
-6. 说明当前 demo 只是第一批验证 Skill，后续可以换其他领域 Skill。
+## 场景四：展示可扩展性
+
+可以简短运行 `code-review`：
+
+```text
+请用 code-review 审查当前项目，重点总结架构风险和测试缺口。
+```
+
+这里的重点不是再次完整演示代码审查，而是说明两个不同领域的 Skill 复用了相同的 Skill 选择、ToolGateway、Trace、State、Eval 和 Verification 基座。
 
 ## 五分钟讲解稿
 
-YCore 是一个面向中文用户的通用本地 Agent Harness。它不把某个业务流程写进全局 prompt，而是把通用运行边界做扎实：Skill 选择、工作区上下文、项目指令、全局工具开关、trace、state、eval 和 verification。具体落地方向由 Skill 决定，工具启用只由 `ycore.json` 决定。
+YCore 是一个面向中文用户的通用本地 Agent Harness。它不把业务流程写死在全局 Prompt 或 Runtime 中，而是提供 Skill 选择、Workspace Context、工具边界、Trace、State、Eval 和 Verification 等通用能力。
 
-当前我先用 `code-review` 和 `eval-writer` 做验证：前者证明 Harness 能支撑本地项目审查类 workflow，后者证明评测方案可以拆成 deterministic eval、真实模型 smoke eval 和人工 rubric。未来加入其他领域 Skill 时，复用的是同一套运行时、工具网关、trace 和 eval 框架。
+当前重点落地点是 `docx-template-authoring`。这个 Skill 从成品 Word 模板出发，完成模板分析、需求与来源确认、内容生成、不可变 DOCX 版本、自然语言连续修订，以及确定性检查和 MiMo 逐页视觉 QA。只有验证通过或用户明确同意环境豁免后，文档才会正式发布。
 
-当前真实 eval 基线不是完美通过，而是可复盘地暴露问题：Skill 选择、state checkpoint 和禁用工具边界比较稳定；required tool discipline、工具 schema、工具预算和输出结构检查还需要继续工程化。这比单纯展示一个好看的回答更有说服力。
+文档能力证明这套 Harness 可以支撑有状态、有工具、有版本、有质量门槛的真实业务流程。后续增加其他领域 Skill 时，可以继续复用同一套 Runtime 和治理能力。
 
 ## 常见追问
 
-- 如何在 `ycore.json tools.entries` 中启用或关闭全局工具？
-- 项目根 `YCORE.md` 和本地 `.ycore/YCORE.md` 谁优先？
-- 工具调用失败时 runtime 如何记录和恢复？
-- eval 为什么可以不依赖大模型？
-- 新领域 Skill 如何接入同一套 Harness？
+- 为什么文档流程放在 Skill 中，而不是写进全局 Prompt？
+- DeepSeek 和 MiMo 分别负责什么？
+- MiMo 超时、限流或服务端错误时如何重试？
+- 为什么字体缺失只产生 warning？
+- 如何保证失败版本不会被误当成交付物？
+- 如何增加新的领域 Skill 并复用同一套 Harness？

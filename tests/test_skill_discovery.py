@@ -27,7 +27,11 @@ def test_skill_discovery_returns_top_k_by_trigger():
                 "项目架构审查和风险总结",
                 ["代码审查", "架构", "风险"],
             ),
-            make_skill("eval-writer", "评估用例和指标设计", ["评估", "eval", "测试数据"]),
+            make_skill(
+                "document-writer",
+                "文档模板生成和质量验证",
+                ["文档", "Word", "模板"],
+            ),
         ]
     )
 
