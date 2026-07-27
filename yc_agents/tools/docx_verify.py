@@ -15,7 +15,8 @@ class DocxVerifyTool(BaseTool):
         "do not regenerate an unchanged document. category=environment findings (fonts, Word, vision "
         "model, PyMuPDF) cannot be fixed by editing the document: report them to the user instead, "
         "and with the user's explicit consent operation=publish with waive_environment=true delivers "
-        "anyway, recording the waived items in delivery.waivers."
+        "anyway, recording the waived items in delivery.waivers. A successful published result "
+        "returns terminal=true and next_action=final_answer: stop all tool calls for that user turn."
     )
     timeout_seconds = 600
     schema = ToolSchema(
@@ -46,10 +47,15 @@ class DocxVerifyTool(BaseTool):
                 "published_path": published.get("published_path"),
                 "already_published": bool(published.get("already_published")),
                 "waivers": waivers,
+                "workflow_complete": True,
+                "terminal": True,
+                "next_action": "final_answer",
                 "instruction": (
-                    "已降级发布：交付回复必须原样列出 waivers 中被豁免的环境检查项。"
+                    "已降级发布：本轮立即停止调用任何工具并给出最终交付回复；"
+                    "必须原样列出 waivers 中被豁免的环境检查项。"
                     if waivers
-                    else "已发布：交付回复包含版本号与 published_path。"
+                    else "已发布：本轮立即停止调用任何工具并给出最终交付回复，"
+                    "包含版本号与 published_path。"
                 ),
             }
         if mode not in {"all", "deterministic", "render", "visual"}:
@@ -100,16 +106,33 @@ class DocxVerifyTool(BaseTool):
             for item in result.get("findings", [])
             if item.get("severity") == "warning"
         ]
-        return {
+        delivery_ready = bool(result.get("delivery_ready"))
+        published_path = result.get("published_path")
+        workflow_complete = bool(delivery_ready and published_path)
+        response = {
             "ok": True,
             "version": result.get("version"),
             "passed": True,
-            "delivery_ready": bool(result.get("delivery_ready")),
-            "published_path": result.get("published_path"),
+            "delivery_ready": delivery_ready,
+            "published_path": published_path,
             "warning_count": result.get("warning_count", len(warnings)),
             "qa_report_path": result.get("qa_report_path"),
             "findings": warnings,
+            "workflow_complete": workflow_complete,
+            "terminal": workflow_complete,
+            "next_action": "final_answer" if workflow_complete else "docx_verify",
+            "instruction": (
+                "Delivery is complete. Stop calling tools in this turn and return the final "
+                "answer with version, published_path, sources, and remaining warnings. Warnings "
+                "are disclosure-only after publication: do not call docx_edit, docx_generate, "
+                "document_content, or docx_verify again in this turn. A later user turn may "
+                "explicitly request revisions, which must create and fully verify a new version."
+                if workflow_complete
+                else "This partial QA mode did not publish the document. Continue with "
+                "docx_verify(mode='all') on the same version; do not claim delivery yet."
+            ),
         }
+        return response
 
     @staticmethod
     def _finding_summary(item):

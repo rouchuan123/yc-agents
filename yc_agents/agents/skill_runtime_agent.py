@@ -842,7 +842,14 @@ class SkillRuntimeAgent:
             )
         return entries
 
-    def run_native_step(self, user_input, assistant_turn, exchanges, budget_notice=None):
+    def run_native_step(
+        self,
+        user_input,
+        assistant_turn,
+        exchanges,
+        budget_notice=None,
+        final_only=False,
+    ):
         """原生 FC 工具步：追加标准 assistant(tool_calls) 消息和每个工具的
         role:'tool' 结果消息后继续本轮。与 provider 恢复共用 pending 去重：
         同一观察重调时逐字节重发同一消息列表，绝不追加重复交换对。"""
@@ -863,7 +870,27 @@ class SkillRuntimeAgent:
             self._turn_steps.append({"messages": step_messages, "entries": entries})
             self._fold_turn_messages_if_needed()
             self._turn_pending_entry = step_key
-        response = self._think_turn(self._current_turn_messages())
+        messages = self._current_turn_messages()
+        if final_only:
+            messages = [
+                *messages,
+                {
+                    "role": "system",
+                    "content": (
+                        "The document workflow is terminal for this user turn: a version "
+                        "has passed full QA and was published. Return the user-facing final "
+                        "delivery response now. Do not request or describe any further tool "
+                        "call. Disclose remaining warnings without attempting to fix them."
+                    ),
+                },
+            ]
+            response = invoke_llm(
+                self.llm.think,
+                messages,
+                usage_kind="primary",
+            )
+        else:
+            response = self._think_turn(messages)
         self._turn_pending_entry = None
         self._turn_last_response = response
         return response
