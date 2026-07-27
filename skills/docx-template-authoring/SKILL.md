@@ -37,8 +37,9 @@ get_active → create → analyzer(一次) → 契约 set_contract → 需求/�
 1. 创建任务后调用一次 `docx_template_analyzer`。分析是幂等的：重复调用只返回缓存摘要，不要用它“刷新”状态。
 2. 排版细节按需用 `docx_template_query` 查询：
    - 默认返回精简视图（text+role），足够做契约分类；`limit` 保持小（≤20）。
+   - 可用别名：`role="heading"` 查询全部标题层级，`role="table"` 查询表格，`part="body"` 查询正文 `word/document.xml`。
    - 需要精确格式时查单个 `element_id` 或加 `detail=true`；输出有硬上限，被截断时缩小范围而不是加大 limit。
-3. 永远不要用 `file_reader` 读 `template-spec.json`（工具会拒绝），也不要用正文预览代替模板分析。
+3. 永远不要用 `file_reader` 或 `code_search` 读取/搜索 `template-spec.json`（工具会返回可恢复的 `wrong_tool` 指引），也不要用正文预览代替模板分析。
 
 ## 模板契约
 

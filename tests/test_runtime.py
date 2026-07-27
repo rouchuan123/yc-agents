@@ -10,7 +10,7 @@ from yc_agents.harness.runtime import ResearchAgentHarness, RunResult, YCAgentRu
 from yc_agents.harness.tool_policy import ToolExecutionPolicy
 from yc_agents.agents.skill_runtime_agent import SkillRuntimeAgent
 from yc_agents.memory.session import SessionMemory
-from yc_agents.tools.base import BaseTool
+from yc_agents.tools.base import BaseTool, WrongToolError
 from yc_agents.tools.registry import ToolRegistry
 
 
@@ -612,6 +612,14 @@ class FakeMissingTool(BaseTool):
 
     def run(self, text):
         raise FileNotFoundError(text)
+
+
+class FakeWrongTool(BaseTool):
+    name = "fake_tool"
+    description = "Fake tool that teaches the model to switch tools."
+
+    def run(self, text):
+        raise WrongToolError(f"use docx_template_query instead of {text}")
 
 
 class FakeArtifactTool(BaseTool):
@@ -1469,6 +1477,35 @@ class TestYCAgentRuntime(unittest.TestCase):
         event_types = [event["event_type"] for event in runtime.last_trace_events]
         self.assertIn("recovery_attempt", event_types)
         self.assertIn("recovery_succeeded", event_types)
+
+    def test_runtime_treats_wrong_tool_as_recoverable_feedback(self):
+        registry = ToolRegistry()
+        registry.register(FakeWrongTool())
+        agent = FakeToolFailureFeedbackAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            recovery_policy=RecoveryPolicy(
+                protocol_retries=0,
+                provider_retries=0,
+                verification_retries=0,
+                max_attempts=1,
+                provider_backoff_seconds=0,
+            ),
+        )
+
+        response = runtime.run("switch to the template query tool")
+
+        self.assertEqual(response, "continued with an alternative after missing file")
+        tool_result = agent.observations[0]["tool_result"]
+        self.assertEqual(tool_result["error_type"], "wrong_tool")
+        self.assertIn("docx_template_query", tool_result["error_message"])
+        event_types = [event["event_type"] for event in runtime.last_trace_events]
+        self.assertIn("recovery_attempt", event_types)
+        self.assertIn("recovery_succeeded", event_types)
+        self.assertNotIn("run_stopped", event_types)
 
     def test_expected_document_followups_do_not_consume_recovery_budget(self):
         expected_results = [

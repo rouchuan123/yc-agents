@@ -206,7 +206,11 @@
     "renderTimeoutSeconds": 300,
     "visualQa": {
       "enabled": true,
-      "maxRepairIterations": 2
+      "maxRepairIterations": 2,
+      "timeoutSeconds": 180,
+      "maxWorkers": 1,
+      "retryCount": 2,
+      "retryBackoffSeconds": 2
     }
   }
 }

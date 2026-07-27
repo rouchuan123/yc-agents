@@ -1,5 +1,6 @@
+import re
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
 from yc_agents.tools._workspace_paths import resolve_workspace_path, truncate_text
@@ -75,15 +76,23 @@ class CodeSearchTool(BaseTool):
             command.extend(["-g", safe_glob])
         command.append(pattern)
 
-        completed = subprocess.run(
-            command,
-            cwd=self.workspace_root,
-            check=False,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=self.timeout_seconds,
-        )
+        try:
+            completed = subprocess.run(
+                command,
+                cwd=self.workspace_root,
+                check=False,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                timeout=self.timeout_seconds,
+            )
+        except FileNotFoundError:
+            return self._python_search(
+                pattern,
+                context_lines=context_lines,
+                max_results=max_results,
+                safe_glob=safe_glob,
+            )
         lines = completed.stdout.splitlines()[:max_results]
         matches = []
         for raw_line in lines:
@@ -189,16 +198,93 @@ class CodeSearchTool(BaseTool):
             return files, completed.stdout
 
         files = []
-        for path in sorted(self.workspace_root.rglob("*")):
-            relative_parts = path.relative_to(self.workspace_root).parts
-            relative = str(path.relative_to(self.workspace_root)).replace("\\", "/")
-            if path.is_file() and ".git" not in relative_parts:
-                if safe_glob and not Path(relative).match(safe_glob):
-                    continue
+        for path, relative in self._iter_searchable_files(safe_glob):
+            if path.is_file():
                 files.append(relative)
             if len(files) >= max_results:
                 break
         return files, "\n".join(files)
+
+    def _python_search(self, pattern, *, context_lines, max_results, safe_glob):
+        try:
+            expression = re.compile(pattern)
+        except re.error as exc:
+            raise ValueError(f"Invalid search pattern: {exc}") from exc
+
+        matches = []
+        raw_lines = []
+        for path, relative in self._iter_searchable_files(safe_glob):
+            try:
+                if path.stat().st_size > 2 * 1024 * 1024:
+                    continue
+                data = path.read_bytes()
+            except OSError:
+                continue
+            if b"\x00" in data[:4096]:
+                continue
+            lines = data.decode("utf-8", errors="replace").splitlines()
+            for index, text in enumerate(lines, start=1):
+                if expression.search(text) is None:
+                    continue
+                before_start = max(0, index - context_lines - 1)
+                after_end = min(len(lines), index + context_lines)
+                matches.append(
+                    {
+                        "path": relative,
+                        "line": index,
+                        "text": text,
+                        "before": lines[before_start : index - 1],
+                        "after": lines[index:after_end],
+                    }
+                )
+                raw_lines.append(f"{relative}:{index}:{text}")
+                if len(matches) >= max_results:
+                    break
+            if len(matches) >= max_results:
+                break
+
+        raw = "\n".join(raw_lines)
+        raw_output, truncated = truncate_text(raw, self.max_output_chars)
+        return {
+            "tool": self.name,
+            "operation": "search",
+            "ok": True,
+            "pattern": pattern,
+            "matches": matches,
+            "count": len(matches),
+            "stderr": "",
+            "raw_output": raw_output,
+            "truncated": truncated,
+            "backend": "python_fallback",
+        }
+
+    def _iter_searchable_files(self, safe_glob=""):
+        for path in sorted(self.workspace_root.rglob("*")):
+            if not path.is_file():
+                continue
+            relative_path = path.relative_to(self.workspace_root)
+            # Match ripgrep's default hidden-file behavior and keep internal
+            # workspace state out of generic source search.
+            if any(part.startswith(".") for part in relative_path.parts):
+                continue
+            relative = str(relative_path).replace("\\", "/")
+            if safe_glob and not self._path_matches_glob(relative, safe_glob):
+                continue
+            yield path, relative
+
+    @staticmethod
+    def _path_matches_glob(relative, pattern):
+        path = PurePosixPath(relative)
+        if path.match(pattern):
+            return True
+        # pathlib treats **/ as requiring at least one directory in some
+        # positions, while ripgrep also matches zero directories.
+        collapsed = pattern
+        while "**/" in collapsed:
+            collapsed = collapsed.replace("**/", "", 1)
+            if path.match(collapsed):
+                return True
+        return False
 
     def _safe_path_glob(self, path_glob):
         path_glob = str(path_glob or "").strip()

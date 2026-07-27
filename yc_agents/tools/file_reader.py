@@ -4,7 +4,7 @@ from docx import Document
 from pypdf import PdfReader
 
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
-from yc_agents.tools.base import BaseTool
+from yc_agents.tools.base import BaseTool, WrongToolError
 from yc_agents.tools.readable_files import (
     file_type_for_path,
     is_blocked_readable_file,
@@ -40,9 +40,11 @@ class FileReaderTool(BaseTool):
             raise PermissionError(f"Refusing to read blocked file: {path.name}")
 
         if path.name == "template-spec.json" and ".ycore" in path.parts:
-            raise PermissionError(
-                "template-spec.json is too large for the context window and must not be read "
-                "directly. Query it with docx_template_query (role/element_id filters) instead."
+            raise WrongToolError(
+                "Do not read or search template-spec.json directly. Use "
+                "docx_template_query instead: role='heading' returns all heading levels, "
+                "role='table' returns tables, and part='body' selects word/document.xml. "
+                "Use one element_id with detail=true only when exact formatting is needed."
             )
 
         if is_readable_text_file(path):

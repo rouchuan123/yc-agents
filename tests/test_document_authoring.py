@@ -36,6 +36,7 @@ from yc_agents.documents.sources import DocumentSourceService
 from yc_agents.documents.vision import VisionQAService
 from yc_agents.documents.verifier import DocxVerifier
 from yc_agents.documents.word_renderer import export_word_pdf
+from yc_agents.core.exceptions import LLMCallError
 from yc_agents.tools.document_job import DocumentJobTool
 from yc_agents.tools.document_content import DocumentContentTool
 from yc_agents.tools.docx_verify import DocxVerifyTool
@@ -381,6 +382,8 @@ def test_template_analyzer_extracts_effective_chinese_formatting(document_worksp
     body = analyzer.query(job["id"], role="body", limit=20, detail=True)["matches"]
     compact_body = analyzer.query(job["id"], role="body", limit=20)["matches"]
     table = analyzer.query(job["id"], element_id="body.tbl0000")["matches"][0]
+    headings = analyzer.query(job["id"], role="heading", limit=20)
+    body_part = analyzer.query(job["id"], part="body", limit=20)
     overview = analyzer.query(job["id"])
     matching = next(item for item in body if "旧项目位于" in item["text"])
     compact_matching = next(item for item in compact_body if "旧项目位于" in item["text"])
@@ -399,6 +402,12 @@ def test_template_analyzer_extracts_effective_chinese_formatting(document_worksp
     assert table["role"] == "table"
     assert table["columns"] == 3
     assert len(table["grid_widths_dxa"]) == 3
+    assert headings["normalized_query"] == {"role": "heading_*"}
+    assert len(headings["matches"]) == 2
+    assert all(item["role"].startswith("heading_") for item in headings["matches"])
+    assert body_part["normalized_query"] == {"part": "word/document.xml"}
+    assert body_part["matches"]
+    assert all(item["part"] == "word/document.xml" for item in body_part["matches"])
     assert "numbering" in overview
     assert sha256_file(template) == jobs.get(job["id"])["template"]["sha256"]
 
@@ -1646,6 +1655,176 @@ def test_vision_qa_retries_invalid_json_once(tmp_path):
     assert result == {"available": True, "findings": []}
 
 
+def test_vision_qa_retries_retryable_failures_with_exponential_backoff(tmp_path):
+    image = tmp_path / "page-1.png"
+    image.write_bytes(b"fake-png")
+    sleeps = []
+
+    class RecoveringVisionLLM:
+        provider = "xiaomi"
+        model = "mimo-v2.5"
+
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            if self.calls < 3:
+                raise LLMCallError(
+                    "temporary",
+                    retryable=True,
+                    status_code=503,
+                    cause_type="ServiceUnavailableError",
+                )
+            return '{"findings":[]}'
+
+    llm = RecoveringVisionLLM()
+    cache_path = tmp_path / "vision-cache.json"
+    result = VisionQAService(
+        llm,
+        retry_count=2,
+        retry_backoff_seconds=2,
+        sleep=sleeps.append,
+    ).inspect_pages([image], cache_path=cache_path)
+
+    assert result == {"available": True, "findings": []}
+    assert llm.calls == 3
+    assert sleeps == [2, 4]
+    assert len(json.loads(cache_path.read_text(encoding="utf-8"))["entries"]) == 1
+
+
+@pytest.mark.parametrize(
+    ("status_code", "cause_type"),
+    [
+        (None, "APITimeoutError"),
+        (429, "RateLimitError"),
+        (503, "InternalServerError"),
+    ],
+)
+def test_vision_qa_retries_each_retryable_provider_failure(
+    tmp_path,
+    status_code,
+    cause_type,
+):
+    image = tmp_path / "page-1.png"
+    image.write_bytes(b"fake-png")
+
+    class OnceFailingVisionLLM:
+        provider = "xiaomi"
+        model = "mimo-v2.5"
+
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise LLMCallError(
+                    "temporary",
+                    retryable=True,
+                    status_code=status_code,
+                    cause_type=cause_type,
+                )
+            return '{"findings":[]}'
+
+    llm = OnceFailingVisionLLM()
+    result = VisionQAService(
+        llm,
+        retry_count=2,
+        retry_backoff_seconds=0,
+    ).inspect_pages([image])
+
+    assert result["findings"] == []
+    assert llm.calls == 2
+
+
+@pytest.mark.parametrize("status_code", [400, 401, 403])
+def test_vision_qa_does_not_retry_non_retryable_provider_failures(
+    tmp_path,
+    status_code,
+):
+    image = tmp_path / "page-1.png"
+    image.write_bytes(b"fake-png")
+
+    class RejectedVisionLLM:
+        provider = "xiaomi"
+        model = "mimo-v2.5"
+
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            raise LLMCallError(
+                "rejected",
+                retryable=False,
+                status_code=status_code,
+                cause_type="APIStatusError",
+            )
+
+    llm = RejectedVisionLLM()
+    result = VisionQAService(llm, retry_count=2, sleep=lambda _delay: None).inspect_pages(
+        [image]
+    )
+
+    finding = result["findings"][0]
+    assert llm.calls == 1
+    assert finding["severity"] == "blocking"
+    assert finding["category"] == "environment"
+    assert finding["diagnostics"]["status_code"] == status_code
+    assert finding["diagnostics"]["attempt_count"] == 1
+
+
+def test_vision_qa_exhaustion_is_diagnostic_redacted_and_not_cached(tmp_path):
+    image = tmp_path / "page-1.png"
+    image.write_bytes(b"fake-png")
+    cache_path = tmp_path / "vision-cache.json"
+
+    class DownVisionLLM:
+        provider = "xiaomi"
+        model = "mimo-v2.5"
+        api_key = "must-not-leak"
+
+        def __init__(self):
+            self.calls = 0
+
+        def think(self, _messages, **_kwargs):
+            self.calls += 1
+            raise LLMCallError(
+                "provider unavailable",
+                retryable=True,
+                status_code=503,
+                cause_type="InternalServerError",
+            )
+
+    llm = DownVisionLLM()
+    service = VisionQAService(
+        llm,
+        retry_count=2,
+        retry_backoff_seconds=0,
+    )
+
+    first = service.inspect_pages([image], cache_path=cache_path)
+    finding = first["findings"][0]
+    serialized = json.dumps(finding, ensure_ascii=False)
+
+    assert llm.calls == 3
+    assert finding["diagnostics"] == {
+        "provider": "xiaomi",
+        "model": "mimo-v2.5",
+        "cause_type": "InternalServerError",
+        "status_code": 503,
+        "retryable": True,
+        "attempt_count": 3,
+    }
+    assert "must-not-leak" not in serialized
+    assert "自动重试已耗尽" in finding["suggested_action"]
+    assert not cache_path.exists()
+
+    service.inspect_pages([image], cache_path=cache_path)
+    assert llm.calls == 6
+
+
 def test_windows_chinese_font_aliases_are_recognized():
     assert DocxVerifier._font_matches("黑体", {"simhei"})
     assert DocxVerifier._font_matches("宋体", {"simsun"})
@@ -1661,6 +1840,7 @@ def test_missing_template_font_is_disclosed_as_warning():
             {
                 "runs": [
                     {
+                        "text": "Agent",
                         "effective_font": {
                             "name": "Euclid",
                             "names": {"ascii": "Euclid"},
@@ -1675,6 +1855,28 @@ def test_missing_template_font_is_disclosed_as_warning():
 
     assert findings[0]["severity"] == "warning"
     assert "无法声明字体级高保真" in findings[0]["issue"]
+
+
+def test_missing_font_on_whitespace_only_runs_is_ignored():
+    verifier = DocxVerifier.__new__(DocxVerifier)
+    verifier._installed_font_names = lambda: {"simsun"}
+    spec = {
+        "elements": [
+            {
+                "runs": [
+                    {
+                        "text": " \t",
+                        "effective_font": {
+                            "name": "Euclid",
+                            "names": {"ascii": "Euclid"},
+                        },
+                    }
+                ]
+            }
+        ]
+    }
+
+    assert verifier._font_findings(spec) == []
 
 
 def test_content_uses_canonical_outline_title_over_cached_internal_id(document_workspace):
@@ -1911,6 +2113,14 @@ def test_docx_verify_tool_flags_environment_blockers():
                         "severity": "blocking",
                         "issue": "视觉模型未配置，未执行逐页图片检查",
                         "category": "environment",
+                        "diagnostics": {
+                            "provider": "xiaomi",
+                            "model": "mimo-v2.5",
+                            "cause_type": "APITimeoutError",
+                            "status_code": None,
+                            "retryable": True,
+                            "attempt_count": 3,
+                        },
                     }
                 ],
             }
@@ -1920,6 +2130,7 @@ def test_docx_verify_tool_flags_environment_blockers():
     assert result["ok"] is False
     assert result["environment_blocked"] is True
     assert "environment" in result["instruction"]
+    assert "font warnings do not require a waiver" in result["instruction"]
     # 环境受阻时指引用户同意后的豁免发布路径，而不是继续 docx_edit 死循环。
     assert "waive_environment" in result["instruction"]
     assert result["next_action"] == "docx_verify"
@@ -1929,8 +2140,46 @@ def test_docx_verify_tool_flags_environment_blockers():
             "issue": "视觉模型未配置，未执行逐页图片检查",
             "suggested_action": "",
             "category": "environment",
+            "diagnostics": {
+                "provider": "xiaomi",
+                "model": "mimo-v2.5",
+                "cause_type": "APITimeoutError",
+                "status_code": None,
+                "retryable": True,
+                "attempt_count": 3,
+            },
         }
     ]
+
+
+def test_docx_verify_tool_treats_font_warning_as_disclosure_only():
+    class WarningOnlyVerifier:
+        def verify(self, *_args, **_kwargs):
+            return {
+                "passed": True,
+                "version": 1,
+                "delivery_ready": True,
+                "published_path": "outputs/document.docx",
+                "warning_count": 1,
+                "qa_report_path": "qa/v001/qa-report.json",
+                "findings": [
+                    {
+                        "severity": "warning",
+                        "anchor": "fonts",
+                        "issue": "模板字体未安装：Euclid",
+                        "suggested_action": "安装字体以获得字体级高保真",
+                        "category": "environment",
+                    }
+                ],
+            }
+
+    result = DocxVerifyTool(WarningOnlyVerifier()).run("job", mode="all")
+
+    assert result["ok"] is True
+    assert result["terminal"] is True
+    assert result["findings"][0]["anchor"] == "fonts"
+    assert result["findings"][0]["category"] == "environment"
+    assert "waive_environment" not in result["instruction"]
 
 
 def test_heading_count_finding_exposes_stable_unexpected_paragraph_ids(tmp_path):
@@ -2388,13 +2637,14 @@ def test_update_requirements_without_questions_leaves_queue_untouched(document_w
 def test_file_reader_refuses_template_spec(document_workspace, tmp_path):
     workspace, _template, _attachments, jobs, job = document_workspace
     from yc_agents.tools.file_reader import FileReaderTool
+    from yc_agents.tools.base import WrongToolError
 
     spec_path = jobs.job_root(job["id"]) / "template" / "template-spec.json"
     spec_path.parent.mkdir(parents=True, exist_ok=True)
     spec_path.write_text("{}", encoding="utf-8")
 
     reader = FileReaderTool(workspace)
-    with pytest.raises(PermissionError, match="docx_template_query"):
+    with pytest.raises(WrongToolError, match="role='heading'"):
         reader.run(str(spec_path.relative_to(workspace)), allow_large=True)
 
 
@@ -2824,6 +3074,58 @@ def test_vision_environment_failures_are_not_cached(tmp_path):
     second = service.inspect_pages([page], cache_path=cache_path)
     assert second["findings"][0]["category"] == "environment"
     assert llm.calls > calls_after_first
+
+
+def test_vision_cache_retries_only_the_single_failed_page(tmp_path):
+    pages = []
+    for index in range(7):
+        page = tmp_path / f"page-{index + 1}.png"
+        page.write_bytes(f"png-{index + 1}".encode())
+        pages.append(page)
+    cache_path = tmp_path / "vision-cache.json"
+
+    class OnePageTransientVisionLLM:
+        provider = "xiaomi"
+        model = "mimo-v2.5"
+
+        def __init__(self):
+            self.calls = 0
+            self.page_one_calls = 0
+
+        def think(self, messages, **_kwargs):
+            self.calls += 1
+            prompt = messages[0]["content"][0]["text"]
+            page_number = int(prompt.split("当前页码：")[1].split("。")[0])
+            if page_number == 1:
+                self.page_one_calls += 1
+                if self.page_one_calls <= 3:
+                    raise LLMCallError(
+                        "temporary",
+                        retryable=True,
+                        status_code=503,
+                        cause_type="InternalServerError",
+                    )
+            return '{"findings":[]}'
+
+    llm = OnePageTransientVisionLLM()
+    service = VisionQAService(
+        llm,
+        max_workers=1,
+        retry_count=2,
+        retry_backoff_seconds=0,
+    )
+
+    first = service.inspect_pages(pages, cache_path=cache_path)
+    assert first["findings"][0]["page"] == 1
+    assert first["findings"][0]["category"] == "environment"
+    assert llm.calls == 9
+    assert len(json.loads(cache_path.read_text(encoding="utf-8"))["entries"]) == 6
+
+    second = service.inspect_pages(pages, cache_path=cache_path)
+    assert second == {"available": True, "findings": []}
+    assert llm.calls == 10
+    assert llm.page_one_calls == 4
+    assert len(json.loads(cache_path.read_text(encoding="utf-8"))["entries"]) == 7
 
 
 def test_vision_concurrency_is_bounded_and_order_is_stable(tmp_path):

@@ -125,6 +125,10 @@ DEFAULT_CONFIG = {
         "visualQa": {
             "enabled": True,
             "maxRepairIterations": 2,
+            "timeoutSeconds": 180,
+            "maxWorkers": 1,
+            "retryCount": 2,
+            "retryBackoffSeconds": 2,
         },
     },
 }

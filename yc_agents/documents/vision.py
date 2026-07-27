@@ -1,9 +1,11 @@
 import base64
 import hashlib
 import json
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
+from yc_agents.core.exceptions import LLMCallError
 from yc_agents.core.llm_call import invoke_llm
 
 
@@ -12,9 +14,19 @@ VISION_PROMPT_VERSION = "docx-vision-qa/v1"
 
 
 class VisionQAService:
-    def __init__(self, llm=None, max_workers=2):
+    def __init__(
+        self,
+        llm=None,
+        max_workers=1,
+        retry_count=2,
+        retry_backoff_seconds=2,
+        sleep=None,
+    ):
         self.llm = llm
         self.max_workers = max(1, int(max_workers or 1))
+        self.retry_count = max(0, int(retry_count or 0))
+        self.retry_backoff_seconds = max(0.0, float(retry_backoff_seconds or 0))
+        self._sleep = sleep or time.sleep
 
     @property
     def available(self):
@@ -73,6 +85,32 @@ class VisionQAService:
     def _inspect_page_safely(self, image_path, page_number, template_summary):
         try:
             page_findings = self._inspect_page(image_path, page_number, template_summary)
+        except LLMCallError as exc:
+            cause_type = str(exc.cause_type or exc.__class__.__name__)
+            status_code = exc.status_code if isinstance(exc.status_code, int) else None
+            attempts = max(1, int(getattr(exc, "vision_attempt_count", 1) or 1))
+            return (
+                [
+                    {
+                        "severity": "blocking",
+                        "page": page_number,
+                        "anchor": "",
+                        "issue": f"视觉模型检查失败：{cause_type}",
+                        "suggested_action": self._llm_failure_action(
+                            status_code=status_code,
+                            retryable=exc.retryable,
+                        ),
+                        "category": "environment",
+                        "diagnostics": self._failure_diagnostics(
+                            cause_type=cause_type,
+                            status_code=status_code,
+                            retryable=exc.retryable,
+                            attempt_count=attempts,
+                        ),
+                    }
+                ],
+                False,
+            )
         except Exception as exc:
             return (
                 [
@@ -83,6 +121,12 @@ class VisionQAService:
                         "issue": f"视觉模型检查失败：{exc.__class__.__name__}",
                         "suggested_action": "检查视觉模型配置或服务状态后重新验证",
                         "category": "environment",
+                        "diagnostics": self._failure_diagnostics(
+                            cause_type=exc.__class__.__name__,
+                            status_code=None,
+                            retryable=False,
+                            attempt_count=1,
+                        ),
                     }
                 ],
                 False,
@@ -154,9 +198,7 @@ class VisionQAService:
         payload = None
         for attempt in range(2):
             # Deterministic QA: the same page must yield the same verdict across runs.
-            response = invoke_llm(
-                self.llm.think, messages, usage_kind="auxiliary", temperature=0
-            )
+            response = self._invoke_with_retry(messages)
             payload = self._json_payload(response)
             if payload is not None and isinstance(payload.get("findings"), list):
                 break
@@ -194,6 +236,51 @@ class VisionQAService:
                 }
             )
         return output
+
+    def _invoke_with_retry(self, messages):
+        attempts = self.retry_count + 1
+        for attempt in range(1, attempts + 1):
+            try:
+                return invoke_llm(
+                    self.llm.think,
+                    messages,
+                    usage_kind="auxiliary",
+                    temperature=0,
+                )
+            except LLMCallError as exc:
+                exc.vision_attempt_count = attempt
+                if not exc.retryable or attempt >= attempts:
+                    raise
+                delay = self.retry_backoff_seconds * (2 ** (attempt - 1))
+                if delay:
+                    self._sleep(delay)
+
+    def _failure_diagnostics(
+        self,
+        *,
+        cause_type,
+        status_code,
+        retryable,
+        attempt_count,
+    ):
+        return {
+            "provider": str(getattr(self.llm, "provider", "") or ""),
+            "model": str(getattr(self.llm, "model", "") or ""),
+            "cause_type": str(cause_type or ""),
+            "status_code": status_code,
+            "retryable": bool(retryable),
+            "attempt_count": max(1, int(attempt_count or 1)),
+        }
+
+    @staticmethod
+    def _llm_failure_action(*, status_code, retryable):
+        if status_code in {401, 403}:
+            return "检查视觉模型 API key、账号权限或模型访问权限后重新验证"
+        if status_code == 400:
+            return "检查视觉模型请求参数与多模态接口兼容性后重新验证"
+        if retryable:
+            return "自动重试已耗尽；检查网络、配额或视觉模型服务状态后重新验证"
+        return "检查视觉模型配置或服务状态后重新验证"
 
     @staticmethod
     def _json_payload(text):

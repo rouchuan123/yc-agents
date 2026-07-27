@@ -5,7 +5,7 @@ from yc_agents.harness.tool_gateway import ToolGateway, ToolNotAllowedError
 from yc_agents.harness.tool_policy import ToolExecutionPolicy, ToolLoopError
 from yc_agents.harness.tool_result import ToolExecutionResult
 from yc_agents.harness.tool_schema import ToolField, ToolSchema
-from yc_agents.tools.base import BaseTool
+from yc_agents.tools.base import BaseTool, WrongToolError
 from yc_agents.tools.registry import ToolRegistry
 
 
@@ -89,6 +89,18 @@ class MissingFileTool(BaseTool):
     def run(self):
         self.calls += 1
         raise FileNotFoundError("missing.txt")
+
+
+class WrongToolFailingTool(BaseTool):
+    name = "wrong_tool_failing"
+    description = "A safe operation that belongs to another tool."
+
+    def __init__(self):
+        self.calls = 0
+
+    def run(self):
+        self.calls += 1
+        raise WrongToolError("use docx_template_query")
 
 
 class FakeTrace:
@@ -537,6 +549,24 @@ class TestToolGateway(unittest.TestCase):
 
         self.assertFalse(result["ok"])
         self.assertEqual(result["error_type"], "not_found")
+        self.assertEqual(result["attempts"], 1)
+        self.assertEqual(tool.calls, 1)
+
+    def test_gateway_classifies_wrong_tool_as_recoverable_feedback(self):
+        registry = ToolRegistry()
+        tool = WrongToolFailingTool()
+        registry.register(tool)
+        gateway = ToolGateway(
+            registry,
+            allowed_tools=[tool.name],
+            policy=ToolExecutionPolicy(max_retries=2),
+        )
+
+        result = gateway.run_tool(tool.name)
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error_type"], "wrong_tool")
+        self.assertIn("docx_template_query", result["error_message"])
         self.assertEqual(result["attempts"], 1)
         self.assertEqual(tool.calls, 1)
 
