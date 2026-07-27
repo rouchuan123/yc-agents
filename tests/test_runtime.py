@@ -563,6 +563,41 @@ class FakeToolFailureFeedbackAgent(FakeToolCallAgent):
         )
 
 
+class FakePostDeliveryEditAgent(FakeToolCallAgent):
+    def __init__(self):
+        self.protocol_repairs = []
+
+    def run_with_observation(self, user_input, observation):
+        return json.dumps(
+            {
+                "type": "tool_call",
+                "tool_name": "fake_tool",
+                "arguments": {"text": "post-publish-edit"},
+            }
+        )
+
+    def run_with_protocol_error(
+        self,
+        user_input,
+        error,
+        expectation=None,
+        execution_history=None,
+        stage=None,
+    ):
+        self.protocol_repairs.append(
+            {
+                "expectation": expectation,
+                "stage": stage,
+            }
+        )
+        return json.dumps(
+            {
+                "type": "final_answer",
+                "content": "published without another edit",
+            }
+        )
+
+
 class FakeTool(BaseTool):
     name = "fake_tool"
     description = "Fake tool."
@@ -596,6 +631,27 @@ class FakeExpectedFollowupTool(BaseTool):
 
     def run(self, text):
         return dict(self.result)
+
+
+class FakeTerminalDeliveryTool(BaseTool):
+    name = "fake_tool"
+    description = "Fake terminal document delivery."
+
+    def __init__(self):
+        self.calls = []
+
+    def run(self, text):
+        self.calls.append(text)
+        return {
+            "ok": True,
+            "version": 1,
+            "passed": True,
+            "delivery_ready": True,
+            "published_path": "outputs/final.docx",
+            "workflow_complete": True,
+            "terminal": True,
+            "next_action": "final_answer",
+        }
 
 
 class FakeRunAnalytics:
@@ -1460,6 +1516,38 @@ class TestYCAgentRuntime(unittest.TestCase):
             event_types = [event["event_type"] for event in runtime.last_trace_events]
             self.assertNotIn("recovery_attempt", event_types)
             self.assertNotIn("recovery_succeeded", event_types)
+
+    def test_json_delivery_terminal_rejects_same_turn_tool_call(self):
+        registry = ToolRegistry()
+        tool = FakeTerminalDeliveryTool()
+        registry.register(tool)
+        agent = FakePostDeliveryEditAgent()
+        runtime = YCAgentRuntime(
+            agent,
+            expects_json=True,
+            tool_registry=registry,
+            allowed_tools=["fake_tool"],
+            recovery_policy=RecoveryPolicy(
+                protocol_retries=1,
+                provider_retries=0,
+                verification_retries=0,
+                max_attempts=1,
+                lifetime_max_attempts=4,
+            ),
+        )
+
+        response = runtime.run("publish document")
+
+        self.assertEqual(response, "published without another edit")
+        self.assertEqual(tool.calls, ["draft.docx"])
+        self.assertEqual(
+            agent.protocol_repairs[0]["expectation"],
+            {"allowed_types": ["final_answer"]},
+        )
+        event_types = [
+            event["event_type"] for event in runtime.last_trace_events
+        ]
+        self.assertIn("document_delivery_terminal", event_types)
 
     def test_run_returns_run_result_with_metadata_and_artifacts(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

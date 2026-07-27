@@ -765,6 +765,7 @@ class YCAgentRuntime:
         budget_meter=None,
     ):
         policy = self._new_tool_policy()
+        terminal_delivery = False
 
         while True:
             tool_calls = list(getattr(response, "tool_calls", None) or [])
@@ -773,7 +774,17 @@ class YCAgentRuntime:
                 # JSON 包装。
                 return self._native_final_content(response)
 
-            response = self._handle_native_tool_step(
+            if terminal_delivery:
+                trace.record(
+                    "terminal_tool_call_blocked",
+                    {
+                        "reason": "document_delivery_complete",
+                        "tool_names": [call.name for call in tool_calls],
+                    },
+                )
+                return self._terminal_delivery_final(execution_history)
+
+            response, step_terminal = self._handle_native_tool_step(
                 trace,
                 user_input,
                 response,
@@ -786,6 +797,7 @@ class YCAgentRuntime:
                 state_store,
                 budget_meter=budget_meter,
             )
+            terminal_delivery = terminal_delivery or step_terminal
 
     def _native_final_content(self, response):
         if hasattr(response, "content"):
@@ -824,6 +836,7 @@ class YCAgentRuntime:
 
         exchanges = []
         tool_recoveries = []
+        terminal_delivery = False
         for call in tool_calls:
             self._emit_process_entry(
                 trace,
@@ -833,7 +846,20 @@ class YCAgentRuntime:
             call_data = self._native_tool_call_data(call)
             trace.record("tool_call_requested", call_data)
 
-            if not getattr(call, "arguments_valid", False):
+            if terminal_delivery:
+                tool_result = {
+                    "ok": False,
+                    "error": "DOCUMENT_WORKFLOW_TERMINAL",
+                    "error_type": "expected_workflow_state",
+                    "terminal": True,
+                    "workflow_complete": True,
+                    "next_action": "final_answer",
+                    "instruction": (
+                        "A document version was already published in this user turn. "
+                        "This additional tool call was not executed; return the final answer."
+                    ),
+                }
+            elif not getattr(call, "arguments_valid", False):
                 # arguments 坏 JSON 属于 tool_feedback 类恢复：把错误作为
                 # 工具结果反馈让模型重试同一调用，绝不送去 JSON 协议修复。
                 tool_result = {
@@ -869,6 +895,15 @@ class YCAgentRuntime:
                     "tool_result": tool_result,
                 }
             )
+            if self._tool_result_is_terminal_delivery(tool_result):
+                terminal_delivery = True
+                trace.record(
+                    "document_delivery_terminal",
+                    {
+                        "version": tool_result.get("version"),
+                        "published_path": tool_result.get("published_path"),
+                    },
+                )
 
             if self._tool_loop_was_stopped(tool_result):
                 raise RunStoppedError(
@@ -920,6 +955,7 @@ class YCAgentRuntime:
                 response,
                 exchanges,
                 budget_notice=budget_notice,
+                final_only=terminal_delivery,
             ),
             stage="tool_observation",
             trace=trace,
@@ -940,7 +976,7 @@ class YCAgentRuntime:
                 state_store=state_store,
                 recovery=recovery,
             )
-        return follow_up
+        return follow_up, terminal_delivery
 
     def _native_tool_call_data(self, call):
         data = {
@@ -1433,6 +1469,15 @@ class YCAgentRuntime:
             )
 
         tool_recovery = None
+        terminal_delivery = self._tool_result_is_terminal_delivery(tool_result)
+        if terminal_delivery:
+            trace.record(
+                "document_delivery_terminal",
+                {
+                    "version": tool_result.get("version"),
+                    "published_path": tool_result.get("published_path"),
+                },
+            )
         expected_followup = self._tool_result_is_expected_followup(tool_result)
         tool_failed = self._tool_result_failed(tool_result) and not expected_followup
         if tool_failed:
@@ -1485,7 +1530,11 @@ class YCAgentRuntime:
 
         final_response, preface, final_data = self._parse_with_protocol_recovery(
             response=final_response,
-            allowed_types=FINAL_AFTER_TOOL_TYPES,
+            allowed_types=(
+                {"final_answer"}
+                if terminal_delivery
+                else FINAL_AFTER_TOOL_TYPES
+            ),
             user_input=user_input,
             stage="tool_follow_up",
             trace=trace,
@@ -1692,9 +1741,46 @@ class YCAgentRuntime:
     def _tool_result_is_expected_followup(self, tool_result):
         if not isinstance(tool_result, dict) or tool_result.get("ok") is not False:
             return False
+        if tool_result.get("terminal") is True:
+            return True
         if tool_result.get("requires_user_input") is True:
             return True
         return str(tool_result.get("error") or "") == "DOCX_QA_BLOCKED"
+
+    @staticmethod
+    def _tool_result_is_terminal_delivery(tool_result):
+        return bool(
+            isinstance(tool_result, dict)
+            and tool_result.get("ok") is True
+            and tool_result.get("terminal") is True
+            and tool_result.get("workflow_complete") is True
+            and tool_result.get("published_path")
+        )
+
+    @staticmethod
+    def _terminal_delivery_final(execution_history):
+        result = {}
+        for item in reversed(list(execution_history or [])):
+            candidate = (item or {}).get("tool_result")
+            if (
+                isinstance(candidate, dict)
+                and candidate.get("workflow_complete") is True
+                and candidate.get("published_path")
+            ):
+                result = candidate
+                break
+        version = result.get("version")
+        version_text = f"v{int(version):03d}" if version is not None else "已发布版本"
+        warning_count = int(result.get("warning_count") or 0)
+        warning_text = (
+            f"；仍有 {warning_count} 条非阻塞 warning，详见 QA 报告"
+            if warning_count
+            else ""
+        )
+        return (
+            f"文档已完成完整 QA 并发布（{version_text}）："
+            f"{result.get('published_path')}{warning_text}。"
+        )
 
     def _tool_failure_message(self, tool_result):
         tool_name = str(tool_result.get("tool_name") or "tool")

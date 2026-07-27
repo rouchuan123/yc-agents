@@ -1800,7 +1800,15 @@ def test_full_verification_publishes_only_after_all_qa_passes(document_workspace
         "warning_count",
         "qa_report_path",
         "findings",
+        "workflow_complete",
+        "terminal",
+        "next_action",
+        "instruction",
     }
+    assert result["workflow_complete"] is True
+    assert result["terminal"] is True
+    assert result["next_action"] == "final_answer"
+    assert "Stop calling tools" in result["instruction"]
     assert all(
         set(item.keys()) == {"anchor", "issue", "suggested_action"}
         for item in result["findings"]
@@ -2884,6 +2892,9 @@ def test_docx_verify_tool_publish_operation_and_validation():
     assert result["published_path"] == "outputs/x.docx"
     assert result["waivers"] == ["视觉模型未配置，未执行逐页图片检查"]
     assert "豁免" in result["instruction"]
+    assert result["workflow_complete"] is True
+    assert result["terminal"] is True
+    assert result["next_action"] == "final_answer"
 
     with pytest.raises(ValueError, match="operation"):
         DocxVerifyTool(verifier).run("job", operation="teleport")

@@ -55,6 +55,22 @@ class ExpectedQAWorkflowTool(EchoTool):
         }
 
 
+class PublishedTerminalTool(EchoTool):
+    def run(self, text):
+        self.calls.append(text)
+        return {
+            "ok": True,
+            "version": len(self.calls),
+            "passed": True,
+            "delivery_ready": True,
+            "published_path": f"outputs/v{len(self.calls):03d}.docx",
+            "warning_count": 1,
+            "workflow_complete": True,
+            "terminal": True,
+            "next_action": "final_answer",
+        }
+
+
 def _fake_tool_call(call_id, name, arguments):
     function = type("Function", (), {"name": name, "arguments": arguments})()
     return type(
@@ -536,6 +552,41 @@ class TestNativeToolLoop(unittest.TestCase):
             ]
             self.assertNotIn("recovery_attempt", event_types)
             self.assertNotIn("recovery_succeeded", event_types)
+
+    def test_native_delivery_terminal_blocks_same_turn_tools_but_resets_next_turn(self):
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            llm = NativeRecordingLLM(
+                turns=[
+                    _turn(calls=[_call("call-1", "publish")]),
+                    _turn(calls=[_call("call-2", "post-publish-edit")]),
+                    _turn(calls=[_call("call-3", "new-turn-revision")]),
+                    _turn(content="新一轮已完成。"),
+                ],
+                json_responses=[_selection(None), _selection(None)],
+            )
+            tool = PublishedTerminalTool()
+            _agent, _tool, runtime = _build_native_runtime(
+                tmp_dir,
+                llm,
+                tool=tool,
+            )
+
+            first = runtime.run("generate and publish")
+
+            self.assertIn("outputs/v001.docx", first)
+            self.assertEqual(tool.calls, ["publish"])
+            self.assertIsNone(llm.think_calls[1]["tools"])
+            first_event_types = [
+                event["event_type"] for event in runtime.last_trace_events
+            ]
+            self.assertIn("document_delivery_terminal", first_event_types)
+            self.assertIn("terminal_tool_call_blocked", first_event_types)
+
+            second = runtime.run("explicitly revise in a new user turn")
+
+            self.assertEqual(second, "新一轮已完成。")
+            self.assertEqual(tool.calls, ["publish", "new-turn-revision"])
+            self.assertTrue(llm.think_calls[2]["tools"])
 
     def test_native_loop_handles_multiple_tool_calls_in_one_turn(self):
         with tempfile.TemporaryDirectory() as tmp_dir:

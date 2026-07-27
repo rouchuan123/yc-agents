@@ -77,6 +77,7 @@ get_active → create → analyzer(一次) → 契约 set_contract → 需求/�
    - `category="document"`：按 anchor 用 `docx_edit` 修复（最多两轮），再从 deterministic 重新验证；
    - `category="environment"`（字体、Word、视觉模型、PyMuPDF）：文档编辑修不了，向用户如实说明，不要陷入修复循环。
 4. 只有 `mode="all"` 返回 `passed=true`、`delivery_ready=true` 和 `published_path` 后版本才发布到 `outputs/`。此前不得宣称完成或给出下载路径。唯一例外：确定性检查全过、阻塞全部为环境类时，征得用户明确同意后可用 `docx_verify(operation="publish", waive_environment=true)` 降级发布——豁免项记入 `delivery.waivers`，交付回复必须原样列出。
+5. 发布成功是当前用户轮的硬终点：当 `docx_verify` 返回 `terminal=true`、`workflow_complete=true`、`next_action="final_answer"` 时，立即停止所有工具调用并给出交付回复。warning 只需披露，不得在同一轮继续调用 `docx_edit`、`docx_generate`、`document_content` 或再次验证；否则会产生未验证的新版本。只有用户在后续新一轮明确提出修改时，才创建新版本并重新走 deterministic → all。
 
 质量门槛见 [references/quality-checklist.md](references/quality-checklist.md)。
 
