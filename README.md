@@ -9,19 +9,32 @@
 
 YCore 不把业务方向写死在全局 Prompt 中，具体落地方向由 Skill 决定。安装什么 Skill，就验证什么类型的 Agent Workflow；全局 Runtime 只负责受控执行、上下文注入、工具调用、过程留痕，以及结果评测与验证。
 
-当前重点落地点是 `docx-template-authoring`：从成品 Word 模板出发，完成模板分析、来源确认、内容生成、DOCX 交付、连续修订、确定性检查和 MiMo 逐页视觉 QA。文档流程由 Skill 与受控工具实现，不改变 YCore 作为通用 Harness 基座的定位；后续仍可继续增加其他领域 Skill。
+当前重点落地点是 `docx-template-authoring`：用户提供一份已经排版完成的 Word 文档，YCore 分析其中的页面设置、标题层级、字体字号、段落、编号、表格和页眉页脚，结合已确认的需求与资料生成同类新文档。生成结果支持自然语言连续修改、不可变版本历史、确定性检查、Word 渲染和 MiMo 逐页视觉 QA。
 
-## 📷 界面预览
+文档工作流由 Skill 与受控工具实现，不写死在全局 Prompt 或 Runtime 中。YCore 仍然是一套通用 Harness；后续增加其他领域 Skill 时，可以继续复用同一套上下文、工具治理、过程留痕、评测与验证能力。
 
-### 项目审查结果
+## 📷 文档生成预览
 
-![YCore 项目审查结果](docs/images/review-result.png)
+### 从成品模板到可交付 Word
 
-YCore 根据本地代码证据输出项目亮点、风险分级和测试缺口。
+| 原始 Word 模板 | YCore 生成结果 |
+| --- | --- |
+| <img src="docs/images/template-original.png" alt="原始 Word 模板" width="100%"> | <img src="docs/images/generated-result.png" alt="YCore 生成的 Word 文档" width="100%"> |
+
+成品 DOCX 是排版权威，用户确认的需求与资料是内容权威。YCore 保留模板的版式体系和章节结构，重写旧业务内容，并在完整验证通过后输出新的 DOCX 交付物。
+
+典型流程如下：
+
+1. 添加或自动发现一份成品 Word 模板，并按需添加 PDF、DOCX 等参考资料。
+2. 分析模板结构与精细排版，确认需要保留、替换或删除的元素。
+3. 集中确认主题、读者、篇幅、内容来源、文档提纲和必要假设。
+4. 按章节生成有来源约束的内容，并从模板副本构建不可变 DOCX 版本。
+5. 先执行确定性检查，再完成 Word 渲染和 MiMo 逐页视觉 QA。
+6. 只有通过发布安全门的版本才会进入 `outputs/`；后续可继续自然语言修改或回滚历史版本。
 
 ## 📋 目录
 
-- [界面预览](#-界面预览)
+- [文档生成预览](#-文档生成预览)
 - [项目定位](#-项目定位)
 - [核心能力](#-核心能力)
 - [默认-Skill](#-默认-skill)
@@ -37,7 +50,9 @@ YCore 根据本地代码证据输出项目亮点、风险分级和测试缺口�
 
 ## 🎯 项目定位
 
-YCore 用于验证一套通用 Agent Harness 能否稳定支撑不同领域的 Skill，重点关注以下问题：
+YCore 用于验证一套通用 Agent Harness 能否稳定支撑不同领域的 Skill。当前以 Word 模板仿写为重点业务场景：它不仅要求模型生成内容，还要求系统管理模板、来源、计划、版本、渲染、视觉验收和正式发布，因此能够较完整地检验 Agent Workflow 的工程可靠性。
+
+YCore 重点关注以下问题：
 
 - **Skill 发现与选择**：如何从 `SKILL.md` 加载、发现并选择合适的技能。
 - **工具边界管理**：如何约束工具权限、校验参数并处理审批。
@@ -45,7 +60,7 @@ YCore 用于验证一套通用 Agent Harness 能否稳定支撑不同领域的 S
 - **过程可追溯**：如何记录输入、输出、Trace 和 State Checkpoint。
 - **结果可验证**：如何通过 Eval Runner 与 VerificationGate 检查完成质量。
 
-领域能力由 Skill 决定，YCore 的全局层始终保持通用。
+领域能力由 Skill 决定，YCore 的全局层始终保持通用。`docx-template-authoring` 负责 Word 文档领域知识与步骤约束，Runtime 负责模型调用、工具执行、权限边界、运行状态和验证证据。
 
 ## ✨ 核心能力
 
@@ -56,12 +71,23 @@ YCore 用于验证一套通用 Agent Harness 能否稳定支撑不同领域的 S
 - 🧾 **运行留痕**：在当前 Workspace 的 `.ycore/runs/` 保存输入、输出、Trace 与 State。
 - 📊 **运行分析**：可选 SQLite Analytics，记录运行元数据、工具事件、Verification 与 Eval 结果。
 - ✅ **结果验证**：使用 Eval Runner 和 VerificationGate 将“模型说完成”转换为可检查证据。
+- 📐 **模板蒸馏**：提取 DOCX 的页面、样式、标题、正文、编号、表格及页眉页脚，形成可查询的模板规格与语义契约。
+- 📚 **来源与计划治理**：区分候选资料和已确认来源，在生成前集中确认提纲、引用边界、联网计划和模板元素处理方式。
+- 📄 **DOCX 生成与局部修订**：从模板副本生成新文档，并把“扩充第二章”“删除表格最后一列”等自然语言要求映射为局部编辑。
+- 🧪 **双阶段文档 QA**：先进行快速、确定性的结构与内容检查，再通过 Word 渲染和 MiMo 逐页视觉 QA 检查实际版面。
+- 🕘 **不可变版本与发布门**：每次生成或修订都创建新版本；未通过完整 QA 的版本不会被标记为正式交付物。
 
-### Skill 驱动的执行过程
+### Skill 驱动的文档生成过程
 
-![YCore Skill 执行过程](docs/images/skill-execution.png)
+#### 1. Skill 选择、任务创建与模板分析
 
-Agent 会显示当前使用的 Skill、工具调用和结果摘要，完整过程可以展开查看。
+![YCore 选择文档 Skill 并分析 Word 模板](docs/images/workflow-part-1.png)
+
+#### 2. DOCX 生成、双阶段验证与正式交付
+
+![YCore 生成并验证 DOCX 文档](docs/images/workflow-part-2.png)
+
+Agent 会显示当前选择的 `docx-template-authoring` Skill、关键工具调用和结果摘要，完整过程可以展开查看。文档生成不是一次文本导出：模板分析、需求与来源确认、逐章写作、DOCX 构建、确定性检查和视觉验收都具有明确的状态与下一步约束。
 
 ## 🧠 默认 Skill
 
@@ -111,6 +137,14 @@ DeepSeek。视觉可靠性由 `documents.visualQa` 单独控制：
 只有超时、连接失败、限流和服务端错误等可重试故障会自动重试。重试耗尽后仍保持发布门，
 必须由用户明确同意 `waive_environment=true` 才能降级交付。缺失模板字体只作为
 非阻断 warning 披露，不会触发环境豁免。
+
+### 正式交付与连续修订
+
+`docx_generate` 创建的是不可变待验证版本，并不等于已经完成交付。只有 `docx_verify(mode="all")` 完成确定性检查、Word/PDF/PNG 渲染和逐页视觉 QA，返回 `delivery_ready=true` 后，版本才会发布到 Workspace 的 `outputs/`。
+
+成功交付后，用户可以继续使用自然语言修改当前文档。每次修改都会生成新版本并重新经过完整验证；旧版本不会被覆盖，可以通过 `/document history` 查看，通过 `/document rollback <version>` 切换当前版本。
+
+![YCore 文档验证与正式交付结果](docs/images/delivery-result.png)
 
 ## 🚀 快速开始
 
@@ -176,11 +210,11 @@ ycore
 
 YCore 使用 Textual TUI：顶部显示当前工作区、模型、估算上下文占用、Git 分支和 Session 编号；左侧为 Workspace 与 Sessions 工作台；中间显示对话、Assistant 回复和可折叠执行过程；底部提供输入框与 `/command` 补全。
 
-### 命令补全
+### 文档命令补全
 
-![YCore CLI 命令补全](docs/images/command-palette.png)
+![YCore 文档命令补全](docs/images/document-command-palette.png)
 
-在输入框中输入 `/`，即可查看 Session、Workspace 和运行控制命令。
+在输入框中输入 `/document`，可以查看当前文档任务、不可变版本历史和回滚命令；输入 `/attach` 可以添加成品 Word 模板和参考资料。输入 `/` 仍可查看 Session、Workspace 和其他运行控制命令。
 
 | 命令 | 说明 |
 | --- | --- |
